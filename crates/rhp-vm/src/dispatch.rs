@@ -2,7 +2,6 @@
 //! operator helpers it calls.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use rhp_builtins as builtins;
@@ -62,7 +61,10 @@ impl Vm {
     /// `{main}` keeps them in [`Vm::include_statics`], dropped when it
     /// returns (see [`Vm::run_included`]).
     #[inline]
-    fn static_table(&mut self, top: usize) -> &mut HashMap<StaticKey, Rc<RefCell<Value>>> {
+    fn static_table(
+        &mut self,
+        top: usize,
+    ) -> &mut rustc_hash::FxHashMap<StaticKey, Rc<RefCell<Value>>> {
         if self.stack[top].include_kind().is_some() {
             &mut self.include_statics
         } else {
@@ -1333,9 +1335,7 @@ impl Vm {
                     let a = self.reg_get(top, arr);
                     let k = self.reg_r(top, key)?;
                     let r = match deref(&a) {
-                        Value::Object(h)
-                            if self.class_implements(h.borrow().class, b"ArrayAccess") =>
-                        {
+                        Value::Object(h) if self.offset_object(&h) => {
                             let step = CursorStep::Key(k.clone());
                             let cell = self.aa_fetch_w(&h, &step, k, DimFetch::W)?;
                             let v = cell.borrow().clone();
@@ -1460,10 +1460,16 @@ impl Vm {
                 }
                 Instr::LvalStaticProp { class, name } => {
                     let cls = self.resolve_class_autoload(top, class)?;
-                    let pname = proto.names[name as usize].as_bytes().to_vec();
-                    self.check_static_prop_access(top, cls, &pname)?;
-                    let cell = self.static_prop_cell(cls, &pname)?;
-                    self.note_cursor_static(&cell, cls, &pname);
+                    let key = &proto.names[name as usize];
+                    let pname = key.as_bytes();
+                    let cell = match self.static_prop_plain(top, cls, key) {
+                        Some(c) => c.clone(),
+                        None => {
+                            self.check_static_prop_access(top, cls, pname)?;
+                            self.static_prop_cell(cls, pname)?
+                        }
+                    };
+                    self.note_cursor_static(&cell, cls, pname);
                     self.cursor_root = CursorRoot::Cell(cell);
                     self.cursor_global = None;
                     self.cursor_steps.clear();
@@ -1555,6 +1561,9 @@ impl Vm {
                     self.unset_global(&n);
                 }
                 Instr::FetchLvalRw { dst } => {
+                    if self.cursor_one_prop() && self.fetch_lval_rw_prop(top, dst) {
+                        continue;
+                    }
                     if self.cursor_static.is_some() {
                         let steps = std::mem::take(&mut self.cursor_steps);
                         let r = self.cursor_static_check(top, &steps, StaticOp::Rw, Value::Null);
@@ -1569,6 +1578,9 @@ impl Vm {
                     self.reg_set(top, dst, v); // cursor stays open for the AssignLval
                 }
                 Instr::AssignLval { src, dst } => {
+                    if self.cursor_one_prop() && self.assign_lval_prop(top, &proto, src, dst) {
+                        continue;
+                    }
                     let operands = self.compound_free.take();
                     if self.deferred_undef_key.is_some() && self.assign_undef_key(top, dst)? {
                         if let Some((a, b)) = operands {
@@ -1743,6 +1755,9 @@ impl Vm {
                     r?;
                 }
                 Instr::IncDecLval { dst, pre, delta } => {
+                    if self.cursor_one_prop() && self.inc_dec_lval_prop(top, dst, pre, delta) {
+                        continue;
+                    }
                     self.cursor_settle_offsets(top)?;
                     let steps = std::mem::take(&mut self.cursor_steps);
                     if self.cursor_static.is_some() {
@@ -2062,6 +2077,11 @@ impl Vm {
                     ..
                 } => self.exec_new(top, dst, class, base, argc)?,
                 Instr::FetchProp { dst, obj, name, .. } => {
+                    if let Some(v) = self.prop_fetch_cached(top, obj, &proto.names[name as usize]) {
+                        self.free_tmp(top, proto.num_cvs, obj);
+                        self.reg_set(top, dst, v);
+                        continue;
+                    }
                     let o = self.reg_r(top, obj)?;
                     let pname = proto.names[name as usize].clone();
                     let v = self.prop_fetch(top, o, pname)?;
@@ -2100,6 +2120,11 @@ impl Vm {
                     self.reg_set(top, dst, v);
                 }
                 Instr::FetchPropIs { dst, obj, name } => {
+                    if let Some(v) = self.prop_fetch_cached(top, obj, &proto.names[name as usize]) {
+                        self.free_tmp(top, proto.num_cvs, obj);
+                        self.reg_set(top, dst, v);
+                        continue;
+                    }
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
                     let v = self.prop_fetch_is(top, o, pname)?;
@@ -2122,15 +2147,24 @@ impl Vm {
                 }
                 Instr::FetchStaticPropIs { dst, class, name } => {
                     let cls = self.resolve_class_autoload(top, class)?;
-                    let pname = proto.names[name as usize].as_bytes().to_vec();
-                    let accessible = match self.class(cls).static_props.get(&pname[..]) {
+                    let key = &proto.names[name as usize];
+                    if let Some(c) = self.static_prop_plain(top, cls, key) {
+                        let v = match deref(&c.borrow()) {
+                            Value::Undef => Value::Null,
+                            v => v,
+                        };
+                        self.reg_set(top, dst, v);
+                        continue;
+                    }
+                    let pname = key.as_bytes();
+                    let accessible = match self.class(cls).static_props.get(pname) {
                         Some(sp) => self.static_prop_accessible(self.stack[top].defining_class, sp),
                         None => false,
                     };
                     // The cell via static_prop_cell: runs the class's
                     // deferred (non-literal) initializers first.
                     let v = if accessible {
-                        match deref(&self.static_prop_cell(cls, &pname)?.borrow()) {
+                        match deref(&self.static_prop_cell(cls, pname)?.borrow()) {
                             Value::Undef => Value::Null,
                             v => v,
                         }
@@ -2176,12 +2210,22 @@ impl Vm {
                         ));
                     };
                     let cls = h.borrow().class;
-                    self.invoke_method(top, h, cls, &mname, dst, base, argc)?;
+                    self.invoke_method(top, h, cls, &mname, None, dst, base, argc)?;
                 }
                 Instr::StoreProp { obj, name, src } => {
+                    let val = self.reg_r(top, src)?;
+                    let val =
+                        match self.prop_store_cached(top, obj, &proto.names[name as usize], val) {
+                            Ok(()) => {
+                                if self.release_pending() {
+                                    self.dtor_check = true; // the old value may be released
+                                }
+                                continue;
+                            }
+                            Err(val) => val,
+                        };
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
-                    let val = self.reg_r(top, src)?;
                     self.want_typed_result = true;
                     self.prop_store(top, o, pname, val)?;
                     // A typed property coerced the value: a temporary
@@ -2204,8 +2248,14 @@ impl Vm {
                             self.reg_set(top, dst, Value::Bool(r));
                             continue;
                         }
-                        if self.class_implements(h.borrow().class, b"ArrayAccess") {
+                        if self.offset_object(h) {
                             let r = self.aa_offset_exists(h, k)?;
+                            self.reg_set(top, dst, Value::Bool(r));
+                            continue;
+                        }
+                        // Native dimension handlers (PDORow).
+                        if let Some(d) = self.handlers_of(h).and_then(|t| t.dimension) {
+                            let r = (d.has)(self, h, &k, false)?;
                             self.reg_set(top, dst, Value::Bool(r));
                             continue;
                         }
@@ -2268,6 +2318,11 @@ impl Vm {
                     self.reg_set(top, dst, Value::Bool(!b));
                 }
                 Instr::IssetProp { dst, obj, name } => {
+                    if let Some(r) = self.prop_isset_cached(top, obj, &proto.names[name as usize]) {
+                        self.free_tmp(top, proto.num_cvs, obj);
+                        self.reg_set(top, dst, Value::Bool(r));
+                        continue;
+                    }
                     let o = self.reg_get(top, obj);
                     let pname = proto.names[name as usize].clone();
                     let r = self.prop_isset(top, o, pname)?;
@@ -2329,11 +2384,21 @@ impl Vm {
                     dst, class, name, ..
                 } => {
                     let cls = self.resolve_class_autoload(top, class)?;
-                    let pname = proto.names[name as usize].as_bytes().to_vec();
-                    self.check_static_prop_access(top, cls, &pname)?;
-                    let cell = self.static_prop_cell(cls, &pname)?;
+                    let key = &proto.names[name as usize];
+                    if let Some(c) = self.static_prop_plain(top, cls, key) {
+                        let c = c.borrow();
+                        if !c.is_undef() {
+                            let v = c.clone();
+                            drop(c);
+                            self.reg_set(top, dst, v);
+                            continue;
+                        }
+                    }
+                    let pname = key.as_bytes();
+                    self.check_static_prop_access(top, cls, pname)?;
+                    let cell = self.static_prop_cell(cls, pname)?;
                     if cell.borrow().is_undef() {
-                        return Err(self.uninit_static_err(cls, &pname));
+                        return Err(self.uninit_static_err(cls, pname));
                     }
                     let v = cell.borrow().clone();
                     self.reg_set(top, dst, v);
@@ -2387,7 +2452,8 @@ impl Vm {
                         ));
                     };
                     let cls = h.borrow().class;
-                    self.invoke_method(top, h, cls, mname, dst, base, argc)?;
+                    let key = Some(&proto.names[name as usize]);
+                    self.invoke_method(top, h, cls, mname, key, dst, base, argc)?;
                 }
                 Instr::MethodArgIsRef {
                     dst,
@@ -2398,7 +2464,7 @@ impl Vm {
                     let r = match self.reg_get(top, obj) {
                         Value::Object(h) => {
                             let cls = h.borrow().class;
-                            let m = self.lookup_method(cls, proto.names[name as usize].as_bytes());
+                            let m = self.lookup_method_str(cls, &proto.names[name as usize]);
                             // A method the scope cannot call goes to `__call`
                             // (zend_std_get_method's trampoline): by value.
                             let scope = self.stack[top].defining_class;
@@ -2432,9 +2498,11 @@ impl Vm {
                 }
                 Instr::ValueArgIsRef { dst, callee, idx } => {
                     let c = self.reg_get(top, callee);
-                    let r = self
-                        .callable_proto(&c)
-                        .is_some_and(|(p, _)| crate::calls::param_is_ref(&p, idx));
+                    let r = match self.callable_proto(&c) {
+                        Some((p, _)) => crate::calls::param_is_ref(&p, idx),
+                        // A builtin's by-reference positions (its stub).
+                        None => self.builtin_callable_arg_is_ref(&c, idx),
+                    };
                     self.reg_set(top, dst, Value::Bool(r));
                 }
                 Instr::FuncArgIsRef { dst, func, idx } => {
@@ -2465,7 +2533,7 @@ impl Vm {
                     idx,
                 } => {
                     let cls = self.resolve_class_autoload(top, class)?;
-                    let m = self.lookup_method(cls, proto.names[name as usize].as_bytes());
+                    let m = self.lookup_method_str(cls, &proto.names[name as usize]);
                     let r = m.is_some_and(|m| param_is_ref(&m.proto, idx));
                     self.reg_set(top, dst, Value::Bool(r));
                 }
@@ -2477,9 +2545,10 @@ impl Vm {
                     argc,
                     ..
                 } => {
-                    let mname = proto.names[name as usize].as_bytes();
+                    let key = &proto.names[name as usize];
+                    let mname = key.as_bytes();
                     let ctor = mname.eq_ignore_ascii_case(b"__construct");
-                    self.do_call_static(top, class, mname, dst, base, argc, ctor)?;
+                    self.do_call_static(top, class, mname, Some(key), dst, base, argc, ctor)?;
                 }
                 Instr::CallParentHook {
                     dst,
@@ -2516,7 +2585,7 @@ impl Vm {
                         }
                     }
                     let mname = dyn_method_name(&self.reg_r(top, name)?)?;
-                    self.do_call_static(top, class, &mname, dst, base, argc, false)?;
+                    self.do_call_static(top, class, &mname, None, dst, base, argc, false)?;
                 }
                 Instr::InstanceOf { dst, val, class } => {
                     let v = self.reg_r(top, val)?;
@@ -3266,11 +3335,25 @@ impl Vm {
         self.stack[top].pc = pc;
     }
 
+    /// The class's native `ce->get_iterator`, unless a user class overrode
+    /// `getIterator()` (zend_implement_aggregate then switches to
+    /// zend_user_it_get_new_iterator).
+    fn native_get_iterator(
+        &self,
+        h: &ObjectHandle,
+    ) -> Option<rhp_builtins::zend::object_handlers::GetIteratorFn> {
+        let f = self.handlers_of(h).and_then(|t| t.get_iterator)?;
+        match self.lookup_method(h.borrow().class, b"getiterator") {
+            Some(m) if !self.is_internal_class(m.defining_class) => None,
+            _ => Some(f),
+        }
+    }
+
     /// zend_user_it_get_new_iterator: follow `getIterator()` until an object
     /// that is not an IteratorAggregate; a result that is not Traversable
     /// (or the aggregate itself) throws.
     fn unwrap_aggregate(&mut self, h: ObjectHandle) -> Result<ObjectHandle, Thrown> {
-        if let Some(f) = self.handlers_of(&h).and_then(|t| t.get_iterator) {
+        if let Some(f) = self.native_get_iterator(&h) {
             // ce->get_iterator: an InternalIterator.
             return f(self, &h, false);
         }
@@ -3319,9 +3402,7 @@ impl Vm {
                 // the protocol in FeFetch; a plain object iterates its
                 // accessible properties (snapshotted to an array).
                 // A get_iterator iterator object already holds the handle.
-                let internal = self
-                    .handlers_of(&h)
-                    .is_some_and(|t| t.get_iterator.is_some());
+                let internal = self.native_get_iterator(&h).is_some();
                 let obj = self.unwrap_aggregate(h)?;
                 let oid = obj.borrow().id;
                 let ocls = obj.borrow().class;
@@ -3527,7 +3608,7 @@ impl Vm {
         if let Value::Object(h) = deref(&self.stack[top].regs[arr_cv as usize]) {
             // ce->get_iterator by reference: `pos_reg` holds [iterator,
             // fetched-once flag], as for a generator.
-            if let Some(f) = self.handlers_of(&h).and_then(|t| t.get_iterator) {
+            if let Some(f) = self.native_get_iterator(&h) {
                 let it = f(self, &h, true)?;
                 builtins::zend::internal_iterator::step(
                     self,
@@ -4145,6 +4226,107 @@ impl Vm {
         Ok(self.class(cls).name.clone())
     }
 
+    /// Whether the open lvalue cursor is one property step (`$o->p`), the
+    /// shape the cursor fast paths below take.
+    #[inline(always)]
+    fn cursor_one_prop(&self) -> bool {
+        matches!(&self.cursor_steps[..], [crate::lvalue::CursorStep::Prop(_)])
+    }
+
+    /// `FetchLvalRw` of `$o->p` through the lookup cache (see
+    /// [`Vm::with_cursor_prop_slot`]); the cursor stays open. False: take
+    /// the cursor path.
+    #[inline(never)]
+    fn fetch_lval_rw_prop(&mut self, top: usize, dst: Reg) -> bool {
+        match self.with_cursor_prop_slot(top, |slot, _| Some(slot.clone())) {
+            Some(v) => {
+                self.reg_set(top, dst, v);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `$o->p op= v` (`AssignLval`) on a plain property holding a scalar.
+    #[inline(never)]
+    fn assign_lval_prop(&mut self, top: usize, proto: &FunctionProto, src: Reg, dst: Reg) -> bool {
+        if self.deferred_undef_key.is_some() || self.stack[top].regs[src as usize].is_undef() {
+            return false;
+        }
+        let v = self.reg_get(top, src);
+        let old = self.with_cursor_prop_slot(top, |slot, typed| {
+            if !(is_scalar(slot) || matches!(slot, Value::Str(_)))
+                || (typed && !crate::props::same_scalar_kind(slot, &v))
+            {
+                return None;
+            }
+            Some(std::mem::replace(slot, v.clone()))
+        });
+        if old.is_none() {
+            return false;
+        }
+        self.cursor_steps.clear();
+        self.cursor_release();
+        if dst != src {
+            self.reg_set(top, dst, v);
+        }
+        if let Some((a, b)) = self.compound_free.take() {
+            self.free_tmp(top, proto.num_cvs, a);
+            self.free_tmp(top, proto.num_cvs, b);
+        }
+        true
+    }
+
+    /// `$o->p++` (`IncDecLval`) on a plain int property.
+    #[inline(never)]
+    fn inc_dec_lval_prop(&mut self, top: usize, dst: Reg, pre: bool, delta: i8) -> bool {
+        let d = delta as i64;
+        // (An int stays an int: whatever type allowed it allows the new one.)
+        let done = self.with_cursor_prop_slot(top, |slot, _| match *slot {
+            Value::Int(n) => {
+                let m = n.checked_add(d)?;
+                *slot = Value::Int(m);
+                Some(if pre { m } else { n })
+            }
+            _ => None,
+        });
+        match done {
+            Some(r) => {
+                self.cursor_steps.clear();
+                self.cursor_release();
+                self.reg_set(top, dst, Value::Int(r));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The common class constant fetch: an evaluated, accessible,
+    /// undeprecated constant of a user class or interface, other than an
+    /// enum case (what [`Vm::fetch_class_const`] then does with nothing
+    /// to check). `None`: take the full path.
+    #[inline]
+    fn class_const_plain(&self, top: usize, cls: ClassId, name: &[u8]) -> Option<Value> {
+        let ce = self.class(cls);
+        if ce.kind == rhp_values::ClassKind::Trait || (ce.enum_backing.is_some() && !ce.updated) {
+            return None;
+        }
+        let c = ce.constants.get(name)?;
+        if c.init.is_some()
+            || c.deprecated.is_some()
+            || self.is_internal_class(c.declaring_class)
+            || matches!(c.value, Value::Object(_))
+            || !self.check_access(
+                self.stack[top].defining_class,
+                c.declaring_class,
+                c.visibility,
+            )
+        {
+            return None;
+        }
+        Some(c.value.clone())
+    }
+
     fn fetch_class_const(
         &mut self,
         top: usize,
@@ -4154,6 +4336,12 @@ impl Vm {
         name: Value,
     ) -> Result<(), Thrown> {
         let cls = self.resolve_class_autoload(top, class)?;
+        if let Value::Str(n) = &name {
+            if let Some(v) = self.class_const_plain(top, cls, n.as_bytes()) {
+                self.reg_set(top, dst, v);
+                return Ok(());
+            }
+        }
         let name_b = match name {
             Value::Str(s) => s.as_bytes().to_vec(),
             // zend_invalid_class_constant_type_error.
@@ -4629,14 +4817,7 @@ impl Vm {
             _ => None,
         };
         if let Some(s) = name {
-            let n = s.as_bytes();
-            let n = n.strip_prefix(b"\\").unwrap_or(n);
-            let found = if n.iter().any(u8::is_ascii_uppercase) {
-                self.fn_names.contains_key(&n.to_ascii_lowercase())
-            } else {
-                self.fn_names.contains_key(n)
-            };
-            if found {
+            if self.fn_index(s.as_bytes()).is_some() {
                 return Ok(());
             }
         }
@@ -4674,9 +4855,7 @@ impl Vm {
             // A user function's first-class callable: a direct
             // call (by-reference parameters and return).
             if let Some(Value::Str(n)) = cd.wrapped.as_deref() {
-                let n = n.as_bytes();
-                let n = n.strip_prefix(b"\\").unwrap_or(n);
-                if let Some(&i) = self.fn_names.get(&n.to_ascii_lowercase()) {
+                if let Some(i) = self.fn_index(n.as_bytes()) {
                     let callee = self.functions[i].clone();
                     if !callee.proto.is_internal() {
                         self.enter_user_call(top, callee, dst, base, argc)?;
@@ -4691,7 +4870,7 @@ impl Vm {
             let n = s.as_bytes();
             let n = n.strip_prefix(b"\\").unwrap_or(n);
             if !n.contains(&b':') {
-                if let Some(&i) = self.fn_names.get(&n.to_ascii_lowercase()) {
+                if let Some(i) = self.fn_index(s.as_bytes()) {
                     let callee = self.functions[i].clone();
                     if !callee.proto.is_internal() {
                         self.enter_user_call(top, callee, dst, base, argc)?;
@@ -4708,7 +4887,7 @@ impl Vm {
                 .lookup_method(cls, b"__invoke")
                 .is_some_and(|m| !m.is_static && m.visibility == rhp_values::Visibility::Public)
             {
-                self.invoke_method(top, h.clone(), cls, b"__invoke", dst, base, argc)?;
+                self.invoke_method(top, h.clone(), cls, b"__invoke", None, dst, base, argc)?;
                 return Ok(());
             }
         }

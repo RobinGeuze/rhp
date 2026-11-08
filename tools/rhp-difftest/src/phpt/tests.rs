@@ -307,6 +307,21 @@ fn stderr_is_compared() {
 }
 
 #[test]
+fn http_dates_masked_in_headers() {
+    let a = b"Set-Cookie: foo=bar; expires=Sun, 08 Nov 2026 17:01:02 GMT; Max-Age=3600";
+    let b = b"Set-Cookie: foo=bar; expires=Sun, 08 Nov 2026 17:01:03 GMT; Max-Age=3600";
+    assert_eq!(mask_http_dates(a), mask_http_dates(b));
+    assert_eq!(
+        mask_http_dates(b"Expires: Thu, 19 Nov 1981 08:52:00 GMT"),
+        b"Expires: <HTTP-DATE>"
+    );
+    assert_ne!(
+        mask_http_dates(b"Max-Age=3600"),
+        mask_http_dates(b"Max-Age=3601")
+    );
+}
+
+#[test]
 fn blank_line_differences_are_not_diagnostics() {
     let v = classify(
         &out(b"a\n\nb\n\nWarning: x in /t.php on line 1\n"),

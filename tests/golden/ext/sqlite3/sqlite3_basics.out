@@ -1,0 +1,88 @@
+bool(true)
+int(4)
+bool(false)
+bool(true)
+int(1)
+int(1)
+bool(true)
+int(1)
+int(2)
+bool(true)
+int(1)
+int(3)
+string(56) "INSERT INTO t (name, n, f, b) VALUES (:name, :n, :f, :b)"
+bool(true)
+int(5)
+string(2) "t2"
+bool(false)
+array(5) {
+  ["id"]=>
+  int(3)
+  ["name"]=>
+  string(1) "c"
+  ["t2"]=>
+  int(6)
+  ["f"]=>
+  NULL
+  ["b"]=>
+  string(6) "780079"
+}
+array(5) {
+  ["id"]=>
+  int(2)
+  ["name"]=>
+  string(1) "b"
+  ["t2"]=>
+  int(4)
+  ["f"]=>
+  float(2.5)
+  ["b"]=>
+  string(6) "780079"
+}
+array(5) {
+  ["id"]=>
+  int(1)
+  ["name"]=>
+  string(1) "a"
+  ["t2"]=>
+  int(2)
+  ["f"]=>
+  float(1.5)
+  ["b"]=>
+  string(6) "780079"
+}
+array(5) {
+  [0]=>
+  int(3)
+  [1]=>
+  string(1) "c"
+  [2]=>
+  int(6)
+  [3]=>
+  NULL
+  [4]=>
+  string(6) "780079"
+}
+int(5)
+bool(true)
+int(3)
+array(5) {
+  ["id"]=>
+  int(2)
+  ["name"]=>
+  string(1) "b"
+  ["n"]=>
+  int(2)
+  ["f"]=>
+  float(2.5)
+  ["b"]=>
+  string(6) "780079"
+}
+NULL
+string(5) "it''s"
+bool(false)
+int(1)
+string(22) "no such table: missing"
+SQLite3Exception: Unable to prepare statement: no such table: missing (1)
+bool(true)
+The SQLite3 object has not been correctly initialised or is already closed

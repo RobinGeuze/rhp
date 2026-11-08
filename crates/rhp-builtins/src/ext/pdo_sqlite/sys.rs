@@ -1,5 +1,5 @@
-//! The part of libsqlite3's API pdo_sqlite calls (sqlite3.h), declared by
-//! hand. `build/native.rs` links the libsqlite3 php links.
+//! The part of libsqlite3's API pdo_sqlite and sqlite3 call (sqlite3.h),
+//! declared by hand. `build/native.rs` links the libsqlite3 php links.
 
 #![allow(non_camel_case_types)]
 
@@ -22,12 +22,19 @@ pub struct sqlite3_value {
     _p: [u8; 0],
 }
 #[repr(C)]
+pub struct sqlite3_backup {
+    _p: [u8; 0],
+}
+#[repr(C)]
 pub struct sqlite3_blob {
     _p: [u8; 0],
 }
 
 pub const SQLITE_OK: c_int = 0;
 pub const SQLITE_ERROR: c_int = 1;
+pub const SQLITE_BUSY: c_int = 5;
+pub const SQLITE_LOCKED: c_int = 6;
+pub const SQLITE_NOMEM: c_int = 7;
 pub const SQLITE_INTERRUPT: c_int = 9;
 pub const SQLITE_NOTFOUND: c_int = 12;
 pub const SQLITE_TOOBIG: c_int = 18;
@@ -53,6 +60,7 @@ pub const SQLITE_NULL: c_int = 5;
 
 pub const SQLITE_UTF8: c_int = 1;
 pub const SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION: c_int = 1005;
+pub const SQLITE_DBCONFIG_DEFENSIVE: c_int = 1010;
 
 pub type Destructor = isize;
 /// `SQLITE_TRANSIENT`: sqlite copies the bytes.
@@ -73,6 +81,27 @@ pub type XAuth = unsafe extern "C" fn(
 
 extern "C" {
     pub fn sqlite3_libversion() -> *const c_char;
+    pub fn sqlite3_libversion_number() -> c_int;
+    pub fn sqlite3_close(db: *mut sqlite3) -> c_int;
+    pub fn sqlite3_extended_errcode(db: *mut sqlite3) -> c_int;
+    pub fn sqlite3_errstr(rc: c_int) -> *const c_char;
+    pub fn sqlite3_db_handle(stmt: *mut sqlite3_stmt) -> *mut sqlite3;
+    pub fn sqlite3_enable_load_extension(db: *mut sqlite3, onoff: c_int) -> c_int;
+    pub fn sqlite3_bind_double(stmt: *mut sqlite3_stmt, i: c_int, v: c_double) -> c_int;
+    pub fn sqlite3_bind_parameter_count(stmt: *mut sqlite3_stmt) -> c_int;
+    pub fn sqlite3_clear_bindings(stmt: *mut sqlite3_stmt) -> c_int;
+    pub fn sqlite3_sql(stmt: *mut sqlite3_stmt) -> *const c_char;
+    pub fn sqlite3_expanded_sql(stmt: *mut sqlite3_stmt) -> *mut c_char;
+    pub fn sqlite3_value_int64(v: *mut sqlite3_value) -> i64;
+    pub fn sqlite3_result_int64(ctx: *mut sqlite3_context, v: i64);
+    pub fn sqlite3_backup_init(
+        dest: *mut sqlite3,
+        dest_name: *const c_char,
+        src: *mut sqlite3,
+        src_name: *const c_char,
+    ) -> *mut sqlite3_backup;
+    pub fn sqlite3_backup_step(b: *mut sqlite3_backup, pages: c_int) -> c_int;
+    pub fn sqlite3_backup_finish(b: *mut sqlite3_backup) -> c_int;
     pub fn sqlite3_open_v2(
         filename: *const c_char,
         db: *mut *mut sqlite3,

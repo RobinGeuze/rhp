@@ -1,0 +1,54 @@
+int(0)
+int(2)
+3=4
+2=3
+1=2
+0=1
+int(4)
+string(24) "i:0;:i:1;:i:2;:i:3;:i:4;"
+int(2)
+array(6) {
+  [0]=>
+  int(0)
+  [1]=>
+  int(1)
+  [2]=>
+  string(1) "x"
+  [3]=>
+  int(2)
+  [4]=>
+  int(3)
+  [5]=>
+  int(4)
+}
+SplDoublyLinkedList::offsetGet(): Argument #1 ($index) is out of range
+SplDoublyLinkedList::offsetSet(): Argument #1 ($index) must be of type ?int, string given
+bool(false)
+NULL
+int(1)
+int(2)
+Error at offset 5 of 6 bytes
+Can't peek at an empty datastructure
+int(4)
+Iterators' LIFO/FIFO modes for SplStack/SplQueue objects are frozen
+int(6)
+array(2) {
+  [1]=>
+  string(1) "b"
+  [0]=>
+  string(1) "a"
+}
+int(6)
+object(MyStack)#7 (2) {
+  ["flags":"SplDoublyLinkedList":private]=>
+  int(6)
+  ["dllist":"SplDoublyLinkedList":private]=>
+  array(2) {
+    [0]=>
+    int(1)
+    [1]=>
+    int(2)
+  }
+}
+bool(false)
+NULL

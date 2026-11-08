@@ -113,8 +113,8 @@ pub(crate) struct NativeCall {
     /// them; a trace shows them), borrowed like `args`.
     pub(crate) named: *const [(PhpStr, Value)],
     /// A method of an internal class run without a frame (the `Generator`
-    /// methods): its class and object.
-    pub(crate) method_of: Option<(&'static str, ObjectHandle)>,
+    /// methods, `Closure::call`): its class and object.
+    pub(crate) method_of: Option<(&'static str, Value)>,
 }
 
 impl Vm {
@@ -292,12 +292,13 @@ impl Vm {
         h: ObjectHandle,
         cls: ClassId,
         mname: &[u8],
+        key: Option<&PhpStr>,
         dst: Reg,
         base: Reg,
         argc: u16,
     ) -> Result<(), Thrown> {
         let gid = h.borrow().id;
-        if self.generators.contains_key(&gid) {
+        if !self.generators.is_empty() && self.generators.contains_key(&gid) {
             // (Its arguments are by value: an undefined variable warns.)
             self.bind_undef_args(top, base, argc, |_| false)?;
             let args: Vec<Value> = (0..argc).map(|i| self.reg_get(top, base + i)).collect();
@@ -314,7 +315,7 @@ impl Vm {
             }
         }
         let scope = self.stack[top].defining_class;
-        match self.get_method(cls, mname, scope)? {
+        match self.get_method_by(cls, mname, key, scope)? {
             Some(Found::Method(m)) => {
                 self.enter_method(top, &m, Some(h), cls, dst, base, argc)?;
             }
@@ -347,9 +348,13 @@ impl Vm {
         class: ClassRef,
         cls: ClassId,
         mname: &[u8],
+        key: Option<&PhpStr>,
         ctor: bool,
     ) -> Option<(classes::ResolvedMethod, Option<ObjectHandle>, ClassId)> {
-        let m = self.lookup_method(cls, if ctor { b"__construct" } else { mname })?;
+        let m = match key {
+            Some(k) => self.lookup_method_str(cls, k)?,
+            None => self.lookup_method(cls, if ctor { b"__construct" } else { mname })?,
+        };
         let ok = !m.is_abstract
             && (m.visibility == rhp_values::Visibility::Public
                 || (!ctor && Some(m.defining_class) == self.stack[top].defining_class))
@@ -460,13 +465,14 @@ impl Vm {
         top: usize,
         class: ClassRef,
         mname: &[u8],
+        key: Option<&PhpStr>,
         dst: Reg,
         base: Reg,
         argc: u16,
         ctor: bool,
     ) -> Result<(), Thrown> {
         let cls = self.resolve_class_autoload(top, class)?;
-        if let Some((m, this, called)) = self.static_call_fast(top, class, cls, mname, ctor) {
+        if let Some((m, this, called)) = self.static_call_fast(top, class, cls, mname, key, ctor) {
             return self.enter_method(top, &m, this, called, dst, base, argc);
         }
         match self.static_call_target(top, class, cls, mname, ctor)? {
@@ -894,26 +900,48 @@ impl Vm {
         if self.is_internal_frame(caller) {
             return None;
         }
-        let (name, min, max) = match frame.defining_class {
+        let (cname, fname, min, max) = match frame.defining_class {
             Some(cls) if self.is_internal_class(cls) => {
                 let cname = self.class(cls).name.as_bytes();
                 // Their php bodies throw without parsing any argument, or
                 // parse them quietly (DatePeriod's three signatures).
+                // IntlGregorianCalendar's counts its arguments itself.
                 if (cname.eq_ignore_ascii_case(b"WeakReference")
-                    || cname.eq_ignore_ascii_case(b"DatePeriod"))
+                    || cname.eq_ignore_ascii_case(b"DatePeriod")
+                    || cname.eq_ignore_ascii_case(b"IntlGregorianCalendar"))
                     && proto.name.as_bytes().eq_ignore_ascii_case(b"__construct")
                 {
                     return None;
                 }
                 let st = rhp_bytecode::signatures::method(cname, proto.name.as_bytes())?;
-                let name = format!("{}::{}", String::from_utf8_lossy(cname), st.name);
-                (name, st.min_args(), st.max_args())
+                // IntlCalendar::set() deprecates more than 2 arguments
+                // before zpp counts them; its body checks the maximum.
+                let max = if cname.eq_ignore_ascii_case(b"IntlCalendar")
+                    && proto.name.as_bytes().eq_ignore_ascii_case(b"set")
+                {
+                    None
+                } else {
+                    st.max_args()
+                };
+                (Some(cname), st.name, st.min_args(), max)
             }
             Some(_) => return None,
             None => {
+                if proto.name.as_bytes() == b"intlgregcal_create_instance" {
+                    return None;
+                }
                 let f = rhp_bytecode::signatures::function(proto.name.as_bytes())?;
-                (f.name.to_string(), f.min_args(), f.max_args())
+                (None, f.name, f.min_args(), f.max_args())
             }
+        };
+        let fits = passed >= min && max.is_none_or(|m| passed <= m);
+        if fits && passed <= proto.params.len() {
+            return None;
+        }
+        // The message name, built only on the way to an error.
+        let name = match (cname, fname) {
+            (Some(c), n) => format!("{}::{n}", String::from_utf8_lossy(c)),
+            (None, n) => n.to_string(),
         };
         if let Some(e) = zpp_count_error(&name, min, max, passed) {
             return Some(e);
@@ -1329,7 +1357,7 @@ impl Vm {
         // __invoke() takes the closure's own parameters; the variadic
         // `$args` of call() collects unknown names for the closure.
         let invoke = mname.eq_ignore_ascii_case(b"__invoke");
-        let (mut argv, named) = if named.is_empty() || invoke {
+        let (argv, named) = if named.is_empty() || invoke {
             (argv, named)
         } else {
             self.place_method_named_args("Closure", mname, argv, named)?
@@ -1337,12 +1365,14 @@ impl Vm {
         Ok(match mname.to_ascii_lowercase().as_slice() {
             b"__invoke" if !named.is_empty() => self.call_named(o, argv, named, None)?,
             b"call" if !named.is_empty() && !argv.is_empty() => {
-                let new_this = argv.remove(0);
-                let bound = self.closure_call_target(o, &new_this)?;
+                let bound = self.closure_call_target(o, &argv[0])?;
                 if matches!(bound, Value::Null) {
                     Value::Null
                 } else {
-                    let r = self.call_named(&bound, argv, named, None);
+                    let rest = argv[1..].to_vec();
+                    let r = self.in_closure_call(o, &argv, &named, |vm| {
+                        vm.call_named(&bound, rest, named.clone(), None)
+                    });
                     self.closure_call_done(o, &bound);
                     r?
                 }
@@ -1351,11 +1381,38 @@ impl Vm {
         })
     }
 
+    /// Run `f` with `Closure->call(...)` on the trace: php runs the closure
+    /// from Closure::call's internal frame.
+    fn in_closure_call(
+        &mut self,
+        closure: &Value,
+        args: &[Value],
+        named: &[(PhpStr, Value)],
+        f: impl FnOnce(&mut Self) -> Result<Value, Thrown>,
+    ) -> Result<Value, Thrown> {
+        self.native_calls.push(NativeCall {
+            name: "call",
+            args: args as *const [Value],
+            shown_str: 0,
+            caller: self.stack.len() - 1,
+            frameless_icall: false,
+            named: named as *const [(PhpStr, Value)],
+            method_of: Some(("Closure", closure.clone())),
+        });
+        let r = match f(self) {
+            // An engine error is created with the call still on the trace.
+            Err(e @ Thrown::Error { .. }) => Err(self.materialize(e, None)),
+            r => r,
+        };
+        self.native_calls.pop();
+        r
+    }
+
     pub(crate) fn closure_method(
         &mut self,
         closure: &Value,
         mname: &[u8],
-        mut args: Vec<Value>,
+        args: Vec<Value>,
     ) -> Result<Value, Thrown> {
         let lc = mname.to_ascii_lowercase();
         if let Some(e) = native_method_count_error("Closure", &lc, args.len()) {
@@ -1376,16 +1433,32 @@ impl Vm {
             }
             b"call" => {
                 // Temporarily binds `$this` AND the scope to the new object.
-                let new_this = args.remove(0);
-                let bound = self.closure_call_target(closure, &new_this)?;
+                let bound = self.closure_call_target(closure, &args[0])?;
                 if matches!(bound, Value::Null) {
                     return Ok(Value::Null);
                 }
-                let r = self.call_callable_value(&bound, args);
+                let rest = args[1..].to_vec();
+                let r = self.in_closure_call(closure, &args, &[], |vm| {
+                    vm.call_callable_value(&bound, rest)
+                });
                 self.closure_call_done(closure, &bound);
                 r
             }
             b"__invoke" => self.call_callable_value(closure, args),
+            // zend_bad_method_call on Closure's private constructor.
+            b"__construct" => {
+                let from = match self.stack.last().and_then(|f| f.defining_class) {
+                    Some(c) => format!(
+                        "scope {}",
+                        String::from_utf8_lossy(self.class(c).name.as_bytes())
+                    ),
+                    None => "global scope".to_string(),
+                };
+                Err(Thrown::error(
+                    "Error",
+                    format!("Call to private method Closure::__construct() from {from}"),
+                ))
+            }
             _ => Err(Thrown::error(
                 "Error",
                 format!(
@@ -1498,10 +1571,22 @@ impl Vm {
                     .fcc_scope
                     .replace(Some((cd.bound_class, cd.bound_static)));
                 let saved_this = self.fcc_this.replace(cd.bound_this.clone());
-                // A dynamic call's raw arguments, as plain values.
+                // A dynamic call's raw arguments: references for the
+                // wrapped callee's by-reference parameters, else values.
                 let args = if dynamic {
-                    let args = self.settle_undef_args(args, |_| false)?;
-                    args.iter().map(deref).collect()
+                    let proto = self.callable_proto(&w).map(|(p, _)| p);
+                    let refs: Vec<bool> = (0..args.len() as u16)
+                        .map(|i| match &proto {
+                            Some(p) => param_is_ref(p, i),
+                            None => self.builtin_callable_arg_is_ref(&w, i),
+                        })
+                        .collect();
+                    let is_ref = |i: usize| refs.get(i).copied().unwrap_or(false);
+                    let args = self.settle_undef_args(args, is_ref)?;
+                    args.into_iter()
+                        .enumerate()
+                        .map(|(i, a)| if is_ref(i) { a } else { deref(&a) })
+                        .collect()
                 } else {
                     args
                 };
@@ -1876,6 +1961,28 @@ impl Vm {
             Some(caller) => {
                 // Reg::MAX means "discard" (constructor / __clone return value).
                 if frame.ret_dst != Reg::MAX {
+                    if matches!(
+                        value,
+                        Value::Object(_) | Value::Array(_) | Value::Closure(_)
+                    ) && self.frame_at_discarded_call(caller)
+                    {
+                        // ZEND_RETURN frees an unused result before the
+                        // callee's variables and `$this` (the handles come
+                        // back in that order).
+                        let dst = frame.ret_dst;
+                        let mut frame = frame;
+                        drop(value);
+                        // The returned temporary still holds it.
+                        let n = (frame.proto.num_cvs as usize).min(frame.regs.len());
+                        for slot in &mut frame.regs[n..] {
+                            if let Value::Object(_) | Value::Array(_) | Value::Closure(_) = slot {
+                                *slot = Value::Null;
+                            }
+                        }
+                        drop(frame);
+                        self.reg_set(caller, dst, Value::Null);
+                        return None;
+                    }
                     self.reg_set(caller, frame.ret_dst, value);
                 }
                 None
@@ -2380,6 +2487,17 @@ impl Vm {
 
     /// The user-code proto a callable value would run (for named-argument
     /// placement before a dynamic call), with its scope class.
+    /// Whether the builtin callable `c` takes argument `idx` by reference.
+    #[inline(never)]
+    pub(crate) fn builtin_callable_arg_is_ref(&self, c: &Value, idx: u16) -> bool {
+        use rhp_bytecode::signatures::Signature;
+        match self.resolve_callable(c) {
+            Ok(Callee::Builtin(n)) => rhp_bytecode::signatures::function(n.as_bytes())
+                .is_some_and(|s| s.by_ref(idx as usize)),
+            _ => false,
+        }
+    }
+
     pub(crate) fn callable_proto(&self, c: &Value) -> Option<(Rc<FunctionProto>, Option<ClassId>)> {
         if let Value::Closure(cd) = deref(c) {
             return match &cd.wrapped {
@@ -2989,10 +3107,13 @@ pub(crate) fn is_engine_helper_name(name: &[u8]) -> bool {
 }
 
 /// A magic or ArrayAccess method of a built-in class whose php stub has no
-/// such method: the prelude's stand-in for php's property, dimension and
-/// `get_method` handlers (SimpleXML, DOM, XMLReader, SPL's forwarding).
+/// such method: the prelude's stand-in for php's property, dimension,
+/// `get_method` and `get_constructor` handlers (SimpleXML, DOM, XMLReader,
+/// SPL's forwarding, PDORow and the opaque handle classes).
 pub(crate) fn is_handler_accessor(class: &[u8], method: &[u8]) -> bool {
     const ACCESSORS: &[&[u8]] = &[
+        // php's get_constructor refusing `new` (CurlHandle, XMLParser…).
+        b"__construct",
         b"__get",
         b"__set",
         b"__isset",

@@ -99,8 +99,9 @@ impl Sapi for CaptureSapi {
         self.initial_code
     }
 
-    fn ub_write(&mut self, data: &[u8]) {
+    fn ub_write(&mut self, data: &[u8]) -> bool {
         self.sink.borrow_mut().stdout.extend_from_slice(data);
+        true
     }
 
     fn send_headers(&mut self, r: &Response) {

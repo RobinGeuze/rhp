@@ -85,6 +85,17 @@ class Compare(unittest.TestCase):
         self.assertEqual(c["new"], [])
         self.assertEqual(dict(c["reasons"]), {"fail: Error: nope #N": 1, "part B not run": 2})
 
+    def test_missing_from_a_run_is_not_flaky(self):
+        # Part B died in the second php run: its tests are incomplete, not unstable.
+        php = results({"A": (0, {"a": ["pass", ""]}), "B": (0, {"b": ["pass", ""], "c": ["fail", "x"]})})
+        php2 = results({"A": (0, {"a": ["pass", ""]}), "B": (139, {"c": ["fail", "x"]})})
+        php3 = results({"A": (0, {"a": ["fail", "z"]}), "B": (0, {"b": ["pass", ""], "c": ["fail", "x"]})})
+        rhp = results({"A": (0, {"a": ["pass", ""]}), "B": (0, {"b": ["pass", ""], "c": ["pass", ""]})})
+        c = suites.compare("s", [php, php2, php3], rhp, known=["b"], flaky=[])
+        self.assertEqual(c["unstable"], ["a"])
+        self.assertEqual(c["incomplete"], ["b"])
+        self.assertEqual((c["passing"], c["regressions"], c["env"]), ([], [], []))
+
     def test_flaky_left_out(self):
         php = results({"A": (0, {"a": ["pass", ""], "b": ["pass", ""]})})
         rhp = results({"A": (0, {"a": ["pass", ""]})})

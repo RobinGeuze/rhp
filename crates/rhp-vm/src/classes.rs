@@ -44,7 +44,7 @@ pub struct ClassEntry {
     /// by *storage key*: the plain name for public/protected properties, the
     /// php-mangled `"\0Class\0name"` for private ones — so a parent's private
     /// `$x` and a child's `$x` are two distinct slots (see [`prop_storage_key`]).
-    pub props: IndexMap<PhpStr, PropEntry>,
+    pub props: IndexMap<PhpStr, PropEntry, FxBuildHasher>,
     /// The objects' slot layout: `props`' keys, slot `i` for entry `i`
     /// (a virtual property's slot stays empty).
     pub layout: Rc<rhp_values::PropLayout>,
@@ -56,9 +56,9 @@ pub struct ClassEntry {
     /// calling scope, so its methods see their own private slot.
     pub own_private: FxHashMap<PhpStr, PhpStr>,
     /// Flattened class constants (case-sensitive), in php's member order.
-    pub constants: IndexMap<Vec<u8>, ClassConst>,
+    pub constants: IndexMap<Vec<u8>, ClassConst, FxBuildHasher>,
     /// Flattened static-property slots (shared cells; inherited ones alias).
-    pub static_props: IndexMap<Vec<u8>, StaticProp>,
+    pub static_props: IndexMap<Vec<u8>, StaticProp, FxBuildHasher>,
     /// Enum case singletons in declaration order (empty for non-enums).
     pub enum_cases: Vec<ObjectHandle>,
     /// Backing type of a backed enum (`None` for pure enums / non-enums).
@@ -89,6 +89,9 @@ pub struct ClassEntry {
     /// Some static property has a type or a set visibility: static
     /// property writes take the checked path only for such classes.
     pub checked_statics: bool,
+    /// What property and method lookups on this class resolved to
+    /// (`lookup_cache`).
+    pub(crate) cache: crate::lookup_cache::ClassCache,
 }
 
 #[derive(Clone)]
@@ -317,6 +320,35 @@ pub(crate) fn resolve_prop(
 /// offset; `usize::MAX` otherwise), for the paths that then read or write it.
 #[inline]
 pub(crate) fn resolve_prop_at(
+    classes: &[ClassEntry],
+    cls: ClassId,
+    scope: Option<ClassId>,
+    name: &PhpStr,
+) -> (PropRes, usize) {
+    let entry = &classes[cls as usize];
+    if let Some(at) = entry.cache.prop(name, scope) {
+        if let Some((k, pe)) = entry.props.get_index(at) {
+            if pe.name == *name {
+                return (PropRes::Slot(k.clone()), at);
+            }
+        }
+    }
+    let r = resolve_prop_uncached(classes, cls, scope, name);
+    if let (PropRes::Slot(_), at) = &r {
+        if entry
+            .props
+            .get_index(*at)
+            .is_some_and(|(_, pe)| pe.name == *name)
+        {
+            entry.cache.put_prop(name, scope, *at);
+        }
+    }
+    r
+}
+
+/// [`resolve_prop_at`] without the cache.
+#[inline(never)]
+fn resolve_prop_uncached(
     classes: &[ClassEntry],
     cls: ClassId,
     scope: Option<ClassId>,
@@ -618,7 +650,7 @@ fn verify_hooked_props(
     classes: &[ClassEntry],
     class_name: &PhpStr,
     id: ClassId,
-    props: &mut IndexMap<PhpStr, PropEntry>,
+    props: &mut IndexMap<PhpStr, PropEntry, FxBuildHasher>,
 ) -> Result<(), String> {
     let _ = classes;
     let cn = String::from_utf8_lossy(class_name.as_bytes()).into_owned();
@@ -889,6 +921,16 @@ pub(crate) fn with_lc<R>(name: &[u8], f: impl FnOnce(&[u8]) -> R) -> R {
     }
 }
 
+impl Vm {
+    /// The function table index of `name` (any case, a leading `\\`
+    /// dropped), without a copy for a name of up to 64 bytes.
+    #[inline]
+    pub(crate) fn fn_index(&self, name: &[u8]) -> Option<usize> {
+        let n = name.strip_prefix(b"\\").unwrap_or(name);
+        with_lc(n, |k| self.fn_names.get(k).copied())
+    }
+}
+
 fn unit_fn(proto: &Rc<FunctionProto>, unit: UnitId) -> UnitFn {
     UnitFn {
         proto: proto.clone(),
@@ -953,7 +995,8 @@ fn copy_classes(classes: &[ClassEntry], capacity: usize) -> Vec<ClassEntry> {
     };
     let mut out = Vec::with_capacity(capacity.max(classes.len()));
     for e in classes {
-        let mut static_props = IndexMap::with_capacity(e.static_props.len());
+        let mut static_props =
+            IndexMap::with_capacity_and_hasher(e.static_props.len(), FxBuildHasher);
         for (k, sp) in &e.static_props {
             let sp = StaticProp {
                 cell: fresh(&sp.cell),
@@ -988,6 +1031,7 @@ fn copy_classes(classes: &[ClassEntry], capacity: usize) -> Vec<ClassEntry> {
             create_object: e.create_object,
             hooked: e.hooked,
             checked_statics: e.checked_statics,
+            cache: Default::default(),
         });
     }
     out
@@ -1019,10 +1063,12 @@ impl Vm {
                 }
             }
             self.incomplete_class = self.class_ids.get(&b"__php_incomplete_class"[..]).copied();
+            self.throwable_class = self.class_ids.get(&b"throwable"[..]).copied();
             return Ok(());
         }
         self.install_classes(protos, 0)?;
         self.incomplete_class = self.class_ids.get(&b"__php_incomplete_class"[..]).copied();
+        self.throwable_class = self.class_ids.get(&b"throwable"[..]).copied();
         if PRELUDE_LINKED_ONCE.with(|l| l.replace(true)) {
             let p = LinkedPrelude {
                 protos: protos.to_vec(),
@@ -1465,6 +1511,13 @@ impl Vm {
         for iname in ifaces_for_methods {
             let iid = self.class_ids[&lc(iname.as_bytes())];
             for (k, m) in &self.classes[iid as usize].methods {
+                // An enum's cases()/from()/tryFrom() are the engine's
+                // (zend_enum_register_funcs), not UnitEnum's abstract ones.
+                if proto.kind == ClassKind::Enum
+                    && matches!(k.as_slice(), b"cases" | b"from" | b"tryfrom")
+                {
+                    continue;
+                }
                 if !methods.contains_key(k) {
                     methods.insert(k.clone(), m.clone());
                 }
@@ -1477,7 +1530,7 @@ impl Vm {
         // keeps its inherited slot (same plain key, same position); a property
         // whose inherited declaration is a parent *private* gets a fresh slot
         // appended, leaving the parent's private slot in place (php shadowing).
-        let mut props: IndexMap<PhpStr, PropEntry> = parent
+        let mut props: IndexMap<PhpStr, PropEntry, FxBuildHasher> = parent
             .map(|p| self.classes[p as usize].props.clone())
             .unwrap_or_default();
         let mut prop_visible: FxHashMap<PhpStr, PhpStr> = parent
@@ -1485,21 +1538,22 @@ impl Vm {
             .unwrap_or_default();
         let mut own_private: FxHashMap<PhpStr, PhpStr> = FxHashMap::default();
         let classes = &self.classes;
-        let mut declare =
-            |props: &mut IndexMap<PhpStr, PropEntry>, mut pe: PropEntry| -> Result<(), String> {
-                // Redeclaring an inherited public/protected property keeps its
-                // root declaration as the prototype.
-                if let Some(inh) = prop_visible.get(&pe.name).and_then(|k| props.get(k)) {
-                    inherit_prop(classes, &proto.name, inh, &mut pe)?;
-                }
-                let key = prop_storage_key(&proto.name, &pe.name, pe.visibility);
-                prop_visible.insert(pe.name.clone(), key.clone());
-                if pe.visibility == Visibility::Private {
-                    own_private.insert(pe.name.clone(), key.clone());
-                }
-                props.insert(key, pe);
-                Ok(())
-            };
+        let mut declare = |props: &mut IndexMap<PhpStr, PropEntry, FxBuildHasher>,
+                           mut pe: PropEntry|
+         -> Result<(), String> {
+            // Redeclaring an inherited public/protected property keeps its
+            // root declaration as the prototype.
+            if let Some(inh) = prop_visible.get(&pe.name).and_then(|k| props.get(k)) {
+                inherit_prop(classes, &proto.name, inh, &mut pe)?;
+            }
+            let key = prop_storage_key(&proto.name, &pe.name, pe.visibility);
+            prop_visible.insert(pe.name.clone(), key.clone());
+            if pe.visibility == Visibility::Private {
+                own_private.insert(pe.name.clone(), key.clone());
+            }
+            props.insert(key, pe);
+            Ok(())
+        };
         let mut link_err: Option<String> = parent
             .and_then(|p| static_prop_errors(&self.classes, proto, &self.classes[p as usize]));
         // zend_enum_register_props: `name` (and a backed enum's `value`) are
@@ -1677,12 +1731,12 @@ impl Vm {
         let hooked = props.values().any(|pe| pe.hooks.is_some());
 
         // Static properties (inherited slots alias; redeclared get a fresh cell).
-        let mut static_props: IndexMap<Vec<u8>, StaticProp> = parent
+        let mut static_props: IndexMap<Vec<u8>, StaticProp, FxBuildHasher> = parent
             .map(|p| self.classes[p as usize].static_props.clone())
             .unwrap_or_default();
         // A redeclared inherited public/protected static keeps the root
         // declaration as its prototype.
-        let static_proto = |props: &IndexMap<Vec<u8>, StaticProp>, name: &[u8]| {
+        let static_proto = |props: &IndexMap<Vec<u8>, StaticProp, FxBuildHasher>, name: &[u8]| {
             props
                 .get(name)
                 .filter(|inh| inh.visibility != Visibility::Private)
@@ -1751,7 +1805,7 @@ impl Vm {
         self.check_const_inheritance(proto, parent)?;
         self.check_const_types(proto, parent)?;
         // A parent's private constants are not inherited (do_inherit_constant).
-        let mut constants: IndexMap<Vec<u8>, ClassConst> = parent
+        let mut constants: IndexMap<Vec<u8>, ClassConst, FxBuildHasher> = parent
             .map(|p| {
                 self.classes[p as usize]
                     .constants
@@ -1965,6 +2019,7 @@ impl Vm {
             create_object,
             hooked,
             checked_statics,
+            cache: Default::default(),
         });
         let inherits_hooks = {
             let e = &self.classes[id as usize];
@@ -1985,6 +2040,8 @@ impl Vm {
         {
             self.classes.pop();
             self.class_ids.remove(&lc(proto.name.as_bytes()));
+            // The id is used again: entries naming it as a scope go.
+            self.flush_lookup_caches();
             self.class_order.pop();
             return Ok(false);
         }
@@ -2117,7 +2174,7 @@ impl Vm {
     pub(crate) fn resolve_class(&self, top: usize, class: ClassRef) -> Result<ClassId, Thrown> {
         match class {
             ClassRef::Name(nidx) => {
-                self.resolve_class_by_name(self.stack[top].proto.names[nidx as usize].as_bytes())
+                self.resolve_class_by_str(&self.stack[top].proto.names[nidx as usize])
             }
             // zend_fetch_class's messages.
             ClassRef::SelfClass => self.stack[top].defining_class.ok_or_else(|| {
@@ -2270,6 +2327,31 @@ impl Vm {
         })
     }
 
+    /// [`Vm::resolve_class_by_name`] for a name a proto holds, through the
+    /// VM's class-name cache (php's FETCH_CLASS run-time cache slot).
+    #[inline]
+    pub(crate) fn resolve_class_by_str(&self, name: &PhpStr) -> Result<ClassId, Thrown> {
+        if let Some(id) = self.class_names.get(name) {
+            // A removed class's id may belong to another class now.
+            if self
+                .classes
+                .get(id as usize)
+                .is_some_and(|c| c.name.as_bytes().eq_ignore_ascii_case(name.as_bytes()))
+            {
+                return Ok(id);
+            }
+        }
+        let id = self.resolve_class_by_name(name.as_bytes())?;
+        if self.classes[id as usize]
+            .name
+            .as_bytes()
+            .eq_ignore_ascii_case(name.as_bytes())
+        {
+            self.class_names.put(name, id);
+        }
+        Ok(id)
+    }
+
     pub(crate) fn class(&self, id: ClassId) -> &ClassEntry {
         &self.classes[id as usize]
     }
@@ -2330,6 +2412,40 @@ impl Vm {
                 String::from_utf8_lossy(member),
             ),
         )
+    }
+
+    /// The cell of static property `name` (a proto's) of `cls`, through the
+    /// class's lookup cache, when frame `top` may access it and there is
+    /// nothing left to do first: the class's initializers ran and it is no
+    /// trait (what [`Vm::check_static_prop_access`] and
+    /// [`Vm::static_prop_cell`] then do with nothing to report). `None`:
+    /// take that path.
+    #[inline]
+    pub(crate) fn static_prop_plain(
+        &self,
+        top: usize,
+        cls: ClassId,
+        name: &PhpStr,
+    ) -> Option<&Rc<RefCell<Value>>> {
+        let ce = &self.classes[cls as usize];
+        if !ce.updated || ce.kind == ClassKind::Trait {
+            return None;
+        }
+        let sp = match ce.cache.static_prop(name) {
+            Some(i) => match ce.static_props.get_index(i) {
+                Some((k, sp)) if k[..] == *name.as_bytes() => sp,
+                _ => return None,
+            },
+            None => {
+                let (i, _, sp) = ce.static_props.get_full(name.as_bytes())?;
+                ce.cache.put_static_prop(name, i);
+                sp
+            }
+        };
+        if sp.init.is_some() || !self.static_prop_accessible(self.stack[top].defining_class, sp) {
+            return None;
+        }
+        Some(&sp.cell)
     }
 
     pub(crate) fn static_prop_cell(
@@ -2408,7 +2524,11 @@ impl Vm {
         let obj = Rc::new(RefCell::new(ObjectData::new(class_id, id, properties)));
         // Throwables record their creation site (file/line/trace) at creation,
         // before any constructor runs (zend_default_exception_new).
-        if self.class_implements(class_id, b"Throwable") {
+        let throwable = match self.throwable_class {
+            Some(t) => self.classes[class_id as usize].ancestors.contains(&t),
+            None => self.class_implements(class_id, b"Throwable"),
+        };
+        if throwable {
             self.init_throwable(&obj);
         }
         self.track_destructible(&obj);
@@ -2419,6 +2539,27 @@ impl Vm {
     pub(crate) fn lookup_method(&self, class_id: ClassId, name: &[u8]) -> Option<ResolvedMethod> {
         let methods = &self.classes[class_id as usize].methods;
         with_lc(name, |k| methods.get(k).cloned())
+    }
+
+    /// [`Vm::lookup_method`] for a name a proto holds (an `INIT_METHOD_CALL`
+    /// operand), through the class's lookup cache.
+    #[inline]
+    pub(crate) fn lookup_method_str(
+        &self,
+        class_id: ClassId,
+        name: &PhpStr,
+    ) -> Option<ResolvedMethod> {
+        let e = &self.classes[class_id as usize];
+        if let Some(i) = e.cache.method(name) {
+            if let Some((k, m)) = e.methods.get_index(i) {
+                if k.eq_ignore_ascii_case(name.as_bytes()) {
+                    return Some(m.clone());
+                }
+            }
+        }
+        let (i, _, m) = with_lc(name.as_bytes(), |k| e.methods.get_full(k))?;
+        e.cache.put_method(name, i);
+        Some(m.clone())
     }
 
     /// Push a frame for a method call, binding `$this` and the LSB classes.

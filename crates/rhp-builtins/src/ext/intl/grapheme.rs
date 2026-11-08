@@ -11,9 +11,7 @@ use std::ptr;
 use rhp_values::{PhpArray, Value};
 
 use super::sys::{self, UBreakIterator, UChar, UErrorCode, UBRK_DONE, USEARCH_DONE};
-use super::{
-    error_set, error_set_code, error_set_msg, has_oom, path_arg, utf16_to_utf8, utf8_to_utf16,
-};
+use super::{has_oom, path_arg, utf16_to_utf8, utf8_to_utf16};
 use crate::zend::zpp::{bool_arg_or, int_arg, int_arg_or, opt_int_arg, str_arg, value_error};
 use crate::{Host, Thrown};
 
@@ -253,7 +251,9 @@ fn split_string(text: &[UChar]) -> i32 {
 
 /// `grapheme_strpos_utf16`: `Some((grapheme position, code point position))`
 /// (the second is -1 for an empty needle), `None` for -1.
+#[allow(clippy::too_many_arguments)]
 fn strpos_utf16(
+    host: &mut dyn Host,
     fname: &str,
     haystack: &[u8],
     needle: &[u8],
@@ -266,11 +266,12 @@ fn strpos_utf16(
         return Ok(None);
     }
     // STRPOS_CHECK_STATUS
-    let fail = |status: UErrorCode, msg: &str| -> Result<Option<(i32, i32)>, Thrown> {
-        error_set_code(status);
-        error_set_msg(fname, msg);
-        Ok(None)
-    };
+    macro_rules! fail {
+        ($status:expr, $msg:expr) => {{
+            super::error::set(host, fname, $status, $msg)?;
+            return Ok(None);
+        }};
+    }
     let offset_error = || {
         value_error(
             fname,
@@ -281,23 +282,23 @@ fn strpos_utf16(
     };
     let uhaystack = match utf8_to_utf16(haystack) {
         Ok(u) => u,
-        Err(st) => return fail(st, "Error converting input string to UTF-16"),
+        Err(st) => fail!(st, "Error converting input string to UTF-16"),
     };
     let uneedle = match utf8_to_utf16(needle) {
         Ok(u) => u,
-        Err(st) => return fail(st, "Error converting needle string to UTF-16"),
+        Err(st) => fail!(st, "Error converting needle string to UTF-16"),
     };
     let mut status = sys::U_ZERO_ERROR;
     let bi = Bi::get(&mut status);
     if sys::failure(status) {
-        return fail(status, "Failed to get iterator");
+        fail!(status, "Failed to get iterator")
     }
     let Some(mut bi) = bi else {
-        return fail(sys::U_ILLEGAL_ARGUMENT_ERROR, "Failed to get iterator");
+        fail!(sys::U_ILLEGAL_ARGUMENT_ERROR, "Failed to get iterator")
     };
     bi.set_text(&uhaystack, &mut status);
     if sys::failure(status) {
-        return fail(status, "Failed to set up iterator");
+        fail!(status, "Failed to set up iterator")
     }
 
     if uneedle.is_empty() {
@@ -329,7 +330,7 @@ fn strpos_utf16(
         )
     };
     if sys::failure(status) || p.is_null() {
-        return fail(status, "Error creating search object");
+        fail!(status, "Error creating search object")
     }
     let src = Search {
         p,
@@ -344,7 +345,7 @@ fn strpos_utf16(
             sys::ucol_setAttribute(coll, sys::UCOL_STRENGTH, sys::UCOL_SECONDARY, &mut status);
         }
         if sys::failure(status) {
-            return fail(status, "Error setting collation strength");
+            fail!(status, "Error setting collation strength")
         }
         // SAFETY: a live search.
         unsafe { sys::usearch_reset(src.p) };
@@ -360,7 +361,7 @@ fn strpos_utf16(
         // SAFETY: a live search.
         unsafe { sys::usearch_setOffset(src.p, if last { 0 } else { offset_pos }, &mut status) };
         if sys::failure(status) {
-            return fail(status, "Invalid search offset");
+            fail!(status, "Invalid search offset")
         }
     }
 
@@ -390,7 +391,7 @@ fn strpos_utf16(
                 // SAFETY: a live search.
                 unsafe { sys::usearch_setOffset(src.p, next, &mut status) };
                 if sys::failure(status) {
-                    return fail(status, "Invalid search offset");
+                    fail!(status, "Invalid search offset")
                 }
             }
         }
@@ -399,7 +400,7 @@ fn strpos_utf16(
         unsafe { sys::usearch_next(src.p, &mut status) }
     };
     if sys::failure(status) {
-        return fail(status, "Error looking up string");
+        fail!(status, "Error looking up string")
     }
     if char_pos != USEARCH_DONE && bi.is_boundary(char_pos) {
         let n = count_graphemes(&mut bi, &uhaystack[..char_pos as usize]);
@@ -482,7 +483,7 @@ pub(super) fn fn_strpos(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         }
     }
     Ok(ret_pos(strpos_utf16(
-        f, &a.h, &a.n, a.offset, false, false, &a.locale,
+        host, f, &a.h, &a.n, a.offset, false, false, &a.locale,
     )?))
 }
 
@@ -505,7 +506,7 @@ pub(super) fn fn_stripos(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
         }
     }
     Ok(ret_pos(strpos_utf16(
-        f, &a.h, &a.n, a.offset, true, false, &a.locale,
+        host, f, &a.h, &a.n, a.offset, true, false, &a.locale,
     )?))
 }
 
@@ -542,7 +543,7 @@ pub(super) fn fn_strrpos(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
         }
     }
     Ok(ret_pos(strpos_utf16(
-        f, &a.h, &a.n, a.offset, false, true, &a.locale,
+        host, f, &a.h, &a.n, a.offset, false, true, &a.locale,
     )?))
 }
 
@@ -560,7 +561,7 @@ pub(super) fn fn_strripos(host: &mut dyn Host, args: &[Value]) -> Result<Value, 
         }
     }
     Ok(ret_pos(strpos_utf16(
-        f, &a.h, &a.n, a.offset, true, true, &a.locale,
+        host, f, &a.h, &a.n, a.offset, true, true, &a.locale,
     )?))
 }
 
@@ -632,15 +633,17 @@ pub(super) fn fn_substr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         sub_start = 0;
         bi.first();
     }
-    let out = |from: i32, to: usize| match utf16_to_utf8(&u[from as usize..to]) {
-        Ok(b) => Value::str(b),
+    // INTL_CHECK_STATUS on the conversion
+    let out = |host: &mut dyn Host, from: i32, to: usize| match utf16_to_utf8(&u[from as usize..to])
+    {
+        Ok(b) => Ok(Value::str(b)),
         Err(st) => {
-            error_set(f, st, "Error converting output string to UTF-8");
-            Value::Bool(false)
+            super::error::set(host, f, st, "Error converting output string to UTF-8")?;
+            Ok(Value::Bool(false))
         }
     };
     if length >= s.len() as i32 as i64 {
-        return Ok(out(sub_start, u.len()));
+        return out(host, sub_start, u.len());
     }
     if length == 0 {
         return Ok(Value::str(""));
@@ -669,7 +672,7 @@ pub(super) fn fn_substr(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     if sub_start > sub_end {
         return Ok(Value::str(""));
     }
-    Ok(out(sub_start, sub_end as usize))
+    out(host, sub_start, sub_end as usize)
 }
 
 fn strstr_common(host: &mut dyn Host, args: &[Value], ignore_case: bool) -> Result<Value, Thrown> {
@@ -689,7 +692,8 @@ fn strstr_common(host: &mut dyn Host, args: &[Value], ignore_case: bool) -> Resu
             Some(o) => Value::str(&h[o..]),
         });
     }
-    let Some((_, uchar_pos)) = strpos_utf16(f, &h, &n, 0, ignore_case, false, &locale)? else {
+    let Some((_, uchar_pos)) = strpos_utf16(host, f, &h, &n, 0, ignore_case, false, &locale)?
+    else {
         return Ok(Value::Bool(false));
     };
     // U8_FWD_N over the (valid UTF-8) haystack.
@@ -775,12 +779,18 @@ pub(super) fn fn_extract(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
     let extract_type = int_arg_or(host, args, 2, f, "type", 0)?;
     let mut lstart = int_arg_or(host, args, 3, f, "offset", 0)?;
     let has_next = matches!(args.get(4), Some(Value::Ref(_)));
-    let set_next = |v: i64| crate::zend::zpp::set_ref(args, 4, Value::Int(v));
+    // ZEND_TRY_ASSIGN_REF_LONG: a typed reference converts the value
+    let set_next = |host: &mut dyn Host, v: i64| -> Result<(), Thrown> {
+        match args.get(4) {
+            Some(Value::Ref(r)) => host.assign_ref(r, Value::Int(v)),
+            _ => Ok(()),
+        }
+    };
     if lstart < 0 {
         lstart += s.len() as i64;
     }
     if has_next {
-        set_next(lstart);
+        set_next(host, lstart)?;
     }
     if !(0..=2).contains(&extract_type) {
         return Err(value_error(
@@ -834,7 +844,7 @@ pub(super) fn fn_extract(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
     if p[..check_len].iter().all(|&c| c <= 0x7f) && ascii_check_quirk(p, check_len) {
         let nsize = size.min(p.len());
         if has_next {
-            set_next((start + nsize) as i64);
+            set_next(host, (start + nsize) as i64)?;
         }
         return Ok(Value::str(&p[..nsize]));
     }
@@ -899,7 +909,7 @@ pub(super) fn fn_extract(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
     }
     drop(bi);
     if has_next {
-        set_next((start + ret as usize) as i64);
+        set_next(host, (start + ret as usize) as i64)?;
     }
     Ok(Value::str(&p[..ret as usize]))
 }

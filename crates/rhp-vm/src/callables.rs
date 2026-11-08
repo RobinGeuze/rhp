@@ -149,7 +149,24 @@ impl Vm {
         name: &[u8],
         scope: Option<ClassId>,
     ) -> Result<Option<Found>, Thrown> {
-        match self.lookup_method(cls, name) {
+        self.get_method_by(cls, name, None, scope)
+    }
+
+    /// [`Vm::get_method`], looked up through the class's cache when the
+    /// name is a proto's (`key`).
+    #[inline]
+    pub(crate) fn get_method_by(
+        &self,
+        cls: ClassId,
+        name: &[u8],
+        key: Option<&rhp_values::PhpStr>,
+        scope: Option<ClassId>,
+    ) -> Result<Option<Found>, Thrown> {
+        let found = match key {
+            Some(k) => self.lookup_method_str(cls, k),
+            None => self.lookup_method(cls, name),
+        };
+        match found {
             // Public and not shadowing a private, or the calling scope's own.
             Some(m)
                 if !m.is_abstract
@@ -172,7 +189,21 @@ impl Vm {
         found: Option<ResolvedMethod>,
     ) -> Result<Option<Found>, Thrown> {
         let Some(mut fbc) = found else {
-            return Ok(self.lookup_method(cls, b"__call").map(Found::Call));
+            // zend_std_get_method's __call trampoline wins; then the
+            // class's get_method handler (PDO's driver methods).
+            if let Some(c) = self.lookup_method(cls, b"__call") {
+                return Ok(Some(Found::Call(c)));
+            }
+            if let Some(helper) = self
+                .class(cls)
+                .handlers
+                .and_then(|t| rhp_builtins::zend::object_handlers::driver_method(t, name))
+            {
+                if let Some(m) = self.lookup_method(cls, helper.as_bytes()) {
+                    return Ok(Some(Found::Method(m)));
+                }
+            }
+            return Ok(None);
         };
         if (fbc.visibility != Visibility::Public || fbc.changed)
             && Some(fbc.defining_class) != scope
@@ -387,7 +418,7 @@ impl Vm {
         let ce_org = fcc.calling.take();
         if ce_org.is_none() {
             let name = callable.strip_prefix(b"\\").unwrap_or(callable);
-            if let Some(&idx) = self.fn_names.get(&name.to_ascii_lowercase()) {
+            if let Some(idx) = self.fn_index(callable) {
                 return Ok(Callee::Function(self.functions[idx].clone()));
             }
             if crate::calls::user_visible_builtin(name) {
@@ -620,6 +651,19 @@ impl Vm {
                             Ok(Callee::Closure(cd))
                         } else if let Some(c) = self.closure_std_method(cd, m.as_bytes()) {
                             Ok(c)
+                        } else if let Some(pm) = self
+                            .closure_class()
+                            .and_then(|c| self.lookup_method(c, &m.as_bytes().to_ascii_lowercase()))
+                            .filter(|pm| pm.visibility == Visibility::Private)
+                        {
+                            // zend_std_get_method finds Closure's private
+                            // constructor.
+                            Err([
+                                &b"cannot access private method Closure::"[..],
+                                pm.proto.name.as_bytes(),
+                                b"()",
+                            ]
+                            .concat())
                         } else {
                             Err([
                                 &b"class Closure does not have a method \""[..],
@@ -738,7 +782,7 @@ impl Vm {
                     };
                 }
                 let name = b.strip_prefix(b"\\").unwrap_or(b);
-                if let Some(&idx) = self.fn_names.get(&name.to_ascii_lowercase()) {
+                if let Some(idx) = self.fn_index(b) {
                     return Ok(Callee::Function(self.functions[idx].clone()));
                 }
                 if crate::calls::user_visible_builtin(name) {

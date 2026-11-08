@@ -66,7 +66,9 @@ python3 tests/suites/suites.py run laravel-13 --engine rhp --out /tmp/suites --p
 - `--write-known` rewrites the list (keep each list in step with what rhp
   passes, like the phpt ratchet: drop a line only with a stated reason).
   With several `--ref` runs, `--write-flaky` adds the tests whose outcome
-  varied to `flaky.txt`.
+  varied to `flaky.txt`. A test missing from a run (its part crashed or
+  timed out) is reported as missing, not flaky: it isn't passing that time,
+  and doesn't go to `flaky.txt`.
 - Self-check: three php runs (`--engine php --label php`, `php2`, `php3`)
   compared with `--ref php --ref php2 --cand php3` must leave no unstable
   test outside `flaky.txt`. The nightly's `php_runs` input does the same.

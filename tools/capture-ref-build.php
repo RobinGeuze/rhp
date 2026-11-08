@@ -124,10 +124,13 @@ ext_row('curl', 'curl_version()', function () {
     unset($v['feature_list']);
     return $v;
 });
-foreach (['ICONV_IMPL', 'ICONV_VERSION', 'GMP_VERSION'] as $c) {
+// ZLIB_VERSION is php's compile-time zlib.h; both link the system zlib.
+foreach (['ICONV_IMPL', 'ICONV_VERSION', 'GMP_VERSION', 'ZLIB_VERSION', 'ZLIB_VERNUM'] as $c) {
     row($c, defined($c) ? constant($c) : '(undefined)');
 }
 ext_row('zip', 'ZipArchive::LIBZIP_VERSION', fn () => ZipArchive::LIBZIP_VERSION);
+ext_row('gd', 'GD_VERSION', fn () => GD_VERSION);
+module_rows(['GD library Version']);
 module_rows(['GMP version']);
 ext_row('pdo_sqlite', 'PDO::ATTR_CLIENT_VERSION (sqlite)',
     fn () => (new PDO('sqlite::memory:'))->getAttribute(PDO::ATTR_CLIENT_VERSION));
@@ -143,6 +146,6 @@ foreach (['PHP_BUILD_DATE', 'PHP_BUILD_PROVIDER', 'PHP_PREFIX', 'PHP_BINDIR', 'P
 row("ini_get('include_path')", ini_get('include_path'));
 row("ini_get('extension_dir')", ini_get('extension_dir'));
 info_rows(['Build Date', 'Build System', 'Build Provider', 'Configuration File (php.ini) Path']);
-foreach (['MB_ONIGURUMA_VERSION', 'ZLIB_VERSION', 'ZLIB_VERNUM'] as $c) {
+foreach (['MB_ONIGURUMA_VERSION'] as $c) {
     row($c, defined($c) ? constant($c) : '(undefined)');
 }

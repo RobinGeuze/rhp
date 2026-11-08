@@ -6,7 +6,7 @@ interface SplSubject {
     public function notify(): void;
 }
 
-class SplObjectStorage implements Countable, SeekableIterator, ArrayAccess {
+class SplObjectStorage implements Countable, SeekableIterator, Serializable, ArrayAccess {
     private $__o = []; private $__v = []; private $__k = []; private $__p = 0; private $__pos = -1; private $__rw = false;
     // php's own storage operations: an overriding offsetSet() and friends
     // are not called (offsetSet is attach's alias in php).
@@ -17,11 +17,12 @@ class SplObjectStorage implements Countable, SeekableIterator, ArrayAccess {
     #[\Deprecated(since: '8.5', message: "use method SplObjectStorage::offsetExists() instead")]
     public function contains(object $object): bool { return self::offsetExists($object); }
     public function addAll(SplObjectStorage $storage): int {
-        foreach ($storage->__o as $h => $o) { $this->__o[$h] = $o; $this->__v[$h] = $storage->__v[$h]; }
+        // spl_object_storage_attach for each: this storage's own hash.
+        foreach ($storage->__o as $h => $o) { $inf = $storage->__v[$h]; $k = $this->__hash($o); $this->__o[$k] = $o; $this->__v[$k] = $inf; }
         return count($this->__o);
     }
     public function removeAll(SplObjectStorage $storage): int {
-        foreach ($storage->__o as $o) { $h = $this->getHash($o); unset($this->__o[$h], $this->__v[$h]); }
+        foreach ($storage->__o as $o) { $h = $this->__hash($o); unset($this->__o[$h], $this->__v[$h]); }
         return count($this->__o);
     }
     public function removeAllExcept(SplObjectStorage $storage): int {
@@ -56,17 +57,26 @@ class SplObjectStorage implements Countable, SeekableIterator, ArrayAccess {
         while ($offset > $this->__p) { $this->__fwd(); $this->__p++; }
         while ($offset < $this->__p) { if ($this->__pos > 0) { $this->__pos--; } elseif ($this->__pos === 0) { $this->__pos = -1; } $this->__p--; }
     }
-    public function offsetExists($object): bool { return is_object($object) && array_key_exists($this->getHash($object), $this->__o); }
-    public function offsetGet($object): mixed {
+    // spl_object_storage_get_hash: an overriding getHash() must return a string.
+    private function __hash(object $object): string {
         $h = $this->getHash($object);
+        if (!is_string($h)) { throw new TypeError(static::class . '::getHash(): Return value must be of type string, ' . (is_bool($h) ? ($h ? 'true' : 'false') : get_debug_type($h)) . ' returned'); }
+        return $h;
+    }
+    public function offsetExists($object): bool {
+        $object = __zpp_arg('SplObjectStorage::offsetExists', 1, 'object', 'object', $object);
+        return array_key_exists($this->__hash($object), $this->__o);
+    }
+    public function offsetGet($object): mixed {
+        $h = $this->__hash($object);
         if (!array_key_exists($h, $this->__o)) { throw new UnexpectedValueException('Object not found'); }
         return $this->__v[$h];
     }
     public function offsetSet(mixed $object, mixed $info = null): void {
         if (!is_object($object)) { throw new TypeError('SplObjectStorage::offsetSet(): Argument #1 ($object) must be of type object, ' . get_debug_type($object) . ' given'); }
-        $h = $this->getHash($object); $this->__o[$h] = $object; $this->__v[$h] = $info;
+        $h = $this->__hash($object); $this->__o[$h] = $object; $this->__v[$h] = $info;
     }
-    public function offsetUnset($object): void { $h = $this->getHash($object); unset($this->__o[$h], $this->__v[$h]); }
+    public function offsetUnset($object): void { $h = $this->__hash($object); unset($this->__o[$h], $this->__v[$h]); }
     public function getHash(object $object): string { return spl_object_hash($object); }
     public function __serialize(): array {
         $s = [];
@@ -83,15 +93,17 @@ class SplObjectStorage implements Countable, SeekableIterator, ArrayAccess {
             if (!is_object($s[$i])) { throw new UnexpectedValueException('Non-object key'); }
             $this->offsetSet($s[$i], $s[$i + 1]);
         }
-        // Member names come mangled ("\0*\0a", "\0Class\0a"), as
-        // get_mangled_object_vars() / __serialize() wrote them.
-        foreach ($data[1] as $k => $v) {
-            $k = (string)$k;
-            if ($k !== '' && $k[0] === "\0") {
-                $p = strpos($k, "\0", 1); $c = substr($k, 1, $p - 1); $n = substr($k, $p + 1);
-                \Closure::bind(function () use ($n, $v) { $this->$n = $v; }, $this, $c === '*' ? static::class : $c)();
-            } else { $this->$k = $v; }
-        }
+        // object_properties_load: the members by mangled name.
+        __object_properties_load($this, $data[1]);
+    }
+    public function serialize(): string {
+        __serialize_init();
+        try {
+            $s = 'x:' . serialize(count($this->__o));
+            foreach ($this->__o as $h => $o) { $s .= serialize($o) . ',' . serialize($this->__v[$h]) . ';'; }
+            $s .= 'm:' . serialize(get_mangled_object_vars($this));
+        } finally { __serialize_destroy(); }
+        return $s;
     }
     public function unserialize(string $data): void {
         if ($data === '') { return; }
@@ -135,10 +147,11 @@ class SplObjectStorage implements Countable, SeekableIterator, ArrayAccess {
         if (!$ok || !is_array($m)) { throw new UnexpectedValueException("Error at offset $p of $n bytes"); }
         __object_properties_load($this, $m);
     }
-    public function __debugInfo() {
+    // spl_object_storage_debug_info: the properties, then the storage.
+    public function __debugInfo(): array {
         $st = [];
         foreach ($this->__o as $h => $o) { $st[] = ['obj' => $o, 'inf' => $this->__v[$h]]; }
-        return ["\0SplObjectStorage\0storage" => $st];
+        return __spl_user_props($this) + ["\0SplObjectStorage\0storage" => $st];
     }
 }
 
@@ -194,10 +207,27 @@ abstract class SplHeap implements Iterator, Countable {
     public function valid(): bool { return $this->__n > 0; }
     public function recoverFromCorruption(): true { $this->__corrupt = false; return true; }
     public function isCorrupted(): bool { return $this->__corrupt; }
-    public function __debugInfo() {
+    public function __debugInfo(): array {
         $h = [];
         for ($i = 0; $i < $this->__n; $i++) { $h[] = $this->__h[$i]; }
-        return ["\0SplHeap\0flags" => 0, "\0SplHeap\0isCorrupted" => $this->__corrupt, "\0SplHeap\0heap" => $h];
+        return __spl_user_props($this) + ["\0SplHeap\0flags" => 0, "\0SplHeap\0isCorrupted" => $this->__corrupt, "\0SplHeap\0heap" => $h];
+    }
+    // spl_heap_serialize_internal / spl_heap_unserialize_internal_state
+    public function __serialize(): array {
+        $this->__check();
+        $h = [];
+        for ($i = 0; $i < $this->__n; $i++) { $h[] = $this->__h[$i]; }
+        return [get_mangled_object_vars($this), ['flags' => 0, 'heap_elements' => $h]];
+    }
+    public function __unserialize(array $data): void {
+        $this->__check();
+        $bad = 'Invalid serialization data for ' . static::class . ' object';
+        if (count($data) !== 2 || !is_array($data[0] ?? null)) { throw new Exception($bad); }
+        try { __object_properties_load($this, $data[0]); } catch (Throwable $e) { throw new Exception($bad, 0, $e); }
+        $st = $data[1] ?? null;
+        if (!is_array($st) || !is_int($st['flags'] ?? null) || $st['flags'] !== 0 || !is_array($st['heap_elements'] ?? null)) { throw new Exception($bad); }
+        try { foreach ($st['heap_elements'] as $v) { $this->insert($v); } } catch (Throwable $e) { throw new Exception($bad, 0, $e); }
+        $this->__check();
     }
 }
 class SplMinHeap extends SplHeap {
@@ -222,7 +252,7 @@ class SplPriorityQueue implements Iterator, Countable {
     private function __check(): void {
         if ($this->__corrupt) { throw new RuntimeException('Heap is corrupted, heap properties are no longer ensured.'); }
     }
-    public function insert(mixed $value, mixed $priority) {
+    public function insert(mixed $value, mixed $priority): true {
         $this->__check();
         $elem = ['data' => $value, 'priority' => $priority];
         for ($pos = $this->__n; $pos > 0 && $this->__cmp($this->__h[intdiv($pos - 1, 2)], $elem) < 0; $pos = intdiv($pos - 1, 2)) {
@@ -269,10 +299,29 @@ class SplPriorityQueue implements Iterator, Countable {
     public function valid(): bool { return $this->__n > 0; }
     public function recoverFromCorruption(): true { $this->__corrupt = false; return true; }
     public function isCorrupted(): bool { return $this->__corrupt; }
-    public function __debugInfo() {
+    public function __debugInfo(): array {
         $h = [];
         for ($i = 0; $i < $this->__n; $i++) { $h[] = $this->__h[$i]; }
-        return ["\0SplPriorityQueue\0flags" => $this->__flags, "\0SplPriorityQueue\0isCorrupted" => $this->__corrupt, "\0SplPriorityQueue\0heap" => $h];
+        return __spl_user_props($this) + ["\0SplPriorityQueue\0flags" => $this->__flags, "\0SplPriorityQueue\0isCorrupted" => $this->__corrupt, "\0SplPriorityQueue\0heap" => $h];
+    }
+    public function __serialize(): array {
+        $this->__check();
+        $h = [];
+        for ($i = 0; $i < $this->__n; $i++) { $h[] = ['data' => $this->__h[$i]['data'], 'priority' => $this->__h[$i]['priority']]; }
+        return [get_mangled_object_vars($this), ['flags' => $this->__flags, 'heap_elements' => $h]];
+    }
+    public function __unserialize(array $data): void {
+        $bad = 'Invalid serialization data for ' . static::class . ' object';
+        if (count($data) !== 2 || !is_array($data[0] ?? null)) { throw new Exception($bad); }
+        try { __object_properties_load($this, $data[0]); } catch (Throwable $e) { throw new Exception($bad, 0, $e); }
+        $st = $data[1] ?? null;
+        if (!is_array($st) || !is_int($st['flags'] ?? null) || ($st['flags'] & 3) === 0 || !is_array($st['heap_elements'] ?? null)) { throw new Exception($bad); }
+        $this->__flags = $st['flags'] & 3;
+        foreach ($st['heap_elements'] as $e) {
+            if (!is_array($e) || count($e) !== 2 || !array_key_exists('data', $e) || !array_key_exists('priority', $e)) { throw new Exception($bad); }
+            try { $this->insert($e['data'], $e['priority']); } catch (Throwable $x) { throw new Exception($bad, 0, $x); }
+        }
+        $this->__check();
     }
 }
 
@@ -397,14 +446,37 @@ class RecursiveIteratorIterator implements OuterIterator {
 
 class IteratorIterator implements OuterIterator {
     protected $__it;
+    // spl_dual_it's cached current element, for the subclasses that fetch
+    // it themselves (`__dual`); IteratorIterator itself reads through.
+    protected $__dual = false; protected $__has = false; protected $__cur = null; protected $__key = null;
     public function __construct(Traversable $iterator, ?string $class = null) {
+        // spl_dual_it_construct: $class picks whose getIterator() runs.
+        if ($class !== null && !($iterator instanceof Iterator)) {
+            // An interface has no ce->get_iterator.
+            if (!class_exists($class) || !($iterator instanceof $class) || !is_a($class, 'Traversable', true)) {
+                throw new LogicException('Class to downcast to not found or not base class or does not implement Traversable');
+            }
+            if (is_a($class, 'IteratorAggregate', true)) {
+                $m = new ReflectionMethod($class, 'getIterator');
+                // Call it directly unless a subclass overrides it, so traces
+                // show no invoke() frame.
+                $it = $m->class === (new ReflectionMethod($iterator, 'getIterator'))->class
+                    ? $iterator->getIterator()
+                    : $m->invoke($iterator);
+                if (!($it instanceof Traversable)) {
+                    throw new LogicException($class . '::getIterator() must return an object that implements Traversable');
+                }
+                $this->__it = $it;
+                return;
+            }
+        }
         $this->__it = ($iterator instanceof IteratorAggregate) ? $iterator->getIterator() : $iterator;
     }
     public function getInnerIterator(): ?Iterator { return $this->__it; }
     public function rewind(): void { $this->__it->rewind(); }
-    public function valid(): bool { return $this->__it->valid(); }
-    public function current(): mixed { return $this->__it->current(); }
-    public function key(): mixed { return $this->__it->key(); }
+    public function valid(): bool { return $this->__dual ? $this->__has : $this->__it->valid(); }
+    public function current(): mixed { return $this->__dual ? $this->__cur : $this->__it->current(); }
+    public function key(): mixed { return $this->__dual ? $this->__key : $this->__it->key(); }
     public function next(): void { $this->__it->next(); }
     // SPL forwards unknown calls (getFilename/getPathname/isDir/…) to the inner
     // iterator, so callers can treat a filter iterator like its SplFileInfo items.
@@ -414,7 +486,7 @@ class IteratorIterator implements OuterIterator {
 abstract class FilterIterator extends IteratorIterator {
     public function __construct(Iterator $iterator) { parent::__construct($iterator); }
     abstract public function accept(): bool;
-    private function __fetch() {
+    protected function __fetch(): void {
         while ($this->__it->valid() && !$this->accept()) { $this->__it->next(); }
     }
     public function rewind(): void { $this->__it->rewind(); $this->__fetch(); }
@@ -451,11 +523,12 @@ class RecursiveCallbackFilterIterator extends CallbackFilterIterator implements 
 }
 
 class ParentIterator extends RecursiveFilterIterator {
+    public function __construct(RecursiveIterator $iterator) { parent::__construct($iterator); }
     public function accept(): bool { return $this->__it->hasChildren(); }
 }
 
 class AppendIterator extends IteratorIterator {
-    private $__a; private $__has = false; private $__cur = null; private $__key = null;
+    private $__a; protected $__dual = true;
     public function __construct() { $this->__a = new ArrayIterator(); $this->__it = null; }
     private function __innerValid(): bool { return $this->__it !== null && $this->__it->valid(); }
     private function __free(): void { $this->__has = false; $this->__cur = null; $this->__key = null; }
@@ -469,7 +542,7 @@ class AppendIterator extends IteratorIterator {
         }
         return false;
     }
-    private function __fetch(): void {
+    private function __afetch(): void {
         while (!$this->__innerValid()) {
             $this->__a->next();
             if (!$this->__nextIterator()) { return; }
@@ -487,34 +560,32 @@ class AppendIterator extends IteratorIterator {
             if (!$this->__a->valid()) { $this->__a->rewind(); }
             $this->__nextIterator();
             while ($this->__it !== $iterator && $this->__a->valid()) { $this->__a->next(); $this->__nextIterator(); }
-            $this->__fetch();
+            $this->__afetch();
         }
     }
     public function rewind(): void {
         $this->__a->rewind();
-        if ($this->__nextIterator()) { $this->__fetch(); }
+        if ($this->__nextIterator()) { $this->__afetch(); }
     }
     public function valid(): bool { return $this->__has; }
     public function current(): mixed { return $this->__cur; }
-    public function key(): mixed { return $this->__key; }
     public function next(): void {
         if ($this->__innerValid()) { $this->__free(); $this->__it->next(); }
-        $this->__fetch();
+        $this->__afetch();
     }
     public function getIteratorIndex(): ?int { return $this->__a->key(); }
     public function getArrayIterator(): ArrayIterator { return $this->__a; }
-    public function getInnerIterator(): ?Iterator { return $this->__it; }
 }
 
 class LimitIterator extends IteratorIterator {
-    private $__off = 0; private $__cnt = -1; private $__pos = 0; private $__has = false; private $__cur = null; private $__key = null;
+    private $__off = 0; private $__cnt = -1; private $__pos = 0; protected $__dual = true;
     public function __construct(Iterator $iterator, int $offset = 0, int $limit = -1) {
         if ($offset < 0) { throw new ValueError('LimitIterator::__construct(): Argument #2 ($offset) must be greater than or equal to 0'); }
         if ($limit < -1) { throw new ValueError('LimitIterator::__construct(): Argument #3 ($limit) must be greater than or equal to -1'); }
         parent::__construct($iterator);
         $this->__off = $offset; $this->__cnt = $limit;
     }
-    private function __fetch(bool $check): bool {
+    private function __lfetch(bool $check): bool {
         $this->__has = false; $this->__cur = null; $this->__key = null;
         if (!$check || $this->__it->valid()) {
             $this->__cur = $this->__it->current(); $this->__key = $this->__it->key(); $this->__has = true;
@@ -532,11 +603,11 @@ class LimitIterator extends IteratorIterator {
         if ($pos != $this->__pos && $this->__it instanceof SeekableIterator) {
             $this->__it->seek($pos);
             $this->__pos = $pos;
-            $this->__fetch(true);
+            $this->__lfetch(true);
         } else {
             if ($pos < $this->__pos) { $this->__has = false; $this->__pos = 0; $this->__it->rewind(); }
             while ($pos > $this->__pos && $this->__it->valid()) { $this->__has = false; $this->__it->next(); $this->__pos++; }
-            if ($this->__it->valid()) { $this->__fetch(true); }
+            if ($this->__it->valid()) { $this->__lfetch(true); }
         }
     }
     public function rewind(): void {
@@ -546,12 +617,10 @@ class LimitIterator extends IteratorIterator {
     public function valid(): bool {
         return ($this->__cnt == -1 || $this->__pos < $this->__off + $this->__cnt) && $this->__has;
     }
-    public function current(): mixed { return $this->__cur; }
-    public function key(): mixed { return $this->__key; }
     public function next(): void {
         $this->__has = false; $this->__cur = null; $this->__key = null;
         $this->__it->next(); $this->__pos++;
-        if ($this->__cnt == -1 || $this->__pos < $this->__off + $this->__cnt) { $this->__fetch(true); }
+        if ($this->__cnt == -1 || $this->__pos < $this->__off + $this->__cnt) { $this->__lfetch(true); }
     }
     public function seek(int $offset): int { $this->__seek($offset); return $this->__pos; }
     public function getPosition(): int { return $this->__pos; }
@@ -587,7 +656,7 @@ class RegexIterator extends FilterIterator {
     const MATCH = 0; const GET_MATCH = 1; const ALL_MATCHES = 2; const SPLIT = 3; const REPLACE = 4;
     public ?string $replacement = null;
     protected $__re; protected $__mode; protected $__rflags; protected $__pflags; protected $__usePflags;
-    protected $__cur = null; protected $__key = null; protected $__has = false;
+    protected $__dual = true;
     public function __construct(Iterator $iterator, string $pattern, int $mode = self::MATCH, int $flags = 0, int $pregFlags = 0) {
         parent::__construct($iterator);
         if ($mode < 0 || $mode > 4) {
@@ -599,7 +668,7 @@ class RegexIterator extends FilterIterator {
         $this->__re = $pattern; $this->__mode = $mode; $this->__rflags = $flags;
         $this->__pflags = $pregFlags; $this->__usePflags = func_num_args() >= 5;
     }
-    private function __fetchAccept(): void {
+    protected function __fetch(): void {
         while ($this->__it->valid()) {
             $this->__cur = $this->__it->current(); $this->__key = $this->__it->key(); $this->__has = true;
             if ($this->accept()) { return; }
@@ -607,11 +676,6 @@ class RegexIterator extends FilterIterator {
         }
         $this->__has = false; $this->__cur = null; $this->__key = null;
     }
-    public function rewind(): void { $this->__it->rewind(); $this->__fetchAccept(); }
-    public function next(): void { $this->__it->next(); $this->__fetchAccept(); }
-    public function valid(): bool { return $this->__has; }
-    public function current(): mixed { return $this->__cur; }
-    public function key(): mixed { return $this->__key; }
     public function accept(): bool {
         if (!$this->__has) { return false; }
         if ($this->__rflags & self::USE_KEY) { $subject = (string) $this->__key; }
@@ -672,7 +736,7 @@ class RecursiveRegexIterator extends RegexIterator implements RecursiveIterator 
 class CachingIterator extends IteratorIterator implements ArrayAccess, Countable, Stringable {
     const CALL_TOSTRING = 1; const CATCH_GET_CHILD = 16; const TOSTRING_USE_KEY = 2;
     const TOSTRING_USE_CURRENT = 4; const TOSTRING_USE_INNER = 8; const FULL_CACHE = 256;
-    protected $__cflags = 1; protected $__valid = false; protected $__cur = null; protected $__key = null;
+    protected $__cflags = 1; protected $__valid = false; protected $__dual = true;
     protected $__str = null; protected $__cache = []; protected $__children = null;
     public function __construct(Iterator $iterator, int $flags = self::CALL_TOSTRING) {
         self::__checkFlags($flags, static::class === 'RecursiveCachingIterator' ? 'RecursiveCachingIterator::__construct' : 'CachingIterator::__construct', 2);
@@ -713,8 +777,6 @@ class CachingIterator extends IteratorIterator implements ArrayAccess, Countable
     }
     public function rewind(): void { $this->__it->rewind(); $this->__cache = []; $this->__cnext(); }
     public function valid(): bool { return $this->__valid; }
-    public function current(): mixed { return $this->__cur; }
-    public function key(): mixed { return $this->__key; }
     public function next(): void { $this->__cnext(); }
     public function hasNext(): bool { return $this->__it->valid(); }
     public function __toString(): string {
@@ -865,6 +927,6 @@ class MultipleIterator implements Iterator {
     public function __debugInfo() {
         $st = [];
         foreach ($this->__its as $h => $it) { $st[] = ['obj' => $it, 'inf' => $this->__infos[$h]]; }
-        return ["\0SplObjectStorage\0storage" => $st];
+        return __spl_user_props($this) + ["\0SplObjectStorage\0storage" => $st];
     }
 }

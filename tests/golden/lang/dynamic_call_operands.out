@@ -1,0 +1,28 @@
+a(b)
+a(b)
+C::a
+C::a
+array(3) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+  [2]=>
+  int(3)
+}
+C::a
+C::a
+a(a)
+string(1) "m"
+string(1) "m"
+string(1) "s"
+string(1) "s"
+string(1) "g"
+string(1) "m"
+string(1) "m"
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}

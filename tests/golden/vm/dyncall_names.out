@@ -1,0 +1,16 @@
+4
+6
+callable
+4
+6
+callable
+4
+6
+callable
+Call to undefined function \\twice()
+call_user_func(): Argument #1 ($callback) must be a valid callback, function "\\twice" not found or invalid function name
+not
+Call to undefined function aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa()
+call_user_func(): Argument #1 ($callback) must be a valid callback, function "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" not found or invalid function name
+not
+10

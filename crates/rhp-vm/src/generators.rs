@@ -643,7 +643,7 @@ impl Vm {
             caller: top,
             frameless_icall: false,
             named: named as *const [(PhpStr, Value)],
-            method_of: Some(("Generator", h)),
+            method_of: Some(("Generator", Value::Object(h))),
         });
         let r = self
             .generator_method(id, name_lc, args)

@@ -1,0 +1,1 @@
+env HTTP_COOKIE=PHPSESSID=cookieid1234567890abcdef

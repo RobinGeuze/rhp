@@ -134,7 +134,7 @@ impl Vm {
                 let internal = self.is_internal_class(cid);
                 let mut out = PhpArray::new();
                 for m in self.classes[cid as usize].methods.values() {
-                    if internal && crate::calls::is_engine_helper_name(m.proto.name.as_bytes()) {
+                    if internal && self.hidden_method(m.defining_class, m.proto.name.as_bytes()) {
                         continue;
                     }
                     if m.visibility == Visibility::Private && m.defining_class != cid {
@@ -494,18 +494,37 @@ impl Vm {
                 self.update_class_constants(cid)?;
                 let name = arg_bytes(args, 1);
                 let v = arg(args, 2);
-                match self.classes[cid as usize].static_props.get(&name) {
-                    Some(sp) => {
-                        let cell = sp.cell.clone();
-                        let mut c = cell.borrow_mut();
-                        match &mut *c {
-                            Value::Ref(r) => *r.borrow_mut() = v,
-                            slot => *slot = v,
-                        }
-                        Ok(Value::Bool(true))
+                // setStaticPropertyValue checks a typed reference first;
+                // ReflectionProperty::setValue (zend_update_static_property_ex,
+                // 4th argument true) the property's own type, then the
+                // reference's. Coercive as from internal code.
+                let prop_first = matches!(arg(args, 3), Value::Bool(true));
+                let Some(sp) = self.classes[cid as usize].static_props.get(&name) else {
+                    return Ok(Value::Bool(false));
+                };
+                let (cell, ty, decl) = (sp.cell.clone(), sp.ty.clone(), sp.declaring_class);
+                let held = cell.borrow().clone();
+                match held {
+                    Value::Ref(r) => {
+                        let v = match &ty {
+                            Some(ty) if prop_first => {
+                                self.verify_type_for_prop(ty, decl, cid, &name, v, false)?
+                            }
+                            _ => v,
+                        };
+                        self.assign_to_ref(&r, v, false)?;
                     }
-                    None => Ok(Value::Bool(false)),
+                    _ => {
+                        let v = match &ty {
+                            Some(ty) => {
+                                self.verify_type_for_prop(ty, decl, cid, &name, v, false)?
+                            }
+                            None => v,
+                        };
+                        *cell.borrow_mut() = v;
+                    }
                 }
+                Ok(Value::Bool(true))
             }
             b"raw_get" | b"raw_set" => {
                 // (object, class, name[, value]): ReflectionProperty's raw
@@ -577,6 +596,12 @@ impl Vm {
                 Ok(match sub {
                     Some(FnSubject::Closure { cd, .. } | FnSubject::Trampoline { cd, .. }) => {
                         Value::Closure(cd)
+                    }
+                    // A static method's closure has no `$this`; its scope and
+                    // called scope are the method's class (zend_create_fake_closure).
+                    Some(FnSubject::Method { m, .. }) if m.is_static => {
+                        let decl = m.defining_class;
+                        self.method_closure(&m, None, decl)
                     }
                     Some(FnSubject::Method { class, m }) => {
                         let called = this.as_ref().map(|h| h.borrow().class).unwrap_or(class);
@@ -707,7 +732,10 @@ impl Vm {
         } else if e.kind == ClassKind::Interface || e.kind == ClassKind::Trait || has_abstract {
             // getModifiers() masks to the explicit flags only.
         }
-        let is_final = e.flags.is_final && e.kind != ClassKind::Interface;
+        // An internal enum is not final (zend_register_internal_enum).
+        let is_final = e.flags.is_final
+            && e.kind != ClassKind::Interface
+            && !(e.kind == ClassKind::Enum && self.is_internal_class(cid));
         if is_final {
             mods |= 32;
         }
@@ -820,6 +848,19 @@ impl Vm {
         Value::Array(a)
     }
 
+    /// A prelude class's method php's class does not have: an engine
+    /// helper (`__x`) or a stand-in for a handler (`__get`, `__call`,
+    /// `offsetGet`… where the stub has none). Reflection,
+    /// get_class_methods() and method_exists() do not see it.
+    pub(crate) fn hidden_method(&self, defining_class: ClassId, name: &[u8]) -> bool {
+        self.is_internal_class(defining_class)
+            && (crate::calls::is_engine_helper_name(name)
+                || crate::calls::is_handler_accessor(
+                    self.classes[defining_class as usize].name.as_bytes(),
+                    name,
+                ))
+    }
+
     /// `[name, declaringClass]` pairs in php's `getMethods()` order (own,
     /// trait, inherited; a parent's private methods are not listed).
     fn class_methods(&self, cid: ClassId) -> Value {
@@ -829,10 +870,8 @@ impl Vm {
                 // php does not list a parent's private methods.
                 continue;
             }
-            if self.is_internal_class(m.defining_class)
-                && crate::calls::is_engine_helper_name(m.proto.name.as_bytes())
-            {
-                continue; // engine-internal helper of a prelude class
+            if self.hidden_method(m.defining_class, m.proto.name.as_bytes()) {
+                continue; // engine plumbing of a prelude class
             }
             let mut d = PhpArray::new();
             d.push(Value::Str(m.proto.name.clone()));
@@ -1102,8 +1141,11 @@ impl Vm {
             if pe.is_final {
                 mods |= 32;
             }
+            // A prelude class's hooks stand in for php's property
+            // handlers (DatePeriod): php's property has none.
+            let stand_in = self.is_internal_class(pe.declaring_class);
             for (kind, h) in pe.hooks.iter().flat_map(|h| h.iter().enumerate()) {
-                if h.is_some() {
+                if h.is_some() && !stand_in {
                     hooks.push(s(if kind == 0 { b"get" } else { b"set" }));
                 }
             }
@@ -1205,11 +1247,12 @@ impl Vm {
         put(&mut a, "value", value);
         put(&mut a, "vis", Value::Int(vis_flag(c.visibility)));
         let mut mods = vis_flag(c.visibility);
-        if is_final || is_case {
+        // A case is public only (ZEND_CLASS_CONST_IS_CASE is not final).
+        if is_final {
             mods |= 32;
         }
         put(&mut a, "modifiers", Value::Int(mods));
-        put(&mut a, "final", Value::Bool(is_final || is_case));
+        put(&mut a, "final", Value::Bool(is_final));
         put(&mut a, "case", Value::Bool(is_case));
         put(
             &mut a,
@@ -1682,10 +1725,7 @@ impl Vm {
                 match self.lookup_method(cid, &mname) {
                     // An engine-internal helper of a prelude class is not a
                     // user-visible method.
-                    Some(m)
-                        if self.is_internal_class(m.defining_class)
-                            && crate::calls::is_engine_helper_name(m.proto.name.as_bytes()) =>
-                    {
+                    Some(m) if self.hidden_method(m.defining_class, m.proto.name.as_bytes()) => {
                         None
                     }
                     Some(m) => Some(FnSubject::Method { class: cid, m }),

@@ -1,0 +1,51 @@
+bool(true)
+bool(true)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+
+Deprecated: Method PDO::sqliteCreateFunction() is deprecated since 8.5, use Pdo\Sqlite::createFunction() instead in D/driver_methods.php on line 11
+bool(true)
+
+Deprecated: Method PDO::sqliteCreateAggregate() is deprecated since 8.5, use Pdo\Sqlite::createAggregate() instead in D/driver_methods.php on line 12
+bool(true)
+
+Deprecated: Method PDO::sqliteCreateCollation() is deprecated since 8.5, use Pdo\Sqlite::createCollation() instead in D/driver_methods.php on line 13
+bool(true)
+array(2) {
+  [0]=>
+  int(42)
+  [1]=>
+  string(4) "[ab]"
+}
+
+Deprecated: Method PDO::sqliteCreateFunction() is deprecated since 8.5, use Pdo\Sqlite::createFunction() instead in D/driver_methods.php on line 18
+ArgumentCountError: PDO::sqliteCreateFunction() expects at least 2 arguments, 1 given
+
+Deprecated: Method PDO::sqliteCreateFunction() is deprecated since 8.5, use Pdo\Sqlite::createFunction() instead in D/driver_methods.php on line 19
+TypeError: PDO::sqliteCreateFunction(): Argument #2 ($callback) must be a valid callback, function "no_such_function" not found or invalid function name
+
+Deprecated: Method PDO::sqliteCreateAggregate() is deprecated since 8.5, use Pdo\Sqlite::createAggregate() instead in D/driver_methods.php on line 20
+TypeError: PDO::sqliteCreateAggregate(): Argument #4 ($numArgs) must be of type int, string given
+
+Deprecated: Method PDO::sqliteCreateCollation() is deprecated since 8.5, use Pdo\Sqlite::createCollation() instead in D/driver_methods.php on line 21
+ArgumentCountError: PDO::sqliteCreateCollation() expects exactly 2 arguments, 3 given
+Error: Call to undefined method PDO::sqliteNope()
+
+Deprecated: Method PDO::sqliteCreateFunction() is deprecated since 8.5, use Pdo\Sqlite::createFunction() instead in D/driver_methods.php on line 34
+bool(true)
+Call to undefined method MyPdo::nothing()
+
+Deprecated: Method PDO::sqliteCreateFunction() is deprecated since 8.5, use Pdo\Sqlite::createFunction() instead in D/driver_methods.php on line 41
+bool(true)
+int(2)
+
+Deprecated: Method PDO::sqliteCreateFunction() is deprecated since 8.5, use Pdo\Sqlite::createFunction() instead in D/driver_methods.php on line 45
+in callback
+
+Deprecated: Method PDO::sqliteCreateFunction() is deprecated since 8.5, use Pdo\Sqlite::createFunction() instead in D/driver_methods.php on line 52
+PDO::sqliteCreateFunction(): Argument #1 ($name) must be of type string, array given
+#0 D/driver_methods.php(52): PDO->sqliteCreateFunction(Array, 'strlen')
+#1 D/driver_methods.php(52): {closure:D/driver_methods.php:52}()
+#2 {main}

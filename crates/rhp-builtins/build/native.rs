@@ -8,8 +8,9 @@
 //!   crate as `RHP_<MACRO>` (`env!("RHP_PCRE2_MAJOR")`);
 //! - link it statically or dynamically as the row says for the target OS,
 //!   unless `RHP_<NAME>_LINK=static|dynamic` overrides that (an LGPL
-//!   library is never linked statically), and tell the
-//!   crate which as `env!("RHP_<NAME>_LINK_MODE")`. A static
+//!   library is never linked statically), or leave it to dlopen at first
+//!   use (`Mode::Loaded`), and tell the crate which as
+//!   `env!("RHP_<NAME>_LINK_MODE")`. A static
 //!   archive is linked from a directory of its own under `OUT_DIR`, so the
 //!   linker cannot pick the shared library next to it (ld64 has no
 //!   `-Bstatic`, and Homebrew ships both);
@@ -34,6 +35,10 @@ pub enum Mode {
     /// The shared library of an LGPL library, which may not be linked
     /// statically: `RHP_<NAME>_LINK=static` is refused.
     Lgpl,
+    /// The shared library, not linked: the crate opens it with dlopen on
+    /// first use (`env!("RHP_<NAME>_DLOPEN")` is its path). Only for the
+    /// exceptions in libraries.md; the string says why.
+    Loaded(&'static str),
 }
 
 pub struct Lib {
@@ -197,6 +202,31 @@ pub const LIBS: &[Lib] = &[
         linux: Mode::Static,
         install: "macOS: brew install sqlite; Debian/Ubuntu: apt install pkg-config libsqlite3-dev",
     },
+    // php links libgd dynamically (Homebrew's gd, Debian/Ubuntu's libgd3),
+    // and libgd its codecs: libavif with its AV1 encoders and decoders,
+    // libwebp, libjpeg, libpng, libtiff, FreeType and fontconfig. rhp opens
+    // the same library with dlopen when a script first uses it.
+    Lib {
+        name: "LIBGD",
+        pkg: "gdlib",
+        brew: Some("gd"),
+        macos_sdk: false,
+        link: "gd",
+        incdir: "",
+        header: "gd.h",
+        macros: &[],
+        version: &["GD_MAJOR_VERSION", "GD_MINOR_VERSION", "GD_RELEASE_VERSION"],
+        macos: Mode::Loaded(
+            "its codec closure (libavif with aom/dav1d/rav1e/svt-av1, fontconfig) has no \
+             complete set of static archives, and loading it adds a quarter to every \
+             rhp process's startup; opened on first use",
+        ),
+        linux: Mode::Loaded(
+            "its codec closure (libavif, libheif, libtiff, fontconfig) has no complete set \
+             of static archives, and loading it costs every process; opened on first use",
+        ),
+        install: "macOS: brew install gd; Debian/Ubuntu: apt install pkg-config libgd-dev",
+    },
     // LGPL-3.0+/GPL-2.0+: a dynamic system library only, never static.
     Lib {
         name: "GMP",
@@ -226,6 +256,8 @@ pub struct Linked {
     pub name: &'static str,
     /// The directory to put on a C compiler's `-I` path for it.
     pub include: PathBuf,
+    /// The directory of the library itself.
+    pub libdir: PathBuf,
 }
 
 /// Where a library was found.
@@ -253,9 +285,10 @@ pub fn link_all() -> Vec<Linked> {
     let mut linked = Vec::new();
     for lib in LIBS {
         match link(lib) {
-            Ok(include) => linked.push(Linked {
+            Ok((include, libdir)) => linked.push(Linked {
                 name: lib.name,
                 include,
+                libdir,
             }),
             Err(e) => {
                 eprintln!("\nerror: {e}\n");
@@ -286,15 +319,23 @@ fn multiarch_tuple() -> String {
     )
 }
 
-fn link(lib: &Lib) -> Result<PathBuf, String> {
+fn link(lib: &Lib) -> Result<(PathBuf, PathBuf), String> {
     let override_var = format!("RHP_{}_LINK", lib.name);
     println!("cargo:rerun-if-env-changed={override_var}");
     let os = target_os();
-    let mut mode = if os == "macos" { lib.macos } else { lib.linux };
+    let row_mode = if os == "macos" { lib.macos } else { lib.linux };
+    let mut mode = row_mode;
     match env::var(&override_var).as_deref() {
         Ok("static") if mode == Mode::Lgpl => {
             return Err(format!(
                 "{override_var}=static: {} is LGPL and is only linked dynamically \
+                 (docs/design/libraries.md)",
+                lib.name
+            ))
+        }
+        Ok("static") if matches!(mode, Mode::Loaded(_)) => {
+            return Err(format!(
+                "{override_var}=static: {} is opened with dlopen on first use \
                  (docs/design/libraries.md)",
                 lib.name
             ))
@@ -355,10 +396,10 @@ fn link(lib: &Lib) -> Result<PathBuf, String> {
         }
     }
 
-    let mode_name = if mode == Mode::Static {
-        "static"
-    } else {
-        "dynamic"
+    let mode_name = match mode {
+        Mode::Static => "static",
+        Mode::Loaded(_) => "loaded",
+        Mode::Dynamic(_) | Mode::Lgpl => "dynamic",
     };
     println!("cargo:rustc-env=RHP_{}_LINK_MODE={mode_name}", lib.name);
     match mode {
@@ -395,8 +436,58 @@ fn link(lib: &Lib) -> Result<PathBuf, String> {
                 found.libdir.display()
             );
         }
+        Mode::Loaded(_) => {
+            println!(
+                "cargo:rustc-env=RHP_{}_LIBDIR={}",
+                lib.name,
+                found.libdir.display()
+            );
+        }
     }
-    Ok(include)
+    // Also under RHP_<NAME>_LINK=dynamic: the crate opens it either way.
+    if matches!(row_mode, Mode::Loaded(_)) {
+        let path = shared_object(&found.libdir, lib.link, &os)?;
+        println!("cargo:rerun-if-changed={}", path.display());
+        println!("cargo:rustc-env=RHP_{}_DLOPEN={}", lib.name, path.display());
+    }
+    Ok((include, found.libdir))
+}
+
+/// The file a dynamic link of `-l<link>` would load at run time: the
+/// versioned name the development symlink points to (`libgd.3.dylib`,
+/// `libgd.so.3`), in `libdir`.
+fn shared_object(libdir: &Path, link: &str, os: &str) -> Result<PathBuf, String> {
+    let dev = if os == "macos" {
+        format!("lib{link}.dylib")
+    } else {
+        format!("lib{link}.so")
+    };
+    let dev_path = libdir.join(&dev);
+    let target = fs::read_link(&dev_path)
+        .ok()
+        .and_then(|t| t.file_name().map(|n| n.to_string_lossy().into_owned()));
+    let name = match target {
+        // libgd.so -> libgd.so.3.0.11: the soname is libgd.so.3.
+        Some(t) if os != "macos" => {
+            let prefix = format!("{dev}.");
+            match t.strip_prefix(&prefix) {
+                Some(rest) => format!("{prefix}{}", rest.split('.').next().unwrap_or(rest)),
+                None => t,
+            }
+        }
+        Some(t) => t,
+        None => dev,
+    };
+    let path = libdir.join(&name);
+    if path.exists() {
+        Ok(path)
+    } else {
+        Err(format!(
+            "lib{link}: no shared library {} (from {})",
+            path.display(),
+            dev_path.display()
+        ))
+    }
 }
 
 /// `$OUT_DIR/native-<key>/` holding only a link to `archive`: the one

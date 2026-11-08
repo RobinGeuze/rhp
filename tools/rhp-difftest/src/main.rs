@@ -12,6 +12,7 @@
 //!   rhp-difftest lint vendor --check-known known-refused.txt  # compile-only scan
 //!   rhp-difftest app symfony-7.4 --check-known tests/apps/symfony-7.4/known-passing-requests.txt
 //!   rhp-difftest gen signatures --php-src ../php-src [--check]  # generated tables
+//!   rhp-difftest api --check-known tests/api/known-differences.txt  # internal-class surface
 //!   rhp-difftest golden --check [--portable]  # goldens' .out still what php prints
 //!
 //! Exit code is nonzero if any sweep produced a MISMATCH (or, with --strict,
@@ -31,6 +32,9 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("phpt") {
         return rhp_difftest::phpt::main(&args[1..]);
+    }
+    if args.first().map(String::as_str) == Some("api") {
+        return rhp_difftest::api::main(&args[1..]);
     }
     if args.first().map(String::as_str) == Some("app") {
         return rhp_difftest::app::main(&args[1..]);

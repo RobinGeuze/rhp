@@ -42,3 +42,7 @@ debug/upload
 debug/upload-mime
 debug/storage
 debug/boom
+number
+@files
+debug/number
+debug/@files

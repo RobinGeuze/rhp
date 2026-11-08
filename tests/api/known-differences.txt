@@ -1,0 +1,266 @@
+# Internal-class surface rows where rhp differs from php 8.5
+# (`rhp-difftest api`, tools/rhp-difftest/src/api.rs): `- row` php has and
+# rhp lacks, `+ row` rhp has and php lacks. Only shrink this list (`--check-known`
+# names the FIXED rows); rewrite it with
+# `cargo run -p rhp-difftest -- api --write-known tests/api/known-differences.txt`.
++ C DOMNamedNodeMap class implements ArrayAccess,Countable,IteratorAggregate,Traversable
++ C DOMNodeList class implements ArrayAccess,Countable,IteratorAggregate,Traversable
++ C Phar class
++ C SimpleXMLElement class implements ArrayAccess,Countable,Iterator,RecursiveIterator,Stringable,Traversable
++ C SimpleXMLIterator class extends SimpleXMLElement implements ArrayAccess,Countable,Iterator,RecursiveIterator,Stringable,Traversable
++ K Phar::SAME public = 0
++ M PharData::current public
++ M PharData::getPathname public
++ M PharData::hasChildren public
++ M PharData::isDir public
++ M PharData::isFile public
++ M PharData::valid public
++ M PharFileInfo::getATime public
++ M PharFileInfo::getCTime public
++ M PharFileInfo::getMTime public
++ M PharFileInfo::getPerms public
++ M PharFileInfo::getRealPath public
++ M PharFileInfo::getSize public
++ M PharFileInfo::getType public
++ M PharFileInfo::isDir public
++ M PharFileInfo::isFile public
++ M PharFileInfo::isLink public
++ M PharFileInfo::isReadable public
++ M PharFileInfo::isWritable public
+- C BcMath\Number class final readonly implements Stringable
+- C DOMNamedNodeMap class implements Countable,IteratorAggregate,Traversable
+- C DOMNodeList class implements Countable,IteratorAggregate,Traversable
+- C Dom\AdjacentPosition enum implements BackedEnum,UnitEnum
+- C Dom\Attr class extends Dom\Node
+- C Dom\CDATASection class extends Dom\Text implements Dom\ChildNode
+- C Dom\CharacterData class extends Dom\Node implements Dom\ChildNode
+- C Dom\ChildNode interface
+- C Dom\Comment class extends Dom\CharacterData implements Dom\ChildNode
+- C Dom\Document class abstract extends Dom\Node implements Dom\ParentNode
+- C Dom\DocumentFragment class extends Dom\Node implements Dom\ParentNode
+- C Dom\DocumentType class extends Dom\Node implements Dom\ChildNode
+- C Dom\DtdNamedNodeMap class implements Countable,IteratorAggregate,Traversable
+- C Dom\Element class extends Dom\Node implements Dom\ChildNode,Dom\ParentNode
+- C Dom\Entity class extends Dom\Node
+- C Dom\EntityReference class extends Dom\Node
+- C Dom\HTMLCollection class implements Countable,IteratorAggregate,Traversable
+- C Dom\HTMLDocument class final extends Dom\Document implements Dom\ParentNode
+- C Dom\HTMLElement class extends Dom\Element implements Dom\ChildNode,Dom\ParentNode
+- C Dom\Implementation class
+- C Dom\NamedNodeMap class implements Countable,IteratorAggregate,Traversable
+- C Dom\NamespaceInfo class final readonly
+- C Dom\Node class
+- C Dom\NodeList class implements Countable,IteratorAggregate,Traversable
+- C Dom\Notation class extends Dom\Node
+- C Dom\ParentNode interface
+- C Dom\ProcessingInstruction class extends Dom\CharacterData implements Dom\ChildNode
+- C Dom\Text class extends Dom\CharacterData implements Dom\ChildNode
+- C Dom\TokenList class final implements Countable,IteratorAggregate,Traversable
+- C Dom\XMLDocument class final extends Dom\Document implements Dom\ParentNode
+- C Dom\XPath class final
+- C Pcntl\QosClass enum implements UnitEnum
+- C Phar class extends RecursiveDirectoryIterator implements ArrayAccess,Countable,Iterator,RecursiveIterator,SeekableIterator,Stringable,Traversable
+- C ReflectionZendExtension class implements Reflector,Stringable
+- C SimpleXMLElement class implements Countable,Iterator,RecursiveIterator,Stringable,Traversable
+- C SimpleXMLIterator class extends SimpleXMLElement implements Countable,Iterator,RecursiveIterator,Stringable,Traversable
+- K Phar::OPENSSL_SHA256 public = 17
+- K Phar::OPENSSL_SHA512 public = 18
+- K Phar::PHP public = 0
+- K Phar::PHPS public = 1
+- M HashContext::__serialize public
+- M HashContext::__unserialize public
+- M Phar::__construct public
+- M Phar::__destruct public
+- M Phar::addEmptyDir public
+- M Phar::addFile public
+- M Phar::addFromString public
+- M Phar::apiVersion final public static
+- M Phar::buildFromDirectory public
+- M Phar::buildFromIterator public
+- M Phar::canWrite final public static
+- M Phar::compress public
+- M Phar::compressFiles public
+- M Phar::convertToData public
+- M Phar::convertToExecutable public
+- M Phar::copy public
+- M Phar::count public
+- M Phar::decompress public
+- M Phar::decompressFiles public
+- M Phar::delMetadata public
+- M Phar::delete public
+- M Phar::extractTo public
+- M Phar::getAlias public
+- M Phar::getMetadata public
+- M Phar::getModified public
+- M Phar::getPath public
+- M Phar::getSignature public
+- M Phar::getStub public
+- M Phar::getSupportedCompression final public static
+- M Phar::getSupportedSignatures final public static
+- M Phar::getVersion public
+- M Phar::hasMetadata public
+- M Phar::isBuffering public
+- M Phar::isCompressed public
+- M Phar::isFileFormat public
+- M Phar::isWritable public
+- M Phar::mount final public static
+- M Phar::mungServer final public static
+- M Phar::offsetExists public
+- M Phar::offsetGet public
+- M Phar::offsetSet public
+- M Phar::offsetUnset public
+- M Phar::setAlias public
+- M Phar::setDefaultStub public
+- M Phar::setMetadata public
+- M Phar::setSignatureAlgorithm public
+- M Phar::setStub public
+- M Phar::startBuffering public
+- M Phar::stopBuffering public
+- M Phar::unlinkArchive final public static
+- M Phar::webPhar final public static
+- M PharData::__destruct public
+- M PharData::apiVersion final public static
+- M PharData::compressFiles public
+- M PharData::convertToData public
+- M PharData::convertToExecutable public
+- M PharData::copy public
+- M PharData::createDefaultStub final public static
+- M PharData::decompressFiles public
+- M PharData::delMetadata public
+- M PharData::getModified public
+- M PharData::getSupportedCompression final public static
+- M PharData::getSupportedSignatures final public static
+- M PharData::interceptFileFuncs final public static
+- M PharData::loadPhar final public static
+- M PharData::mapPhar final public static
+- M PharData::mount final public static
+- M PharData::mungServer final public static
+- M PharData::running final public static
+- M PharData::setAlias public
+- M PharData::setDefaultStub public
+- M PharData::setSignatureAlgorithm public
+- M PharData::setStub public
+- M PharData::unlinkArchive final public static
+- M PharData::webPhar final public static
+- M PharFileInfo::__destruct public
+- M PharFileInfo::chmod public
+- M PharFileInfo::compress public
+- M PharFileInfo::decompress public
+- M PharFileInfo::delMetadata public
+- M PharFileInfo::getPharFlags public
+- M PharFileInfo::setMetadata public
+- M XMLReader::XML public static
+- M XMLReader::open public static
+- P DOMAttr::$name virtual public string
+- P DOMAttr::$ownerElement virtual public ?DOMElement
+- P DOMAttr::$schemaTypeInfo virtual public mixed
+- P DOMAttr::$specified virtual public bool
+- P DOMAttr::$value virtual public string
+- P DOMCharacterData::$data virtual public string
+- P DOMCharacterData::$length virtual public int
+- P DOMCharacterData::$nextElementSibling virtual public ?DOMElement
+- P DOMCharacterData::$previousElementSibling virtual public ?DOMElement
+- P DOMDocument::$actualEncoding virtual public ?string
+- P DOMDocument::$childElementCount virtual public int
+- P DOMDocument::$config virtual public mixed
+- P DOMDocument::$doctype virtual public ?DOMDocumentType
+- P DOMDocument::$documentElement virtual public ?DOMElement
+- P DOMDocument::$documentURI virtual public ?string
+- P DOMDocument::$encoding virtual public ?string
+- P DOMDocument::$firstElementChild virtual public ?DOMElement
+- P DOMDocument::$formatOutput virtual public bool
+- P DOMDocument::$implementation virtual public DOMImplementation
+- P DOMDocument::$lastElementChild virtual public ?DOMElement
+- P DOMDocument::$preserveWhiteSpace virtual public bool
+- P DOMDocument::$recover virtual public bool
+- P DOMDocument::$resolveExternals virtual public bool
+- P DOMDocument::$standalone virtual public bool
+- P DOMDocument::$strictErrorChecking virtual public bool
+- P DOMDocument::$substituteEntities virtual public bool
+- P DOMDocument::$validateOnParse virtual public bool
+- P DOMDocument::$version virtual public ?string
+- P DOMDocument::$xmlEncoding virtual public ?string
+- P DOMDocument::$xmlStandalone virtual public bool
+- P DOMDocument::$xmlVersion virtual public ?string
+- P DOMDocumentFragment::$childElementCount virtual public int
+- P DOMDocumentFragment::$firstElementChild virtual public ?DOMElement
+- P DOMDocumentFragment::$lastElementChild virtual public ?DOMElement
+- P DOMDocumentType::$entities virtual public DOMNamedNodeMap
+- P DOMDocumentType::$internalSubset virtual public ?string
+- P DOMDocumentType::$name virtual public string
+- P DOMDocumentType::$notations virtual public DOMNamedNodeMap
+- P DOMDocumentType::$publicId virtual public string
+- P DOMDocumentType::$systemId virtual public string
+- P DOMElement::$childElementCount virtual public int
+- P DOMElement::$className virtual public string
+- P DOMElement::$firstElementChild virtual public ?DOMElement
+- P DOMElement::$id virtual public string
+- P DOMElement::$lastElementChild virtual public ?DOMElement
+- P DOMElement::$nextElementSibling virtual public ?DOMElement
+- P DOMElement::$previousElementSibling virtual public ?DOMElement
+- P DOMElement::$schemaTypeInfo virtual public mixed
+- P DOMElement::$tagName virtual public string
+- P DOMEntity::$actualEncoding virtual public ?string
+- P DOMEntity::$encoding virtual public ?string
+- P DOMEntity::$notationName virtual public ?string
+- P DOMEntity::$publicId virtual public ?string
+- P DOMEntity::$systemId virtual public ?string
+- P DOMEntity::$version virtual public ?string
+- P DOMNameSpaceNode::$isConnected virtual public bool
+- P DOMNameSpaceNode::$localName virtual public ?string
+- P DOMNameSpaceNode::$namespaceURI virtual public ?string
+- P DOMNameSpaceNode::$nodeName virtual public string
+- P DOMNameSpaceNode::$nodeType virtual public int
+- P DOMNameSpaceNode::$nodeValue virtual public ?string
+- P DOMNameSpaceNode::$ownerDocument virtual public ?DOMDocument
+- P DOMNameSpaceNode::$parentElement virtual public ?DOMElement
+- P DOMNameSpaceNode::$parentNode virtual public ?DOMNode
+- P DOMNameSpaceNode::$prefix virtual public string
+- P DOMNamedNodeMap::$length virtual public int
+- P DOMNode::$attributes virtual public ?DOMNamedNodeMap
+- P DOMNode::$baseURI virtual public ?string
+- P DOMNode::$childNodes virtual public DOMNodeList
+- P DOMNode::$firstChild virtual public ?DOMNode
+- P DOMNode::$isConnected virtual public bool
+- P DOMNode::$lastChild virtual public ?DOMNode
+- P DOMNode::$localName virtual public ?string
+- P DOMNode::$namespaceURI virtual public ?string
+- P DOMNode::$nextSibling virtual public ?DOMNode
+- P DOMNode::$nodeName virtual public string
+- P DOMNode::$nodeType virtual public int
+- P DOMNode::$nodeValue virtual public ?string
+- P DOMNode::$ownerDocument virtual public ?DOMDocument
+- P DOMNode::$parentElement virtual public ?DOMElement
+- P DOMNode::$parentNode virtual public ?DOMNode
+- P DOMNode::$prefix virtual public string
+- P DOMNode::$previousSibling virtual public ?DOMNode
+- P DOMNode::$textContent virtual public string
+- P DOMNodeList::$length virtual public int
+- P DOMNotation::$publicId virtual public string
+- P DOMNotation::$systemId virtual public string
+- P DOMProcessingInstruction::$data virtual public string
+- P DOMProcessingInstruction::$target virtual public string
+- P DOMText::$wholeText virtual public string
+- P DOMXPath::$document virtual public DOMDocument
+- P DOMXPath::$registerNodeNamespaces virtual public bool
+- P PDORow::$queryString public string
+- P XMLReader::$attributeCount virtual public int
+- P XMLReader::$baseURI virtual public string
+- P XMLReader::$depth virtual public int
+- P XMLReader::$hasAttributes virtual public bool
+- P XMLReader::$hasValue virtual public bool
+- P XMLReader::$isDefault virtual public bool
+- P XMLReader::$isEmptyElement virtual public bool
+- P XMLReader::$localName virtual public string
+- P XMLReader::$name virtual public string
+- P XMLReader::$namespaceURI virtual public string
+- P XMLReader::$nodeType virtual public int
+- P XMLReader::$prefix virtual public string
+- P XMLReader::$value virtual public string
+- P XMLReader::$xmlLang virtual public string
+- P ZipArchive::$comment public string
+- P ZipArchive::$filename public string
+- P ZipArchive::$lastId public int
+- P ZipArchive::$numFiles public int
+- P ZipArchive::$status public int
+- P ZipArchive::$statusSys public int

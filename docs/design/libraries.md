@@ -30,7 +30,8 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
   `_libiconv_version` (macOS) or `gnu_get_libc_version()` (glibc);
   `GMP_VERSION` from libgmp's `gmp_version`;
   `ZipArchive::LIBZIP_VERSION` from `zip_libzip_version()`, phpinfo's
-  "Libzip version" from zipconf.h.
+  "Libzip version" from zipconf.h; `GD_VERSION` and phpinfo's "GD headers
+  Version" from gd.h, "GD library Version" from `gdVersionString()`.
   `version.rs` keeps hard-coded values only for libraries rhp does not link
   yet; each goes when its library is linked.
 
@@ -56,6 +57,18 @@ rather than linking dynamically quietly.
   glibc's iconv.
 - Libraries with no static archive of php's version: libzip (Homebrew's
   libzip and Debian/Ubuntu's libzip-dev ship only the shared library).
+- libgd, whose codec libraries have no complete set of static archives
+  (libavif with aom, dav1d, rav1e and SVT-AV1; libheif, libtiff and
+  fontconfig on Debian/Ubuntu). php's `--with-external-gd` loads the shared
+  library too. rhp does not link it but opens it with `dlopen` the first
+  time a script uses ext/gd (`Mode::Loaded`; `ext/gd/sys.rs`): loading its
+  dependency closure costs about 55M instructions, a quarter of an empty
+  `rhp -r ''`, which every process would pay. build.rs runs php's
+  configure probe for the formats (`PHP_GD_CHECK_FORMAT`) against it, so
+  registering ext/gd's functions needs no library.
+- libedit (ext/readline) on Linux: php's readline extension loads the
+  distro's libedit.so; libedit-dev's archive would also need libtinfo's.
+  On macOS it is the SDK's /usr/lib/libedit, as listed above.
 - LGPL libraries taken from the system: libgmp (LGPL-3.0+ or GPL-2.0+).
   Homebrew and libgmp-dev ship a `libgmp.a`, but linking it would put LGPL
   code into rhp's binary; linked dynamically, the user can replace it (see
@@ -95,7 +108,9 @@ Today rhp-builtins links:
 | libmbfl, php_unicode.c (via rhp-mbfl-sys; feature `mbstring-libmbfl`, on by default) | static, compiled from php-8.5.12 | the same |
 | libgmp | dynamic, Homebrew gmp | dynamic, libgmp-dev |
 | libzip | dynamic, Homebrew libzip (its own zlib, bzip2, xz and zstd links) | dynamic, libzip-dev |
-| libsqlite3 (pdo_sqlite) | static, Homebrew sqlite (keg-only; php's pdo_sqlite loads its dylib) | static, libsqlite3-dev |
+| libsqlite3 (pdo_sqlite, sqlite3) | static, Homebrew sqlite (keg-only; php's pdo_sqlite loads its dylib) | static, libsqlite3-dev |
+| libgd (ext/gd), with its codecs | dynamic (dlopen on first use), Homebrew gd | dynamic (dlopen on first use), libgd-dev |
+| libedit (readline) | dynamic, the SDK's /usr/lib/libedit.3.dylib | dynamic, libedit-dev |
 
 ICU's data library is most of the size: linking ICU statically adds about
 35 MB to `rhp` (13.5 MB → 48 MB on the mac with ICU 79.1, 33.5 MB of it
@@ -106,11 +121,22 @@ of the linked uvernum.h, and build.rs refuses an ICU built with
 php's formula moves to a newer `icu4c@N`, the `ICU_*` rows in `native.rs`
 follow (ref_build's "linked" section fails until they do).
 
+Where php's intl uses ICU's C++ API (MessageFormat, Calendar, TimeZone,
+DateFormat, BreakIterator) rhp does too, from `ext/intl/icu.cpp` and
+`ext/intl/breakiter.cpp`. The latter holds php's own
+`PHP::CodePointBreakIterator`, under that name, so `var_dump()` of an
+IntlCodePointBreakIterator shows php's `typeid` name.
+
 iconv has no row in `native.rs`: there is no .pc file or version macro to
 check (php reads `_libiconv_version` or `gnu_get_libc_version()` at run
 time), and on Linux it is part of libc. `ext/iconv/sys.rs` links it, and its
 `links_the_library_php_links` test checks with `dladdr` that `iconv_open`
 comes from that library.
+
+libedit has no row in `native.rs` either: php reports no version of it
+(`READLINE_LIB` is "libedit", `rl_library_version` "EditLine wrapper").
+`ext/readline/sys.rs` links it, and its `links_the_library_php_links` test
+checks with `dladdr` where `readline` comes from.
 
 zlib and bzip2 predate this policy and still go through their -sys crates.
 bzip2 is built from bzip2-sys's 1.0.8 source, not taken from macOS's
@@ -122,6 +148,9 @@ links. libz-sys would build its bundled zlib when it finds no system one;
 rhp-builtins' build.rs fails instead (libz-sys reports the bundled build as
 `DEP_Z_ROOT`), and the `zraw` test `links_the_library_php_links` checks
 with `dladdr` that `zlibVersion` comes from the system library.
+`ZLIB_VERSION`/`ZLIB_VERNUM` (php's compile-time zlib.h) are that library's
+`zlibVersion()`, so they match php on each platform (1.2.12 on macOS,
+zlib1g's release on Linux).
 rhp-csrc's and rhp-mbfl-sys's code is the same on every machine, so it
 needs no row in `native.rs` or the native-deps action, only a C compiler
 (and `nm` for their tests).
@@ -155,7 +184,8 @@ binary that links two PCRE2 copies is wrong too, so rhp-difftest uses
 
 `RHP_<LIB>_LINK=static|dynamic` (e.g. `RHP_PCRE2_LINK=dynamic`) overrides the
 policy for one build, for experiments. An LGPL row (`Mode::Lgpl`, libgmp)
-refuses `static`.
+refuses `static`, as does a row opened on first use (`Mode::Loaded`, libgd);
+`dynamic` links that one at startup as well.
 
 The helper links a static archive from a directory under `OUT_DIR` that holds
 only that archive. Searching the library's own libdir would not work: ld64
@@ -217,9 +247,21 @@ checks with `dladdr` that `zip_open` loads from the directory the build
 found it in, and that `zip_libzip_version()` is the release of zipconf.h.
 The native-deps action fails when CI's php reports another
 `ZipArchive::LIBZIP_VERSION` than libzip-dev's; there is no source build.
-The same goes for libsqlite3: `PDO::ATTR_CLIENT_VERSION` and phpinfo's
-"SQLite Library" are `sqlite3_libversion()`, so php's pdo_sqlite must load
-the libsqlite3-dev release (`ext/pdo_sqlite/sys.rs` declares the API).
+libgd is dynamic as well: `libgd_is_the_library_php_links` checks with
+`dladdr` that the `gdImageCreate` rhp opens comes from the directory the
+build found it in and that `gdVersionString()` is the release of gd.h; the native-deps
+action fails when CI's php reports another `GD_VERSION` than libgd-dev's.
+Encoded images are byte-identical to php's only when the codec libraries
+(libpng, libjpeg-turbo, libwebp, libavif) are the ones php loads, which
+holds on both reference machines because both link the same libgd; goldens
+still compare only pixels of lossless formats and image sizes, since the
+mac's and CI's codec releases differ. ext/gd's constants are gd.stub.php's
+`@cvalue`s, evaluated against the linked gd.h in `ext/gd/shim.c`.
+The same goes for libsqlite3: `PDO::ATTR_CLIENT_VERSION`,
+`SQLite3::version()` and phpinfo's "SQLite Library" are
+`sqlite3_libversion()`, so php's pdo_sqlite and sqlite3 must load the
+libsqlite3-dev release (`ext/pdo_sqlite/sys.rs` declares the API both
+use).
 
 php links libcurl from Homebrew's keg-only curl on the mac, not the SDK's
 older libcurl, whose error texts differ: the CURL row names the formula, so
@@ -588,7 +630,7 @@ Tables php-src owns are generated, committed, and checked by
 | Generator | Source | Output | Checked |
 |---|---|---|---|
 | `html-tables` | php-src `ext/standard/html_tables/` (+ `html_tables.h` for HTML5 ties) | `rhp-builtins/src/ext/standard/html_tables.rs` | CI job `generated` (php-src checkout) |
-| `intl-consts` | php-src `ext/intl` stubs: global constants' and the implemented classes' (Collator, NumberFormatter, Locale) constants: names, types, `@cvalue`, `#if` guards and attributes (values come from the linked ICU's headers when `ext/intl/shim.c` compiles) | `rhp-builtins/src/ext/intl/consts.h`, `class_consts.h` | CI job `generated` (php-src checkout) |
+| `intl-consts` | php-src `ext/intl` stubs: global constants' and the class constants of every intl class: names, types, `@cvalue`, `#if` guards and attributes (values come from the linked ICU's headers when `ext/intl/shim.cpp` compiles) | `rhp-builtins/src/ext/intl/consts.h`, `class_consts.h` | CI job `generated` (php-src checkout) |
 | `parser` | the release tarball (`tools/php-dist.sha256`): Bison's `zend_language_parser.{c,h}`, `zend_ini_parser.{c,h}`; the numbers of the grammar rules whose actions rhp runs | `ext/tokenizer/ids.rs`, `zend/*_parser_tables.rs` | CI job `generated` (tarball cached on the pin) |
 | `dumps` | the reference php: `tools/capture-ref-build.php tables`, plus constants gated on a newer library (`CONST_EXTRAS`) | `main/ini_table.rs`, `const_modules.rs`, `func_modules.rs` | `cargo test` on the reference host |
 | `curl-consts` | php-src `ext/curl/curl.stub.php` (names, `@cvalue`, `LIBCURL_VERSION_NUM` gates, `#[\Deprecated]`) and `curl_private.h` | `ext/curl/consts.rs`, `ext/curl/consts.c` (values from the linked curl.h) | CI job `generated` (php-src checkout) |

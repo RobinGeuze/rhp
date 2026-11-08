@@ -28,7 +28,7 @@ const FILLUNIT: usize = 1024 * 5;
 
 /// `SAPI_POST_BLOCK_SIZE`: the block `sapi_read_standard_form_data` reads
 /// the body in.
-pub const SAPI_POST_BLOCK_SIZE: usize = 0x40000;
+pub const SAPI_POST_BLOCK_SIZE: usize = 0x4000;
 
 /// The warning php raises once more than `post_max_size` bytes of a body
 /// were actually read, whatever its `Content-Length` said
@@ -79,6 +79,9 @@ pub struct BodyState {
     /// Uploads of an earlier parse that a later one replaced (php leaks
     /// them; rhp still deletes them at request end).
     orphans: Vec<Vec<u8>>,
+    /// The temporary files `request_body` spilled into (a body of 16 KiB
+    /// or more), deleted at request end.
+    spills: RefCell<Vec<Vec<u8>>>,
 }
 
 impl BodyState {
@@ -115,12 +118,39 @@ impl BodyState {
     /// body longer than its `Content-Length`). True when it stopped so: the
     /// caller raises [`actual_length_exceeds`] and still parses what was
     /// read.
-    pub fn read_standard(&self, body: &[u8], post_max_size: i64) -> bool {
+    ///
+    /// `request_body` is a `php://temp` stream that keeps 16 KiB in memory:
+    /// a body that reaches that size goes to a temporary file in
+    /// `upload_tmp_dir` (else the system's). When none can be created the
+    /// body is discarded, with php's warnings (`diags`).
+    pub fn read_standard(&self, body: &[u8], post_max_size: i64, diags: &mut Vec<Diag>) -> bool {
         let rest = self.remaining(body);
         let mut off = 0;
         let mut over = false;
+        let mut spilled = false;
         loop {
             let n = SAPI_POST_BLOCK_SIZE.min(rest.len() - off);
+            // php_stream_temp_write: the write that reaches the memory
+            // limit moves the stream to a file.
+            if n > 0 && !spilled && off + n >= SAPI_POST_BLOCK_SIZE {
+                match self.spill(diags) {
+                    Some(path) => {
+                        spilled = true;
+                        self.spills.borrow_mut().push(path);
+                    }
+                    None => {
+                        self.consumed.set(self.consumed.get() + n);
+                        diags.push(Diag::Warning(
+                            "Unable to create temporary file, Check permissions in temporary files directory.".into(),
+                        ));
+                        diags.push(Diag::Warning(
+                            "POST data can't be buffered; all data discarded".into(),
+                        ));
+                        *self.buffered.borrow_mut() = Some(Vec::new());
+                        return false;
+                    }
+                }
+            }
             off += n;
             self.consumed.set(self.consumed.get() + n);
             if post_max_size > 0 && self.consumed.get() as i64 > post_max_size {
@@ -131,8 +161,21 @@ impl BodyState {
                 break;
             }
         }
-        *self.buffered.borrow_mut() = Some(rest[..off].to_vec());
+        let data = rest[..off].to_vec();
+        if let Some(path) = self.spills.borrow().last().filter(|_| spilled) {
+            // The file holds what php's stream holds; reads come from memory.
+            let _ = std::fs::write(os_path(path), &data);
+        }
+        *self.buffered.borrow_mut() = Some(data);
         over
+    }
+
+    /// `php_stream_fopen_temporary_file(upload_tmp_dir, "php")`.
+    fn spill(&self, diags: &mut Vec<Diag>) -> Option<Vec<u8>> {
+        let dir = crate::ini_value(b"upload_tmp_dir")
+            .flatten()
+            .unwrap_or_default();
+        open_upload_temp(&dir, diags)
     }
 
     /// The buffered body (`request_body`), if a reader made one.
@@ -152,6 +195,9 @@ impl BodyState {
 
     /// `destroy_uploaded_files_hash`: delete the uploads still in place.
     pub fn cleanup(&mut self) {
+        for f in self.spills.take() {
+            let _ = std::fs::remove_file(os_path(&f));
+        }
         let files = self.uploaded.take().into_iter().flatten();
         for f in files.chain(std::mem::take(&mut self.orphans)) {
             let _ = std::fs::remove_file(os_path(&f));
@@ -236,6 +282,8 @@ pub enum Diag {
     Notice(String),
     /// `sapi_module.sapi_error(E_WARNING, …)`: a plain warning.
     Sapi(String),
+    /// `php_error_docref(NULL, E_WARNING, …)` (never an exception).
+    Warning(String),
 }
 
 /// What one [`parse`] did.

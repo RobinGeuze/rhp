@@ -1,0 +1,2 @@
+env REDIRECT_STATUS=
+env SERVER_SOFTWARE=Apache

@@ -73,7 +73,12 @@ pub fn config_define(name: &[u8], value: &[u8]) {
 /// `cfg_get_entry`: a configuration hash entry.
 pub(crate) fn cfg_get(name: &[u8]) -> Option<rhp_values::Value> {
     let key = rhp_values::ArrayKey::Str(rhp_values::PhpStr::from_bytes(name));
-    CONFIG.with(|c| c.borrow().get(&key).cloned())
+    CONFIG.with(|c| c.borrow().get(&key).cloned()).or_else(|| {
+        // sapi_cli_ini_defaults puts display_errors=1 in the hash before
+        // any ini file.
+        (name == b"display_errors" && crate::main::sapi::sapi_name() == "cli")
+            .then(|| rhp_values::Value::str("1"))
+    })
 }
 
 /// zend_parse_ini_file into the configuration hash (php_init_config): its
@@ -851,8 +856,12 @@ fn ini_validate(name: &[u8], v: &[u8]) -> Result<(), ()> {
         // OnSetExceptionStringParamMaxLen.
         b"zend.exception_string_param_max_len" if !(0..=1_000_000).contains(&c_atol(v)) => Err(()),
         b"arg_separator.output" if v.is_empty() => Err(()),
-        // OnUpdateDefaultCharset.
-        b"default_charset" if v.iter().any(|&c| matches!(c, 0 | b'\r' | b'\n')) => Err(()),
+        // OnUpdateDefaultCharset, OnUpdateDefaultMimeTye (bug #81518).
+        b"default_charset" | b"default_mimetype"
+            if v.iter().any(|&c| matches!(c, 0 | b'\r' | b'\n')) =>
+        {
+            Err(())
+        }
         b"date.timezone" if !tz_valid(v) => Err(()),
         _ => Ok(()),
     }

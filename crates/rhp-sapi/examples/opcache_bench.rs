@@ -30,8 +30,9 @@ impl Sapi for Body {
         "bench"
     }
 
-    fn ub_write(&mut self, data: &[u8]) {
+    fn ub_write(&mut self, data: &[u8]) -> bool {
         self.0.borrow_mut().extend_from_slice(data);
+        true
     }
 }
 

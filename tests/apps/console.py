@@ -20,6 +20,7 @@ OPTIONS
                    target/release/rhp); `--candidate "$(command -v php)"`
                    self-checks the list and its masks
   --only ID,...    run only these command ids
+  --network        also run the commands marked `network` (the nightly does)
   --quiet          write the diffs only into the output directory
 
 php is $RHP_PHP or `php`. The work directory is target/apps-console/<app>/
@@ -46,19 +47,24 @@ Console list (TOML), paths relative to the app directory:
   commands = ["id", ...]    only for these commands (default: all)
   builtin = "now-epoch" | "now-datetime"
                             instead of pattern: 10-digit Unix times, or
-                            Y-m-d H:i:s datetimes, within 3 days of now
+                            Y-m-d H:i:s (UTC) datetimes, taken during the
+                            command's run or a whole number of minutes after
+                            it (expiries, schedules): <NOW>, <NOW+3600s>
 
   [[command]]
   id = "about"              unique, the ratchet's key
   args = "debug:router hello"   shell-split arguments to the console entry
   argv = ["eval", "echo 1;"]    or the arguments as a list
   script = "console/x.php"  run this script instead of the console entry
+  network = true            needs the internet: run only with --network
+                            (a listed one stays listed when skipped)
 """
 
 import datetime
 import difflib
 import fnmatch
 import hashlib
+import math
 import os
 import re
 import shlex
@@ -74,7 +80,13 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 TIMEOUT = 300
-WINDOW = 3 * 86400
+# A time "of the run" is within SLACK seconds of the command's start and end,
+# or after it: by up to SHORT seconds (a short TTL; tagged without its value,
+# which a window of a few seconds can't pin down), or by whole days, hours or
+# minutes up to HORIZON (a TTL, a schedule).
+SLACK = 2
+HORIZON = 400 * 86400
+SHORT = 300
 
 
 # --- the console list -------------------------------------------------------
@@ -97,26 +109,62 @@ def load(app):
         if b:
             if b not in BUILTINS:
                 sys.exit(f"{path}: mask {m['name']}: unknown builtin {b!r}")
-            m["re"], m["sub"] = BUILTINS[b]
+            m["re"], m["timed"] = BUILTINS[b]
         else:
             m["re"], m["sub"] = re.compile(m["pattern"]), m["replace"]
         m.setdefault("in", ["stdout", "stderr", "files"])
     return spec
 
 
-def now_epoch(m):
-    return "<NOW>" if abs(int(m.group(0)) - time.time()) < WINDOW else m.group(0)
+def run_offset(t, window):
+    """The offset of time t from the run `window` (start, end): 0 when t is
+    within it; "short" when it is up to SHORT seconds after it; else the
+    roundest offset ahead that puts it there (an expiry, a schedule); None
+    when t is no time of the run. Only ahead: a run that spans a minute
+    boundary would also take fixed past dates on the minute (post dates) for
+    times of the run. The roundest offset, not the nearest to the window's
+    middle, so that a long run and a short one give the same TTL the same
+    tag."""
+    start, end = window[0] - SLACK, window[1] + SLACK
+    if start <= t <= end:
+        return 0
+    if end < t <= end + SHORT:
+        return "short"
+    lo, hi = t - end, t - start
+    for unit in (86400, 3600, 60):
+        d = math.ceil(lo / unit) * unit
+        if 0 < d <= hi and d <= HORIZON:
+            return d
+    return None
 
 
-def now_datetime(m):
-    try:
-        t = datetime.datetime.strptime(m.group(1) + " " + m.group(2), "%Y-%m-%d %H:%M:%S")
-    except ValueError:
-        return m.group(0)
-    t = t.replace(tzinfo=datetime.timezone.utc).timestamp()
-    return "<NOWDT>" if abs(t - time.time()) < WINDOW else m.group(0)
+def now_tag(tag, t, window, orig, keep):
+    if orig in keep:
+        return orig
+    d = run_offset(t, window)
+    if d is None:
+        return orig
+    if d == "short":
+        return f"<{tag}+short>"
+    return f"<{tag}>" if d == 0 else f"<{tag}{d:+d}s>"
 
 
+def now_epoch(window, keep):
+    return lambda m: now_tag("NOW", int(m.group(0)), window, m.group(0), keep)
+
+
+def now_datetime(window, keep):
+    def sub(m):
+        try:
+            t = datetime.datetime.strptime(m.group(1) + " " + m.group(2), "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return m.group(0)
+        return now_tag("NOWDT", t.replace(tzinfo=datetime.timezone.utc).timestamp(), window, m.group(0), keep)
+
+    return sub
+
+
+# name -> (regex, replacement factory taking the command's run window)
 BUILTINS = {
     "now-epoch": (re.compile(r"(?<!\d)1[789]\d{8}(?!\d)"), now_epoch),
     "now-datetime": (re.compile(r"(\d{4}-\d\d-\d\d)[ T](\d\d:\d\d:\d\d)"), now_datetime),
@@ -329,14 +377,32 @@ def file_text(path, st):
         return f"<binary, {len(data)} bytes, md5 {hashlib.md5(data).hexdigest()}>"
 
 
-def masked(text, where, cid, masks, binaries):
+def masked(text, where, cid, masks, binaries, window=None, keep=frozenset()):
+    """`window`: the command's (start, end) Unix times, for the builtin masks.
+    `keep`: times the builtin masks leave alone (see setup_times)."""
     if where != "paths":
         for b in binaries:
             text = text.replace(b, "<PHP_BINARY>")
     for m in masks:
         if where in m["in"] and ("commands" not in m or cid in m["commands"]):
-            text = m["re"].sub(m["sub"], text)
+            if "timed" in m:
+                if window is not None:
+                    text = m["re"].sub(m["timed"](window, keep), text)
+            else:
+                text = m["re"].sub(m["sub"], text)
     return text
+
+
+def setup_times(work, rel, masks):
+    """The times in the pristine copy of a changed file. They were written by
+    setup, not by the command, so they are the same under php and rhp and are
+    not masked: by chance one run's window could make one of them look like a
+    TTL of that run and the other run's not."""
+    st = work.pindex.get(rel)
+    if st is None or not stat.S_ISREG(st.st_mode):
+        return frozenset()
+    text = file_text(work.pristine / rel, st)
+    return frozenset(x.group(0) for m in masks if "timed" in m for x in m["re"].finditer(text))
 
 
 def run_one(work, engine, cmd, binaries):
@@ -345,11 +411,13 @@ def run_one(work, engine, cmd, binaries):
     entry = [cmd["script"]] if "script" in cmd else [work.app["console"]]
     argv = [engine, "-n", *ini_args(spec), *entry, *cmd["argv"]]
     work.fresh_home()
+    start = time.time()
     try:
         p = subprocess.run(argv, cwd=work.run_dir, env=work.env(), capture_output=True, stdin=subprocess.DEVNULL, timeout=TIMEOUT)
         out, err, code = p.stdout, p.stderr, p.returncode
     except subprocess.TimeoutExpired as e:
         out, err, code = e.stdout or b"", (e.stderr or b"") + f"\n<TIMEOUT after {TIMEOUT}s>".encode(), "timeout"
+    window = (start, time.time())
     changed = work.changes()
     files = {}
     for rel, st in changed.items():
@@ -357,14 +425,15 @@ def run_one(work, engine, cmd, binaries):
             continue  # a directory whose entries changed: they are listed themselves
         if any(fnmatch.fnmatch(str(rel), g) for g in spec.get("ignore", [])):
             continue
-        name = masked(str(rel), "paths", cid, masks, binaries)
-        text = masked(file_text(work.run_dir / rel, st), "files", cid, masks, binaries)
+        name = masked(str(rel), "paths", cid, masks, binaries, window)
+        keep = setup_times(work, rel, masks)
+        text = masked(file_text(work.run_dir / rel, st), "files", cid, masks, binaries, window, keep)
         if st is not None and not stat.S_ISLNK(st.st_mode):
             # Permissions too (mkdir, chmod, tempnam modes).
             text = f"<mode {stat.S_IMODE(st.st_mode):04o}>\n{text}"
         files.setdefault(name, []).append(text)
     work.restore(changed)
-    dec = lambda b, where: masked(b.decode("utf-8", "replace"), where, cid, masks, binaries)
+    dec = lambda b, where: masked(b.decode("utf-8", "replace"), where, cid, masks, binaries, window)
     return {
         "code": code,
         "stdout": dec(out, "stdout"),
@@ -417,7 +486,7 @@ def write_known(path, app, ids):
     path.write_text(head + "".join(f"{i}\n" for i in sorted(ids)))
 
 
-def battery(app, candidate, only, quiet, write):
+def battery(app, candidate, only, quiet, write, network=False):
     name = app["name"]
     spec = load(app)
     php = os.environ.get("RHP_PHP", "php")
@@ -431,6 +500,10 @@ def battery(app, candidate, only, quiet, write):
         if bad:
             sys.exit(f"[{name}] unknown command id(s): {', '.join(sorted(bad))}")
         cmds = [c for c in cmds if c["id"] in only]
+    offline = [c["id"] for c in cmds if c.get("network") and not network]
+    if offline:
+        print(f"[{name}] skipped (need the network; --network runs them): {' '.join(offline)}", flush=True)
+        cmds = [c for c in cmds if c["id"] not in offline]
     known = read_known(known_path(app))
     if not write and known is None:
         print(f"[{name}] no {known_path(app).relative_to(REPO)}; create it with `python3 tests/apps/apps.py console {name} --write-known`")
@@ -468,8 +541,10 @@ def battery(app, candidate, only, quiet, write):
     if write:
         if only:
             sys.exit("--write-known needs the whole list (no --only)")
-        write_known(known_path(app), app, same_ids)
-        print(f"[{name}] wrote {known_path(app).relative_to(REPO)} ({len(same_ids)} commands)")
+        # Skipped network commands keep their entries.
+        ids = same_ids + [i for i in (known or []) if i in offline]
+        write_known(known_path(app), app, ids)
+        print(f"[{name}] wrote {known_path(app).relative_to(REPO)} ({len(ids)} commands)")
         return True
     ran = {c["id"] for c in cmds}
     lost = [i for i in known if i in ran and i not in same_ids]
@@ -485,7 +560,7 @@ def battery(app, candidate, only, quiet, write):
 def main(apps, argv):
     """`apps.py console` with the selected apps and the remaining arguments."""
     candidate = os.environ.get("RHP") or str(REPO / "target/release/rhp")
-    only, quiet, write = None, False, False
+    only, quiet, write, network = None, False, False, False
     it = iter(argv)
     for a in it:
         if a == "--candidate":
@@ -496,12 +571,14 @@ def main(apps, argv):
             quiet = True
         elif a == "--write-known":
             write = True
+        elif a == "--network":
+            network = True
         else:
             sys.exit(f"console: unknown option {a!r}; see tests/apps/console.py --help")
     # Commands run in the work directory: a relative path would not resolve there.
     if os.sep in candidate:
         candidate = str(Path(candidate).resolve())
-    failed = [a["name"] for a in apps if not battery(a, candidate, only, quiet, write)]
+    failed = [a["name"] for a in apps if not battery(a, candidate, only, quiet, write, network)]
     if failed:
         sys.exit(f"console battery failed for: {', '.join(failed)}")
 

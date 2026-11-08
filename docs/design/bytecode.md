@@ -492,6 +492,11 @@ reads each function's C body for the parameters php parses as any value, a
 resource or an open stream, so the VM checks those too and parses the
 scalars after them. The VM raises a `#[\Deprecated]` builtin's deprecation
 before any of this, from the stub's `since` and `message`.)
+A user function's object, closure or array result that the caller does
+not use (a call in `FunctionProto::discard_calls`) is freed by `do_return`
+before the callee's variables and `$this`, as ZEND_RETURN does, so later
+objects get php's handles. A call run synchronously (`call_user_func`, a closure
+invoked in place) can still free it after the callee's frame.
 
 **Attributes the engine acts on.** The compiler runs php's internal
 attribute table (`rhp-compiler/src/attrs.rs`, zend_attributes.c): allowed
@@ -612,9 +617,45 @@ calling convention; omitted here.
 
 ### 2.5 Inline caches, constants, names
 
-(Not built: there are no inline caches. Method and property lookups probe
-the flattened class table's hash maps; see the note at the top. Calls by
-name have a per-VM resolution cache instead, §2.6.)
+(Not built as planned: there are no per-opline cache operands; see the
+note at the top. Calls by name have a per-VM resolution cache, §2.6, and
+lookups by name have the caches below.)
+
+**Lookup caches** (`rhp-vm/src/lookup_cache.rs`) stand in for php's
+run-time cache slots (CACHE_ADDR / CACHE_PTR) without writing the shared
+protos. Each linked `ClassEntry` has a small direct-mapped table for
+property lookups, keyed by the name's hash (`PhpStr` keeps it) and the
+calling scope, one for static properties and one for method lookups by
+name; the VM has one for class names. An entry holds only an index (the
+property slot, the static or method table entry, the class id) and a
+hit is confirmed against the name the class's own table stores, so
+nothing in it can outlive what it names and memory_get_usage() does not
+see it (the tables are allocated uncounted).
+Property entries name a scope class, so they are flushed when a class
+whose linking failed is removed and its id is reused; class-name entries
+check the class's name on every hit. `resolve_prop_at` and
+`lookup_method_str` go through them, so every caller does.
+
+On a hit the property instructions take a direct slot path
+(`props.rs`, `with_cached_slot`): FETCH_OBJ_R/IS, ISSET_ISEMPTY_PROP_OBJ
+and ASSIGN_OBJ, and an lvalue cursor of one property step on a variable
+(`$o->p++`, `$o->p op= v`: `IncDecLval`, `FetchLvalRw`, `AssignLval`).
+It applies to a set declared slot holding no reference, of a class
+without hooks, that is not readonly and has no set visibility; a write to
+a typed property only when the new value keeps the old one's kind (null,
+int, float, string: any type that admitted the one admits the other,
+with no coercion). Anything else takes the full path. A class constant
+fetch of an evaluated, accessible, undeprecated user constant other than
+an enum case is read directly too (`class_const_plain`), and so is a
+static property of an initialized class other than a trait that the
+scope may access (`static_prop_plain`: FETCH_STATIC_PROP_R/IS and the
+cursor root of `self::$a[...] = v`).
+
+`tests/bench/bench.py` measures CPU time and (on macOS) instructions
+retired on the micro benchmarks there; compare engines with it before and
+after a change to the hot paths.
+
+The original plan, kept for reference:
 
 - `caches: Vec<InlineCache>` is a Zend-style **side** table (not interleaved),
   `Cell`-based (single-threaded ⇒ no atomics), **monomorphic to start**, guarded

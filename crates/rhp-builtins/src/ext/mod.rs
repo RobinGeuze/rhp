@@ -12,6 +12,7 @@ pub mod date;
 pub mod dom;
 pub mod fileinfo;
 pub mod filter;
+pub mod gd;
 pub mod gmp;
 pub mod hash;
 pub mod iconv;
@@ -35,6 +36,7 @@ pub mod session;
 pub mod simplexml;
 pub mod sockets;
 pub mod spl;
+pub mod sqlite3;
 pub mod standard;
 pub mod tokenizer;
 pub mod xml;
@@ -49,6 +51,7 @@ pub(crate) fn class_handlers() -> Vec<&'static crate::zend::object_handlers::Cla
         curl::CLASSES,
         dom::CLASSES,
         fileinfo::CLASSES,
+        gd::CLASSES,
         gmp::CLASSES,
         openssl::CLASSES,
         random::CLASSES,
@@ -62,6 +65,7 @@ pub(crate) fn class_handlers() -> Vec<&'static crate::zend::object_handlers::Cla
         zip::CLASSES,
         intl::CLASSES,
         pdo::CLASSES,
+        sqlite3::CLASSES,
         date::CLASSES,
     ]
     .into_iter()
@@ -112,6 +116,16 @@ pub(crate) fn modules() -> Vec<ModuleDef> {
             prelude_php: "",
             wrappers: no_wrappers,
             reset: no_state,
+            object_freed: None,
+        },
+        ModuleDef {
+            name: "gd",
+            cli_only: false,
+            functions: gd::register,
+            constants: gd::constants,
+            prelude_php: gd::PRELUDE_PHP,
+            wrappers: no_wrappers,
+            reset: gd::reset_state,
             object_freed: None,
         },
         ModuleDef {
@@ -296,6 +310,16 @@ pub(crate) fn modules() -> Vec<ModuleDef> {
             object_freed: None,
         },
         ModuleDef {
+            name: "sqlite3",
+            cli_only: false,
+            functions: sqlite3::register,
+            constants: sqlite3::constants,
+            prelude_php: sqlite3::PRELUDE_PHP,
+            wrappers: no_wrappers,
+            reset: no_state,
+            object_freed: None,
+        },
+        ModuleDef {
             name: "libxml",
             cli_only: false,
             functions: libxml::register,
@@ -419,10 +443,10 @@ pub(crate) fn modules() -> Vec<ModuleDef> {
             name: "readline",
             cli_only: false,
             functions: readline::register,
-            constants: no_constants,
+            constants: readline::constants,
             prelude_php: "",
             wrappers: no_wrappers,
-            reset: no_state,
+            reset: readline::reset_state,
             object_freed: None,
         },
         ModuleDef {

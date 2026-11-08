@@ -1,0 +1,32 @@
+int(1)
+string(1) "x"
+NULL
+bool(true)
+bool(false)
+bool(false)
+Error: Cannot write to PDORow offset
+You may not create a PDORow manually
+#0 {main}
+Known 1x
+Fallback 2y
+stdClass 3z
+unserialize('payload')
+unserialize('payload')
+unserialize('payload')
+object(Ser)#5 (2) {
+  ["from"]=>
+  string(7) "payload"
+  ["b"]=>
+  string(1) "x"
+}
+object(Directory)#7 (1) {
+  ["path"]=>
+  string(1) "x"
+  ["handle"]=>
+  uninitialized(mixed)
+}
+Rows::getIterator
+0:1
+1:2
+2:3
+Class to downcast to not found or not base class or does not implement Traversable

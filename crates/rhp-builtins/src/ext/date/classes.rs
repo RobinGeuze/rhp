@@ -1737,7 +1737,7 @@ fn period_initialize_from_hash(
 
 const PERIOD_INTERNAL: [&str; 7] = PERIOD_PROPS;
 
-fn is_period_prop(name: &[u8]) -> bool {
+pub(crate) fn is_period_prop(name: &[u8]) -> bool {
     PERIOD_PROPS.iter().any(|p| p.as_bytes() == name)
 }
 

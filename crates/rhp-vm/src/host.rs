@@ -2280,6 +2280,19 @@ impl Host for Vm {
         self.fiber_op(op, this, args)
     }
 
+    fn generator_method(
+        &mut self,
+        this: &ObjectHandle,
+        name: &[u8],
+        args: &[Value],
+    ) -> Result<Value, Thrown> {
+        // The prelude method's frame is the call's.
+        let id = this.borrow().id;
+        let lc = name.to_ascii_lowercase();
+        self.generator_method(id, &lc, args)
+            .unwrap_or_else(|| Err(Thrown::error("Error", "Not a Generator method")))
+    }
+
     fn current_closure(&self) -> Option<Value> {
         let f = self.stack.iter().rev().find(|f| !f.proto.is_internal())?;
         let cd = f.closure.as_ref()?;
@@ -2466,6 +2479,11 @@ impl Host for Vm {
             Some(m) => !(m.proto.is_internal() && is_engine_helper_name(method)),
             None => false,
         }
+    }
+
+    fn class_method_hidden(&self, class_id: u32, method: &[u8]) -> bool {
+        self.lookup_method(class_id, method)
+            .is_some_and(|m| self.hidden_method(m.defining_class, m.proto.name.as_bytes()))
     }
 
     fn class_method_private_inherited(&self, class_id: u32, method: &[u8]) -> bool {
@@ -2750,7 +2768,14 @@ impl Host for Vm {
                     "Cannot use positional argument after named argument",
                 )
             })?;
-            vm.place_named_args(&m.proto, Some(m.defining_class), argv, named)
+            let argv = vm.place_named_args(&m.proto, Some(m.defining_class), argv, named)?;
+            // zend_call_function: a value for a by-reference parameter.
+            let name = format!(
+                "{}::{}",
+                String::from_utf8_lossy(vm.class(m.defining_class).name.as_bytes()),
+                String::from_utf8_lossy(m.proto.name.as_bytes())
+            );
+            vm.wrap_by_ref_args(&m.proto, &name, argv)
         };
         if m.is_static {
             let args = place(self)?;

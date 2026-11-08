@@ -1,0 +1,102 @@
+int(0)
+int(1)
+int(2)
+array(4) {
+  ["red"]=>
+  int(255)
+  ["green"]=>
+  int(0)
+  ["blue"]=>
+  int(0)
+  ["alpha"]=>
+  int(64)
+}
+int(1)
+int(0)
+
+Notice: imagecolorat(): 9,9 is out of bounds in F on line 10
+bool(false)
+int(-1)
+int(0)
+NULL
+array(4) {
+  ["red"]=>
+  int(0)
+  ["green"]=>
+  int(0)
+  ["blue"]=>
+  int(255)
+  ["alpha"]=>
+  int(0)
+}
+bool(false)
+bool(true)
+array(4) {
+  [0]=>
+  int(0)
+  [1]=>
+  int(0)
+  [2]=>
+  int(7)
+  [3]=>
+  int(7)
+}
+imagecolorallocate(): Argument #2 ($red) must be between 0 and 255 (inclusive)
+imagecolorallocatealpha(): Argument #5 ($alpha) must be between 0 and 127 (inclusive)
+ffffff ffffff ffffff ffffff ffffff ffffff
+ffffff ffffff ffffff ffffff 336699 336699
+ffffff ffffff ffffff 336699 336699 336699
+ffffff 336699 336699 336699 336699 336699
+bool(true)
+string(6) "cc9966"
+bool(true)
+string(6) "a2a2a2"
+Wrong parameter count for imagefilter()
+imagefilter() expects exactly 3 arguments, 2 given
+imagefilter(): Argument #2 ($filter) must be one of the IMG_FILTER_* filter constants
+imagefilter(): Argument #3 must be of type float, array given
+string(6) "ff0000"
+int(2)
+int(2)
+int(12)
+int(8)
+int(3)
+int(4)
+int(6)
+bool(true)
+array(2) {
+  [0]=>
+  int(96)
+  [1]=>
+  int(96)
+}
+bool(true)
+array(2) {
+  [0]=>
+  int(300)
+  [1]=>
+  int(300)
+}
+array(6) {
+  [0]=>
+  float(2)
+  [1]=>
+  float(0)
+  [2]=>
+  float(0)
+  [3]=>
+  float(3)
+  [4]=>
+  float(0)
+  [5]=>
+  float(0)
+}
+bool(true)
+bool(false)
+bool(true)
+bool(true)
+bool(true)
+
+Warning: imagettfbbox(): Could not find/open font in F on line 48
+bool(true)
+bool(false)

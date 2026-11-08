@@ -10,10 +10,10 @@ configget
 corechecks
 coreverify
 cronlist
-dbquery
 dbsize
 dbtables
 e-feed
+e-health
 e-i18n
 e-kses
 e-render
@@ -32,6 +32,8 @@ export
 help
 helppost
 langlist
+mediaimport
+mediaimportjpg
 menucreate
 menulist
 optionautoload

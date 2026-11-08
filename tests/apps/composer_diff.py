@@ -154,18 +154,17 @@ $log->info('hello', ['a' => 1]);
 echo App\\Hello::hi(), "\\n";
 """
 
-# What a build environment decides, not the engine: the OpenSSL and zlib
-# headers each engine was compiled against (Homebrew's php: OpenSSL 4.0.3,
-# rhp: what it links; rhp's ZLIB_VERSION is the macOS reference's 1.2.12,
-# Ubuntu's php has 1.3.1).
+# What a build environment decides, not the engine: the OpenSSL headers
+# each engine was compiled against (Homebrew's php: OpenSSL 4.0.3, rhp: what
+# it links). zlib is not masked: rhp reports the system zlib php links.
 BUILD_LIBS = [
     (re.compile(r"^(OpenSSL version: ).*$", re.M), r"\1<VERSION>"),
-    (re.compile(r"^(lib-(openssl|zlib)\s+).*$", re.M), r"\1<VERSION>"),
+    (re.compile(r"^(lib-openssl\s+).*$", re.M), r"\1<VERSION>"),
+    (re.compile(r'("name": "lib-openssl",\s*"version": )"[^"]*"'), r'\1"<VERSION>"'),
     # Debian's php reads the system zoneinfo and reports its version as 0;
     # rhp and upstream php report the bundled timezonedb's.
     (re.compile(r"^(lib-date-zoneinfo\s+)\S+", re.M), r"\1<VERSION>"),
     (re.compile(r'("name": "lib-date-zoneinfo",\s*"version": )"[^"]*"'), r'\1"<VERSION>"'),
-    (re.compile(r'("name": "lib-(openssl|zlib)",\s*"version": )"[^"]*"'), r'\1"<VERSION>"'),
 ]
 
 # The library entries of `show --platform` and the extension that reports

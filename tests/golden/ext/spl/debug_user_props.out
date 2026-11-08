@@ -1,0 +1,63 @@
+object(MyHeap)#1 (4) {
+  ["tag"]=>
+  string(1) "h"
+  ["flags":"SplHeap":private]=>
+  int(0)
+  ["isCorrupted":"SplHeap":private]=>
+  bool(false)
+  ["heap":"SplHeap":private]=>
+  array(1) {
+    [0]=>
+    int(2)
+  }
+}
+object(MyQueue)#2 (4) {
+  ["tag":protected]=>
+  string(1) "q"
+  ["flags":"SplPriorityQueue":private]=>
+  int(1)
+  ["isCorrupted":"SplPriorityQueue":private]=>
+  bool(false)
+  ["heap":"SplPriorityQueue":private]=>
+  array(1) {
+    [0]=>
+    array(2) {
+      ["data"]=>
+      string(1) "a"
+      ["priority"]=>
+      int(1)
+    }
+  }
+}
+object(MyMulti)#3 (2) {
+  ["tag":"MyMulti":private]=>
+  string(1) "m"
+  ["storage":"SplObjectStorage":private]=>
+  array(1) {
+    [0]=>
+    array(2) {
+      ["obj"]=>
+      object(ArrayIterator)#4 (1) {
+        ["storage":"ArrayIterator":private]=>
+        array(1) {
+          [0]=>
+          int(1)
+        }
+      }
+      ["inf"]=>
+      NULL
+    }
+  }
+}
+MyHeap Object
+(
+    [tag] => h
+    [flags:SplHeap:private] => 0
+    [isCorrupted:SplHeap:private] => 
+    [heap:SplHeap:private] => Array
+        (
+            [0] => 2
+        )
+
+)
+

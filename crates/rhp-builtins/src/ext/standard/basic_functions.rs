@@ -733,9 +733,13 @@ fn fn_error_log(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
             let ok = crate::zend::virtual_cwd::append_file(&path, &msg, 0o666).is_ok();
             Ok(Value::Bool(ok))
         }
-        // 0 / 4: no error_log ini → the CLI SAPI logger writes "msg\n" to stderr.
+        // 0 / 4: php_log_err_with_severity. The error_log file when it
+        // opens, else the SAPI's logger (the CLI's writes "msg\n" to
+        // stderr). syslog goes to the SAPI's logger too, as in errors.rs.
         _ => {
-            let log_target = ini_value(b"error_log").flatten().filter(|v| !v.is_empty());
+            let log_target = ini_value(b"error_log")
+                .flatten()
+                .filter(|v| !v.is_empty() && v.as_slice() != b"syslog");
             match log_target {
                 Some(path) if ty == 0 => {
                     // php_log_err: "[d-M-Y H:i:s e] message\n".
@@ -753,7 +757,9 @@ fn fn_error_log(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
                     line.extend_from_slice(&msg);
                     line.push(b'\n');
                     let mode = crate::main::ini::error_log_mode();
-                    let _ = crate::zend::virtual_cwd::append_file(&path, &line, mode);
+                    if crate::zend::virtual_cwd::append_file(&path, &line, mode).is_err() {
+                        host.log_message(&msg);
+                    }
                 }
                 _ => host.log_message(&msg),
             }
@@ -1232,8 +1238,8 @@ fn fn_time_sleep_until(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thr
     Ok(Value::Bool(true))
 }
 
-/// `ignore_user_abort(?bool $enable = null)`: the old setting; the engine
-/// never sees the client go away, so the setting has no other effect.
+/// `ignore_user_abort(?bool $enable = null)`: the old setting (the engine
+/// reads it when a write finds the client gone).
 fn fn_ignore_user_abort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let old = crate::main::ini::ini_value(b"ignore_user_abort")
         .flatten()
@@ -1252,10 +1258,16 @@ fn fn_ignore_user_abort(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     Ok(Value::Int(old))
 }
 
-/// `connection_status()` / `connection_aborted()`: always CONNECTION_NORMAL
-/// (no abort detection yet).
+/// `connection_status()`: `PG(connection_status)`.
 fn fn_connection_status(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::Int(0))
+    Ok(Value::Int(crate::main::connection_status()))
+}
+
+/// `connection_aborted()`: its aborted bit.
+fn fn_connection_aborted(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Int(
+        crate::main::connection_status() & crate::main::CONNECTION_ABORTED,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -1710,7 +1722,7 @@ pub fn register(m: &mut crate::Registry) {
             ("sleep", fn_sleep),
             ("ignore_user_abort", fn_ignore_user_abort),
             ("connection_status", fn_connection_status),
-            ("connection_aborted", fn_connection_status),
+            ("connection_aborted", fn_connection_aborted),
             ("is_uploaded_file", fn_is_uploaded_file),
             ("move_uploaded_file", fn_move_uploaded_file),
             ("parse_ini_string", fn_parse_ini_string),

@@ -1,0 +1,29 @@
+object(GdImage)#1 (0) {
+}
+bool(true)
+Error: You cannot initialize a GdImage object except through helper functions
+Error: You cannot initialize a GdFont object except through helper functions
+Error: Trying to clone an uncloneable object of class GdImage
+Exception: Serialization of 'GdImage' is not allowed
+Error: Cannot create dynamic property GdImage::$foo
+bool(true)
+bool(false)
+bool(false)
+bool(true)
+array(0) {
+}
+array(0) {
+}
+string(2) "{}"
+imagesx(): Argument #1 ($image) must be of type GdImage, int given
+imagesx(): Argument #1 ($image) must be of type GdImage, string given
+imagesx(): Argument #1 ($image) must be of type GdImage, null given
+imagesx(): Argument #1 ($image) must be of type GdImage, array given
+imagesx(): Argument #1 ($image) must be of type GdImage, stdClass given
+int(5)
+int(7)
+int(15)
+imagefontwidth(): Argument #1 ($font) must be of type GdFont|int, stdClass given
+int(2)
+bool(false)
+done

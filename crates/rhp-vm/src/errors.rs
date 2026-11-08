@@ -358,14 +358,17 @@ impl Vm {
     }
 
     /// Frame `i` is engine plumbing with no php counterpart: a prelude
-    /// class's `__`-prefixed helper, or a magic method standing in for
-    /// php's property, dimension or `get_method` handlers. Traces leave it
+    /// class's `__`-prefixed helper or property hook, or a magic method
+    /// standing in for php's property, dimension or `get_method` handlers. Traces leave it
     /// out (see [`Self::dispatched_method`]).
     fn is_plumbing_frame(&self, i: usize) -> bool {
         let f = &self.stack[i];
         f.include_kind().is_none()
             && f.proto.is_internal()
             && (is_engine_helper_name(f.proto.name.as_bytes())
+                // A prelude property hook (`$p::get`), php's read/write
+                // handler.
+                || f.proto.name.as_bytes().starts_with(b"$")
                 || f.defining_class.is_some_and(|c| {
                     is_handler_accessor(self.class(c).name.as_bytes(), f.proto.name.as_bytes())
                 }))
@@ -378,6 +381,22 @@ impl Vm {
     /// before any call.
     fn dispatched_method(&self, i: usize) -> Option<(&'static str, PhpArray)> {
         let f = &self.stack[i];
+        // A get_method helper (PDO's driver methods) shows as the method
+        // it stands for, with its arguments.
+        if let Some(t) = f.defining_class.and_then(|c| self.class(c).handlers) {
+            let pn = f.proto.name.as_bytes();
+            if let Some((n, _)) = t
+                .get_method
+                .iter()
+                .find(|(_, h)| h.as_bytes().eq_ignore_ascii_case(pn))
+            {
+                let mut shown = PhpArray::new();
+                for v in self.frame_args(i).values() {
+                    shown.push(deref(v));
+                }
+                return Some((n, shown));
+            }
+        }
         let lc = f.proto.name.as_bytes().to_ascii_lowercase();
         if lc != b"__call" && lc != b"__callstatic" {
             return None;
@@ -640,7 +659,7 @@ impl Vm {
                     if let Some((class, this)) = &n.method_of {
                         e.insert(k(b"class"), Value::str(*class));
                         if provide_object {
-                            e.insert(k(b"object"), Value::Object(this.clone()));
+                            e.insert(k(b"object"), this.clone());
                         }
                         e.insert(k(b"type"), Value::str("->"));
                     }

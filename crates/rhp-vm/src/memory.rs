@@ -277,7 +277,7 @@ impl Vm {
             m.extend_from_slice(b" in ");
             m.extend_from_slice(&file);
             m.extend_from_slice(format!(" on line {line}\n").as_bytes());
-            self.sapi.sapi.flush();
+            let _ = self.sapi.sapi.flush();
             use std::io::Write;
             let _ = std::io::stderr().write_all(&m);
             std::process::exit(137);

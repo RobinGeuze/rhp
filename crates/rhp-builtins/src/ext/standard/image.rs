@@ -1064,3 +1064,12 @@ pub fn register(m: &mut crate::Registry) {
         ],
     );
 }
+
+/// php_is_image_avif over a string's bytes (ext/gd's imagecreatefromstring).
+pub(crate) fn is_image_avif(data: &[u8]) -> bool {
+    rhp_csrc::avifinfo::identify(&mut Stream {
+        d: data,
+        pos: 0,
+        eof: false,
+    })
+}

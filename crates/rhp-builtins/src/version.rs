@@ -219,13 +219,36 @@ pub const EXT_DOM: &str = "20031129";
 // ones from the linked OpenSSL (crate::ext::openssl), curl_version() from the
 // linked libcurl (crate::ext::curl), ICONV_* from the system iconv
 // (crate::ext::iconv), GMP_VERSION from the linked libgmp (crate::ext::gmp),
-// ZipArchive::LIBZIP_VERSION from the linked libzip (crate::ext::zip).
+// ZipArchive::LIBZIP_VERSION from the linked libzip (crate::ext::zip),
+// ZLIB_VERSION from the linked zlib (zlib_version below).
 /// `MB_ONIGURUMA_VERSION`.
 pub const ONIGURUMA_VERSION: &str = "6.9.10";
 
-/// `ZLIB_VERSION`, `ZLIB_VERNUM` (the zlib headers php was compiled against).
-pub const ZLIB_VERSION: &str = "1.2.12";
-pub const ZLIB_VERNUM: i64 = 0x12c0;
+/// `ZLIB_VERSION`: the zlib headers php was compiled against. rhp links the
+/// system zlib dynamically, as php does (docs/design/libraries.md), so this is
+/// that library's version: 1.2.12 on macOS, zlib1g's on Linux.
+pub fn zlib_version() -> &'static str {
+    // SAFETY: zlibVersion returns a static NUL-terminated string.
+    let v = unsafe { std::ffi::CStr::from_ptr(libz_sys::zlibVersion()) };
+    v.to_str().unwrap_or("")
+}
+
+/// `ZLIB_VERNUM`: the version packed one hex digit per component
+/// (zlib.h's ZLIB_VERNUM: 1.2.12 is 0x12c0, 1.3.1 is 0x1310).
+pub fn zlib_vernum() -> i64 {
+    vernum(zlib_version())
+}
+
+fn vernum(v: &str) -> i64 {
+    let mut n = 0;
+    let mut parts = v.split('.');
+    for shift in [12, 8, 4, 0] {
+        let p = parts.next().unwrap_or("0");
+        let digits: String = p.chars().take_while(|c| c.is_ascii_digit()).collect();
+        n |= (digits.parse::<i64>().unwrap_or(0) & 0xF) << shift;
+    }
+    n
+}
 
 #[cfg(test)]
 mod tests;

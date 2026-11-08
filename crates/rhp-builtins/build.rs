@@ -82,6 +82,15 @@ fn main() {
         .extra_warnings(true)
         .compile("rhp_gmp_shim");
 
+    // ext/gd's struct access, constants and error callback against gd.h.
+    println!("cargo:rerun-if-changed=src/ext/gd/shim.c");
+    cc::Build::new()
+        .file("src/ext/gd/shim.c")
+        .include(include("LIBGD"))
+        .warnings(true)
+        .extra_warnings(true)
+        .compile("rhp_gd_shim");
+
     // ICU is C++; its .pc files leave the C++ runtime to the linker driver.
     match std::env::var("CARGO_CFG_TARGET_OS").as_deref() {
         Ok("macos") | Ok("ios") => println!("cargo:rustc-link-lib=dylib=c++"),

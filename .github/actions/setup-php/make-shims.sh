@@ -22,7 +22,7 @@ shift
 extdir="$(php-config --extension-dir)"
 builtin="$(php -n -m | tr 'A-Z' 'a-z')"
 exts=""
-for e in bcmath bz2 calendar ctype curl dom exif fileinfo gettext gmp iconv intl \
+for e in bcmath bz2 calendar ctype curl dom exif fileinfo gd gettext gmp iconv intl \
          mbstring openssl pcntl phar posix session shmop simplexml sockets sodium \
          sysvmsg sysvsem sysvshm tokenizer xml xmlreader xmlwriter zip pdo pdo_sqlite \
          "$@"; do

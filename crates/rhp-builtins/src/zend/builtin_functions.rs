@@ -610,6 +610,7 @@ pub(crate) const LOADED_EXTS: &[&str] = &[
     "SPL",
     "fileinfo",
     "filter",
+    "gd",
     "gmp",
     "hash",
     "iconv",

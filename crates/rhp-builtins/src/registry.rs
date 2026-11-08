@@ -192,7 +192,8 @@ pub(crate) fn register_helpers(
 
 /// Functions whose php body requires more arguments than their arginfo
 /// (`array_udiff(): expects at least 2 arguments`; openssl_cms_verify's zpp
-/// wants `$flags`).
+/// wants `$flags`), or counts them itself (imagefilter's "Wrong parameter
+/// count").
 const BODY_MIN: &[(&str, usize)] = &[
     ("array_diff_uassoc", 2),
     ("array_diff_ukey", 2),
@@ -204,6 +205,7 @@ const BODY_MIN: &[(&str, usize)] = &[
     ("array_uintersect", 2),
     ("array_uintersect_assoc", 2),
     ("array_uintersect_uassoc", 3),
+    ("imagefilter", 0),
     ("openssl_cms_verify", 2),
 ];
 
@@ -403,7 +405,7 @@ pub fn is_refused(name: &str) -> Option<&'static str> {
 
 /// Register php functions by name. Their arity is php's, from the stub
 /// signatures (every registered php function has a stub row; the
-/// `php_builtins_have_stubs` test checks), raised to [`BODY_MIN`].
+/// `php_builtins_have_stubs` test checks), or [`BODY_MIN`]'s.
 pub(crate) fn register(m: &mut Registry, fns: &[(&'static str, NativeFn)]) {
     use rhp_bytecode::signatures::{self, Signature};
     for &(name, func) in fns {

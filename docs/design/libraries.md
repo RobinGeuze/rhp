@@ -30,7 +30,8 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
   `_libiconv_version` (macOS) or `gnu_get_libc_version()` (glibc);
   `GMP_VERSION` from libgmp's `gmp_version`;
   `ZipArchive::LIBZIP_VERSION` from `zip_libzip_version()`, phpinfo's
-  "Libzip version" from zipconf.h.
+  "Libzip version" from zipconf.h; `GD_VERSION` and phpinfo's "GD headers
+  Version" from gd.h, "GD library Version" from `gdVersionString()`.
   `version.rs` keeps hard-coded values only for libraries rhp does not link
   yet; each goes when its library is linked.
 
@@ -56,6 +57,10 @@ rather than linking dynamically quietly.
   glibc's iconv.
 - Libraries with no static archive of php's version: libzip (Homebrew's
   libzip and Debian/Ubuntu's libzip-dev ship only the shared library).
+- libgd, whose codec libraries have no complete set of static archives
+  (libavif with aom, dav1d, rav1e and SVT-AV1; libheif, libtiff and
+  fontconfig on Debian/Ubuntu). php's `--with-external-gd` loads the shared
+  library too.
 - LGPL libraries taken from the system: libgmp (LGPL-3.0+ or GPL-2.0+).
   Homebrew and libgmp-dev ship a `libgmp.a`, but linking it would put LGPL
   code into rhp's binary; linked dynamically, the user can replace it (see
@@ -96,6 +101,7 @@ Today rhp-builtins links:
 | libgmp | dynamic, Homebrew gmp | dynamic, libgmp-dev |
 | libzip | dynamic, Homebrew libzip (its own zlib, bzip2, xz and zstd links) | dynamic, libzip-dev |
 | libsqlite3 (pdo_sqlite) | static, Homebrew sqlite (keg-only; php's pdo_sqlite loads its dylib) | static, libsqlite3-dev |
+| libgd (ext/gd), with its codecs | dynamic, Homebrew gd | dynamic, libgd-dev |
 
 ICU's data library is most of the size: linking ICU statically adds about
 35 MB to `rhp` (13.5 MB → 48 MB on the mac with ICU 79.1, 33.5 MB of it
@@ -217,6 +223,16 @@ checks with `dladdr` that `zip_open` loads from the directory the build
 found it in, and that `zip_libzip_version()` is the release of zipconf.h.
 The native-deps action fails when CI's php reports another
 `ZipArchive::LIBZIP_VERSION` than libzip-dev's; there is no source build.
+libgd is dynamic as well: `libgd_is_the_library_php_links` checks with
+`dladdr` that `gdImageCreate` loads from the directory the build found it
+in and that `gdVersionString()` is the release of gd.h; the native-deps
+action fails when CI's php reports another `GD_VERSION` than libgd-dev's.
+Encoded images are byte-identical to php's only when the codec libraries
+(libpng, libjpeg-turbo, libwebp, libavif) are the ones php loads, which
+holds on both reference machines because both link the same libgd; goldens
+still compare only pixels of lossless formats and image sizes, since the
+mac's and CI's codec releases differ. ext/gd's constants are gd.stub.php's
+`@cvalue`s, evaluated against the linked gd.h in `ext/gd/shim.c`.
 The same goes for libsqlite3: `PDO::ATTR_CLIENT_VERSION` and phpinfo's
 "SQLite Library" are `sqlite3_libversion()`, so php's pdo_sqlite must load
 the libsqlite3-dev release (`ext/pdo_sqlite/sys.rs` declares the API).

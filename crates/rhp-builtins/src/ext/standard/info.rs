@@ -590,6 +590,12 @@ fn print_module(o: &mut Info, e: &str) {
     } else if e == "fileinfo" {
         o.row(&["fileinfo support", "enabled"]);
         o.row(&["libmagic", &crate::ext::fileinfo::libmagic_version()]);
+    } else if e == "gd" {
+        for (k, v) in crate::ext::gd::info_rows() {
+            o.row(&[k, &v]);
+        }
+        o.table_end();
+        print_ini(o, &["gd.jpeg_ignore_warning"], &["gd.jpeg_ignore_warning"]);
     } else if e == "zip" {
         for (k, v) in crate::ext::zip::info_rows() {
             o.row(&[&k, &v]);

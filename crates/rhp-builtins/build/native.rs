@@ -197,6 +197,29 @@ pub const LIBS: &[Lib] = &[
         linux: Mode::Static,
         install: "macOS: brew install sqlite; Debian/Ubuntu: apt install pkg-config libsqlite3-dev",
     },
+    // php links libgd dynamically (Homebrew's gd, Debian/Ubuntu's libgd3),
+    // and libgd its codecs: libavif with its AV1 encoders and decoders,
+    // libwebp, libjpeg, libpng, libtiff, FreeType and fontconfig.
+    Lib {
+        name: "LIBGD",
+        pkg: "gdlib",
+        brew: Some("gd"),
+        macos_sdk: false,
+        link: "gd",
+        incdir: "",
+        header: "gd.h",
+        macros: &[],
+        version: &["GD_MAJOR_VERSION", "GD_MINOR_VERSION", "GD_RELEASE_VERSION"],
+        macos: Mode::Dynamic(
+            "its codec closure (libavif with aom/dav1d/rav1e/svt-av1, fontconfig) has no \
+             complete set of static archives; php loads the dylib",
+        ),
+        linux: Mode::Dynamic(
+            "its codec closure (libavif, libheif, libtiff, fontconfig) has no complete set \
+             of static archives; php loads the .so",
+        ),
+        install: "macOS: brew install gd; Debian/Ubuntu: apt install pkg-config libgd-dev",
+    },
     // LGPL-3.0+/GPL-2.0+: a dynamic system library only, never static.
     Lib {
         name: "GMP",

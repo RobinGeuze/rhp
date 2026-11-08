@@ -17,7 +17,7 @@ The crates are in `crates/`, the test tooling in `tools/`.
 - **rhp-compiler**: parses PHP 8.5 with [mago-syntax](https://github.com/carthage-software/mago) and compiles
   the AST to bytecode. Refuses what rhp does not support (property hooks, `|>`, ...) with the file and line.
 - **rhp-builtins**: the runtime library: php's functions, constants and classes and about 30 extensions, laid
-  out like php-src. Links PCRE2, OpenSSL, libcurl, libxml2, ICU, zlib, bzip2, libzip, GMP and iconv.
+  out like php-src. Links PCRE2, OpenSSL, libcurl, libxml2, ICU, zlib, bzip2, libzip, libgd, GMP and iconv.
 - **rhp-csrc**: compiles C that rhp uses unmodified (php-src's crypt() code, timelib, libmagic with its
   magic database, the Argon2 reference code) into static archives, with safe Rust wrappers and every C
   symbol renamed `rhp_*`.
@@ -122,7 +122,7 @@ against it live. Those comparisons expect php 8.5.12 and can fail on another
 version.
 
 The build needs Rust 1.99 or later and the C libraries rhp links: on macOS
-php's own Homebrew dependencies (pcre2, openssl, curl, icu4c, libzip, gmp) and
+php's own Homebrew dependencies (pcre2, openssl, curl, icu4c, libzip, gd, gmp) and
 the Command Line Tools; on Debian/Ubuntu the `-dev` packages that
 [.github/actions/native-deps](.github/actions/native-deps) installs (see
 [docs/design/libraries.md](docs/design/libraries.md)). Design notes are in

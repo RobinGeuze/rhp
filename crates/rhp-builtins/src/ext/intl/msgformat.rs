@@ -246,8 +246,9 @@ struct Arg {
     s: Vec<UChar>,
 }
 
-fn c_str_lossy(s: &[u8]) -> String {
-    String::from_utf8_lossy(super::c_string(s).as_bytes()).into_owned()
+/// `"...'%s'"` of php's message: the bytes up to a NUL.
+fn quoted(what: &[u8], s: &[u8]) -> Vec<u8> {
+    [what, b": '", super::c_string(s).as_bytes(), b"'"].concat()
 }
 
 /// `umsg_format_helper`: the UTF-16 result, or `None` with the error set.
@@ -295,10 +296,7 @@ fn format_helper(
                     (u, st)
                 }
                 Err(st) => {
-                    let msg = format!(
-                        "Invalid UTF-8 data in argument key: '{}'",
-                        c_str_lossy(s.as_bytes())
-                    );
+                    let msg = quoted(b"Invalid UTF-8 data in argument key", s.as_bytes());
                     error::errors_set(host, &mfo.err, f, st, &msg)?;
                     continue;
                 }
@@ -321,10 +319,7 @@ fn format_helper(
                     Ok(true)
                 }
                 Err(st) => {
-                    let msg = format!(
-                        "Invalid UTF-8 data in string argument: '{}'",
-                        c_str_lossy(&s)
-                    );
+                    let msg = quoted(b"Invalid UTF-8 data in string argument", &s);
                     error::errors_set(host, &mfo.err, f, st, &msg)?;
                     Ok(false)
                 }
@@ -380,10 +375,12 @@ fn format_helper(
                     let dd = super::dates::zval_to_millis(host, &elem, Some(&mfo.err), f)?;
                     if failed(mfo) {
                         if let Ok(k) = super::utf16_to_utf8(&a.name) {
-                            let msg = format!(
-                                "The argument for key '{}' cannot be used as a date or time",
-                                c_str_lossy(&k)
-                            );
+                            let msg = [
+                                b"The argument for key '".as_slice(),
+                                super::c_string(&k).as_bytes(),
+                                b"' cannot be used as a date or time",
+                            ]
+                            .concat();
                             let code = mfo.err.borrow().code;
                             error::errors_set(host, &mfo.err, f, code, &msg)?;
                         }
@@ -426,10 +423,13 @@ fn format_helper(
                 }
                 _ => {
                     if let Ok(k) = super::utf16_to_utf8(&a.name) {
-                        let msg = format!(
-                            "No strategy to convert the value given for the argument with key '{}' is available",
-                            c_str_lossy(&k)
-                        );
+                        let msg = [
+                            b"No strategy to convert the value given for the argument with key '"
+                                .as_slice(),
+                            super::c_string(&k).as_bytes(),
+                            b"' is available",
+                        ]
+                        .concat();
                         error::errors_set(host, &mfo.err, f, sys::U_ILLEGAL_ARGUMENT_ERROR, &msg)?;
                     }
                 }
@@ -668,7 +668,7 @@ pub(super) fn fn_helper(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     let mfo = common::state_of::<MsgObj>(&this).expect("an object");
     match call.name {
         "getErrorCode" => return Ok(Value::Int(mfo.err.borrow().code as i64)),
-        "getErrorMessage" => return Ok(Value::str(mfo.err.borrow().message().into_bytes())),
+        "getErrorMessage" => return Ok(Value::str(mfo.err.borrow().message())),
         _ => {}
     }
     mfo.err.borrow_mut().reset();

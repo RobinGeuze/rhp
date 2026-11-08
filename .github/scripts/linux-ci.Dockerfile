@@ -28,7 +28,7 @@ RUN apt-get install -y --no-install-recommends \
       zlib1g-dev libzstd-dev libcurl4-openssl-dev \
       libbrotli-dev libidn2-dev libkrb5-dev libldap-dev libnghttp2-dev \
       libpsl-dev librtmp-dev libssh-dev libssh2-1-dev libzip-dev libgd-dev libgmp-dev \
-      libsqlite3-dev libedit-dev
+      libsqlite3-dev libsodium-dev libedit-dev
 
 # The releases php links that the distro has no -dev package of (PCRE2, libxml2).
 COPY native-deps /opt/native-deps

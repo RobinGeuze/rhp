@@ -1,0 +1,51 @@
+bool(true)
+bool(true)
+int(18)
+string(9) "line one
+"
+string(3) "lin"
+int(1)
+int(1)
+int(4)
+int(2)
+string(2) "po"
+int(2)
+string(2) "ng"
+bool(false)
+bool(true)
+int(0)
+bool(true)
+string(6) "e two
+"
+Error: socket_write(): Argument #1 ($socket) has already been closed
+bool(true)
+bool(true)
+string(9) "127.0.0.1"
+bool(true)
+bool(true)
+bool(true)
+string(9) "127.0.0.1"
+string(6) "stream"
+bool(true)
+string(10) "via stream"
+bool(false)
+bool(true)
+ValueError: socket_create(): Argument #1 ($domain) must be one of AF_UNIX, AF_PACKET, AF_INET6, or AF_INET
+ValueError: socket_bind(): Argument #3 ($port) must be between 0 and 65535
+ValueError: socket_shutdown(): Argument #2 ($mode) must be one of SHUT_RD, SHUT_WR or SHUT_RDWR
+ValueError: socket_connect(): Argument #3 ($port) cannot be null when the socket type is AF_INET
+ValueError: socket_select(): At least one array argument must be passed
+ValueError: socket_write(): Argument #3 ($length) must be greater than or equal to 0
+ValueError: socket_addrinfo_lookup(): Argument #3 ($hints) must only contain array keys "ai_flags", "ai_socktype", "ai_protocol", or "ai_family"
+ValueError: socket_addrinfo_lookup(): Argument #3 ($hints) "ai_family" key must be AF_INET or AF_INET6
+Error: Cannot directly construct AddressInfo, use socket_addrinfo_lookup() instead
+int(1)
+array(2) {
+  ["sin_port"]=>
+  int(80)
+  ["sin_addr"]=>
+  string(9) "127.0.0.1"
+}
+bool(true)
+bool(true)
+bool(true)

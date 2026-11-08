@@ -111,6 +111,36 @@ fn main() {
         .extra_warnings(true)
         .compile("rhp_gmp_shim");
 
+    // ext/sodium's constants and optional parts against the linked sodium.h.
+    println!("cargo:rerun-if-changed=src/ext/sodium/shim.c");
+    cc::Build::new()
+        .file("src/ext/sodium/shim.c")
+        .include(include("LIBSODIUM"))
+        .warnings(true)
+        .extra_warnings(true)
+        .compile("rhp_sodium_shim");
+
+    // ext/gettext's calls through libintl.h (Homebrew's renames them).
+    println!("cargo:rerun-if-changed=src/ext/gettext/shim.c");
+    let mut intl = cc::Build::new();
+    intl.file("src/ext/gettext/shim.c")
+        .warnings(true)
+        .extra_warnings(true);
+    let intl_include = include("LIBINTL");
+    if !intl_include.as_os_str().is_empty() {
+        intl.include(intl_include);
+    }
+    intl.compile("rhp_gettext_shim");
+
+    // ext/sockets' constants (consts.h) against the system's headers.
+    for f in ["src/ext/sockets/shim.c", "src/ext/sockets/consts.h"] {
+        println!("cargo:rerun-if-changed={f}");
+    }
+    cc::Build::new()
+        .file("src/ext/sockets/shim.c")
+        .warnings(true)
+        .compile("rhp_sockets_shim");
+
     // ext/gd's struct access, constants and error callback against gd.h,
     // and the formats php's configure finds in the library.
     let gd = linked.iter().find(|l| l.name == "LIBGD").expect("LIBGD");

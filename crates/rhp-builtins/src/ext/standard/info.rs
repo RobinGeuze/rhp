@@ -707,6 +707,10 @@ fn static_minfo(e: &str) -> Option<Vec<(&'static str, String)>> {
     let xml = || s(crate::ext::libxml::header_dotted_version());
     Some(match e {
         "bcmath" => vec![("BCMath support", s("enabled"))],
+        "calendar" => vec![("Calendar support", s("enabled"))],
+        "gettext" => vec![("GetText Support", s("enabled"))],
+        "sockets" => vec![("Sockets Support", s("enabled"))],
+        "sodium" => crate::ext::sodium::info_rows(),
         "ctype" => vec![("ctype functions", s("enabled"))],
         "filter" => vec![("Input Validation and Filtering", s("enabled"))],
         "posix" => vec![("POSIX support", s("enabled"))],

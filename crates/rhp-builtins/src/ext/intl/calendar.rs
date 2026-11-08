@@ -648,7 +648,7 @@ fn dispatch(host: &mut dyn Host, call: &Call) -> Result<Value, Thrown> {
     let co = common::state_of::<CalObj>(&this).expect("an object");
     match call.name {
         "getErrorCode" => return Ok(Value::Int(co.err.borrow().code as i64)),
-        "getErrorMessage" => return Ok(Value::str(co.err.borrow().message().into_bytes())),
+        "getErrorMessage" => return Ok(Value::str(co.err.borrow().message())),
         _ => {}
     }
     // Checks php makes before fetching the object.

@@ -740,7 +740,7 @@ pub(super) fn fn_helper(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     let to = common::state_of::<TzObj>(&this).expect("an object");
     match call.name {
         "getErrorCode" => return Ok(Value::Int(to.err.borrow().code as i64)),
-        "getErrorMessage" => return Ok(Value::str(to.err.borrow().message().into_bytes())),
+        "getErrorMessage" => return Ok(Value::str(to.err.borrow().message())),
         _ => {}
     }
     to.err.borrow_mut().reset();

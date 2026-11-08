@@ -1446,6 +1446,17 @@ impl ProtoFlags {
     /// for a call site (the dummy frame php pushes for an attribute
     /// constructor). Traces show it as the caller, never as a frame.
     pub const CALL_SITE: ProtoFlags = ProtoFlags(256);
+    /// A prelude function whose php body runs code before
+    /// zend_parse_parameters (intl's reset of its global error), so the VM
+    /// calls the builtins' `before_zpp` hook before binding and checking
+    /// its arguments. Set from `Builtins::prelude_flags`.
+    pub const BEFORE_ZPP: ProtoFlags = ProtoFlags(512);
+    /// A prelude function whose `callable` parameters are php's
+    /// Z_PARAM_FUNC, which raises a callable's deprecations ("self" in
+    /// callables). Other prelude functions leave that to the builtin they
+    /// pass the callable to, so their parameter check is silent, like php's
+    /// debug-build arginfo check. Set from `Builtins::prelude_flags`.
+    pub const ZPP_CALLABLE: ProtoFlags = ProtoFlags(1024);
 
     pub const fn contains(self, other: ProtoFlags) -> bool {
         self.0 & other.0 == other.0

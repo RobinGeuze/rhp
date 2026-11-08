@@ -30,6 +30,75 @@ pub(super) struct ClassSpec {
     pub(super) props: &'static str,
 }
 
+/// The generated functions whose php body does not reset the global intl
+/// error before zend_parse_parameters (most do, through
+/// `INTL_METHOD_INIT_VARS`): measured with php, by the error left after a
+/// call that zpp refuses. Every other one gets ProtoFlags::BEFORE_ZPP, so
+/// the VM calls [`super::before_zpp`] before it checks the arguments.
+const KEEPS_ERROR: &[&str] = &[
+    "Locale::acceptFromHttp",
+    "Locale::addLikelySubtags",
+    "Locale::getDefault",
+    "Locale::isRightToLeft",
+    "Locale::minimizeSubtags",
+    "Locale::setDefault",
+    "IntlBreakIterator::getIterator",
+    "IntlDateFormatter::formatObject",
+    "IntlTimeZone::getIDForWindowsID",
+    "IntlTimeZone::getWindowsID",
+    "MessageFormatter::formatMessage",
+    "MessageFormatter::getErrorCode",
+    "MessageFormatter::getErrorMessage",
+    "MessageFormatter::parseMessage",
+    "ResourceBundle::get",
+    "ResourceBundle::getIterator",
+    "UConverter::convert",
+    "UConverter::fromUCallback",
+    "UConverter::getAliases",
+    "UConverter::getAvailable",
+    "UConverter::getDestinationEncoding",
+    "UConverter::getDestinationType",
+    "UConverter::getErrorCode",
+    "UConverter::getErrorMessage",
+    "UConverter::getSourceEncoding",
+    "UConverter::getSourceType",
+    "UConverter::getStandards",
+    "UConverter::getSubstChars",
+    "UConverter::reasonText",
+    "UConverter::setDestinationEncoding",
+    "UConverter::setSourceEncoding",
+    "UConverter::setSubstChars",
+    "UConverter::toUCallback",
+    "UConverter::transcode",
+    "datefmt_format_object",
+    "intltz_get_id_for_windows_id",
+    "intltz_get_windows_id",
+    "msgfmt_format_message",
+    "msgfmt_get_error_code",
+    "msgfmt_get_error_message",
+    "msgfmt_parse_message",
+    "resourcebundle_get",
+];
+
+/// [`super::prelude_flags`] for a stub function or method of intl
+/// (`name` is `Class::method` or the function's name): BEFORE_ZPP unless
+/// php keeps the error, ZPP_CALLABLE when it takes a callable, which
+/// php's zpp checks with its deprecations (IntlChar's enumerations).
+pub(super) fn flags(name: &str, ps: &[Param]) -> rhp_bytecode::ProtoFlags {
+    use rhp_bytecode::ProtoFlags;
+    let mut f = ProtoFlags::default();
+    if !KEEPS_ERROR.contains(&name) {
+        f.insert(ProtoFlags::BEFORE_ZPP);
+    }
+    if ps.iter().any(|p| {
+        p.ty.split('|')
+            .any(|t| t.trim_start_matches('?') == "callable")
+    }) {
+        f.insert(ProtoFlags::ZPP_CALLABLE);
+    }
+    f
+}
+
 /// The PHP declaration of a class.
 pub(super) fn class_php(spec: &ClassSpec) -> String {
     let c = sigs::class(spec.name.as_bytes())
@@ -56,7 +125,13 @@ pub(super) fn class_php(spec: &ClassSpec) -> String {
     o.push_str("\n{\n");
     o.push_str(&super::class_const_decls(c.name));
     o.push_str(spec.props);
-    for m in sigs::methods().iter().filter(|m| m.class == c.name) {
+    // In the stub's order, as php lists them.
+    let mut methods: Vec<_> = sigs::methods()
+        .iter()
+        .filter(|m| m.class == c.name)
+        .collect();
+    methods.sort_by_key(|m| m.order);
+    for m in methods {
         let mut mods = String::new();
         if m.flags & sigs::ABSTRACT != 0 {
             mods.push_str("abstract ");

@@ -119,6 +119,11 @@ pub struct Builtins {
     pub cwd: fn() -> Option<Vec<u8>>,
     /// EG(assertions), the zend.assertions ini: -1 compiles `assert()` away.
     pub assertions: fn() -> i64,
+    /// Extra flags for prelude function `name` of `class` (none for a
+    /// function): what php's body does that a typed PHP declaration can't
+    /// say ([`rhp_bytecode::ProtoFlags::BEFORE_ZPP`],
+    /// [`rhp_bytecode::ProtoFlags::ZPP_CALLABLE`]).
+    pub prelude_flags: fn(Option<&[u8]>, &[u8]) -> rhp_bytecode::ProtoFlags,
 }
 
 /// Compile a parsed program into an owned, runnable bytecode `Program` (no

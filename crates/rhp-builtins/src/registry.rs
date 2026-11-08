@@ -93,6 +93,32 @@ pub fn constant_deprecation(name: &[u8]) -> Option<String> {
         .or_else(|| ext::dom::constant_deprecation(name))
         .or_else(|| ext::filter::constant_deprecation(name))
         .or_else(|| ext::standard::assert::constant_deprecation(name))
+        .or_else(|| ext::intl::constant_deprecation(name))
+}
+
+/// The compiler's `Builtins::prelude_flags`: what php's body of prelude
+/// function `class::name` (or `name`) does that its PHP declaration can't
+/// say. Only intl's functions have any.
+pub fn prelude_flags(class: Option<&[u8]>, name: &[u8]) -> rhp_bytecode::ProtoFlags {
+    ext::intl::prelude_flags(class, name)
+}
+
+/// What php's body of a prelude function does before
+/// zend_parse_parameters: called by the VM for a proto with
+/// `ProtoFlags::BEFORE_ZPP`. Only intl has such functions (it resets its
+/// global error first).
+pub fn before_zpp(_host: &mut dyn Host) -> Result<(), Thrown> {
+    ext::intl::before_zpp();
+    Ok(())
+}
+
+/// [`before_zpp`] for a native builtin of extension `ext` whose arguments
+/// zpp refused: what php's body did before zend_parse_parameters, which
+/// is only observable when zpp fails (the builtin repeats it otherwise).
+pub fn before_failed_zpp(ext: &str, name: &str) {
+    if ext == "intl" {
+        ext::intl::before_failed_zpp(name);
+    }
 }
 
 /// The value php's compiler substitutes for the global constant `name`

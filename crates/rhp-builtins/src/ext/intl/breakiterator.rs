@@ -323,7 +323,7 @@ pub(super) fn fn_helper(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     let bio = common::state_of::<BiObj>(&this).expect("an object");
     match call.name {
         "getErrorCode" => return Ok(Value::Int(bio.err.borrow().code as i64)),
-        "getErrorMessage" => return Ok(Value::str(bio.err.borrow().message().into_bytes())),
+        "getErrorMessage" => return Ok(Value::str(bio.err.borrow().message())),
         "getIterator" => {
             let h = object_handlers::object_of(&this).expect("an object");
             return Ok(Value::Object(get_iterator(host, &h, false)?));

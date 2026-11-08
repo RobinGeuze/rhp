@@ -29,7 +29,8 @@ runs:
         # libssl-dev does not pull in: -l:libjitterentropy.a -lz -lzstd.
         # libcurl.a's own dependencies are linked dynamically; Ubuntu 26.04's
         # libcurl4-openssl-dev pulls in their -dev packages, 24.04's does not.
-        # libsqlite3 (libsqlite3.a) is linked statically too.
+        # libsqlite3 (libsqlite3.a) and libsodium (libsodium.a) are linked
+        # statically too.
         # libzip and libgmp (LGPL) are linked dynamically: libzip-dev ships no
         # static archive. libgd too: its codecs have no complete static set.
         # libedit (readline) is linked dynamically, as php does.
@@ -50,6 +51,7 @@ runs:
           libgd-dev \
           libgmp-dev \
           libsqlite3-dev \
+          libsodium-dev \
           libedit-dev
         php="${PHP_BIN:-$(command -v php || true)}"
         build=""
@@ -93,6 +95,15 @@ runs:
           echo "gmp: the distro has $gmp_have; $php loads ${gmp_want:-no gmp}"
           if [ -n "$gmp_want" ] && [ "$gmp_want" != "$gmp_have" ]; then
             echo "::error::$php loads libgmp $gmp_want, but the distro's libgmp-dev is $gmp_have; rhp links the distro's"
+            exit 1
+          fi
+          # libsodium has no source build here either.
+          # shellcheck disable=SC2016
+          sodium_want="$("$php" -n -r 'echo defined("SODIUM_LIBRARY_VERSION") ? SODIUM_LIBRARY_VERSION : "";')"
+          sodium_have="$(pkg-config --modversion libsodium)"
+          echo "libsodium: the distro has $sodium_have; $php links ${sodium_want:-no sodium}"
+          if [ -n "$sodium_want" ] && [ "$sodium_want" != "$sodium_have" ]; then
+            echo "::error::$php links libsodium $sodium_want, but the distro's libsodium-dev is $sodium_have; rhp links the distro's"
             exit 1
           fi
           # libzip has no source build here either.

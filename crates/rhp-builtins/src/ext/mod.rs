@@ -6,6 +6,7 @@ use crate::module::{no_constants, no_state, no_wrappers, ModuleDef};
 
 pub mod bcmath;
 pub mod bz2;
+pub mod calendar;
 pub mod ctype;
 pub mod curl;
 pub mod date;
@@ -13,6 +14,7 @@ pub mod dom;
 pub mod fileinfo;
 pub mod filter;
 pub mod gd;
+pub mod gettext;
 pub mod gmp;
 pub mod hash;
 pub mod iconv;
@@ -35,6 +37,7 @@ pub mod reflection;
 pub mod session;
 pub mod simplexml;
 pub mod sockets;
+pub mod sodium;
 pub mod spl;
 pub mod sqlite3;
 pub mod standard;
@@ -109,6 +112,16 @@ pub(crate) fn modules() -> Vec<ModuleDef> {
             object_freed: None,
         },
         ModuleDef {
+            name: "calendar",
+            cli_only: false,
+            functions: calendar::register,
+            constants: calendar::constants,
+            prelude_php: "",
+            wrappers: no_wrappers,
+            reset: no_state,
+            object_freed: None,
+        },
+        ModuleDef {
             name: "ctype",
             cli_only: false,
             functions: ctype::register,
@@ -126,6 +139,16 @@ pub(crate) fn modules() -> Vec<ModuleDef> {
             prelude_php: gd::PRELUDE_PHP,
             wrappers: no_wrappers,
             reset: gd::reset_state,
+            object_freed: None,
+        },
+        ModuleDef {
+            name: "gettext",
+            cli_only: false,
+            functions: gettext::register,
+            constants: no_constants,
+            prelude_php: "",
+            wrappers: no_wrappers,
+            reset: no_state,
             object_freed: None,
         },
         ModuleDef {
@@ -187,6 +210,16 @@ pub(crate) fn modules() -> Vec<ModuleDef> {
             prelude_php: "",
             wrappers: bz2::wrappers,
             reset: bz2::reset_state,
+            object_freed: None,
+        },
+        ModuleDef {
+            name: "sodium",
+            cli_only: false,
+            functions: sodium::register,
+            constants: sodium::constants,
+            prelude_php: sodium::PRELUDE_PHP,
+            wrappers: no_wrappers,
+            reset: no_state,
             object_freed: None,
         },
         ModuleDef {

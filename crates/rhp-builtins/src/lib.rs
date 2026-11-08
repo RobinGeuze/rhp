@@ -44,9 +44,10 @@ pub use host::{
 };
 pub use main::streams::{StatInfo, StreamWrapper, WrapperReg};
 pub use registry::{
-    class_constant_deprecation, constant_deprecation, constants, ct_constant, functions,
-    is_refused, lookup, lookup_lc, native_function, native_resource_dtor, object_freed, prelude,
-    registry, reset_request_state, sapi_function_module, stream_wrappers, Builtin, NativeFn,
+    before_failed_zpp, before_zpp, class_constant_deprecation, constant_deprecation, constants,
+    ct_constant, functions, is_refused, lookup, lookup_lc, native_function, native_resource_dtor,
+    object_freed, prelude, prelude_flags, registry, reset_request_state, sapi_function_module,
+    stream_wrappers, Builtin, NativeFn,
 };
 pub(crate) use registry::{register, register_helpers, Registry};
 

@@ -99,6 +99,9 @@ pub struct Method {
     pub class: &'static str,
     pub name: &'static str,
     pub flags: u16,
+    /// The method's position in its class's stub (the table is sorted by
+    /// name; php lists a class's methods in declaration order).
+    pub order: u16,
     pub ret: &'static str,
     pub params: &'static [Param],
 }
@@ -167,6 +170,7 @@ pub(crate) const fn m(
     class: &'static str,
     name: &'static str,
     flags: u16,
+    order: u16,
     ret: &'static str,
     params: &'static [Param],
 ) -> Method {
@@ -174,6 +178,7 @@ pub(crate) const fn m(
         class,
         name,
         flags,
+        order,
         ret,
         params,
     }

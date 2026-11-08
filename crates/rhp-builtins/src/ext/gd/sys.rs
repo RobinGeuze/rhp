@@ -115,36 +115,63 @@ extern "C" {
 /// MINIT error method is set as soon as it is open.
 const LIBGD: &str = concat!(env!("RHP_LIBGD_DLOPEN"), "\0");
 
-static HANDLE: OnceLock<usize> = OnceLock::new();
+static HANDLE: OnceLock<Result<usize, String>> = OnceLock::new();
 
-fn handle() -> *mut c_void {
-    *HANDLE.get_or_init(|| unsafe {
+fn open_handle() -> &'static Result<usize, String> {
+    HANDLE.get_or_init(|| unsafe {
         let h = libc::dlopen(LIBGD.as_ptr().cast(), libc::RTLD_NOW | libc::RTLD_LOCAL);
         if h.is_null() {
             let err = std::ffi::CStr::from_ptr(libc::dlerror()).to_string_lossy();
-            eprintln!("rhp: cannot load libgd: {err}");
-            std::process::exit(1);
+            return Err(format!("cannot load libgd: {err}"));
         }
-        let set: unsafe extern "C" fn(*const c_void) =
-            std::mem::transmute(lookup(h, c"gdSetErrorMethod"));
+        let set = try_lookup(h, c"gdSetErrorMethod")?;
+        let set: unsafe extern "C" fn(*const c_void) = std::mem::transmute(set);
         set(rhp_gd_error_method as *const c_void);
-        h as usize
-    }) as *mut c_void
+        Ok(h as usize)
+    })
 }
 
-unsafe fn lookup(h: *mut c_void, name: &CStr) -> *mut c_void {
+/// Open libgd (once) and resolve the functions rhp calls. The error is
+/// dlerror's text or the missing symbol; gd's builtins raise it as a fatal
+/// error before they call into libgd.
+pub fn open() -> Result<(), String> {
+    open_handle().as_ref().map_err(String::clone)?;
+    api().as_ref().map(|_| ()).map_err(String::clone)
+}
+
+/// The open library. gd's builtins call [`open`] first; anything else
+/// reaching libgd (a unit test) exits when it cannot be opened.
+fn handle() -> *mut c_void {
+    match open_handle() {
+        Ok(h) => *h as *mut c_void,
+        Err(e) => {
+            eprintln!("rhp: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+unsafe fn try_lookup(h: *mut c_void, name: &CStr) -> Result<*mut c_void, String> {
     let p = unsafe { libc::dlsym(h, name.as_ptr()) };
     if p.is_null() {
-        eprintln!("rhp: libgd has no {}", name.to_string_lossy());
-        std::process::exit(1);
+        return Err(format!("libgd has no {}", name.to_string_lossy()));
     }
-    p
+    Ok(p)
+}
+
+/// A symbol shim.c needs beyond the checked table; libgd was opened, so a
+/// missing one means a libgd other than the one rhp was built against.
+unsafe fn lookup(h: *mut c_void, name: &CStr) -> *mut c_void {
+    unsafe { try_lookup(h, name) }.unwrap_or_else(|e| {
+        eprintln!("rhp: {e}");
+        std::process::exit(1);
+    })
 }
 
 /// Whether libgd has been opened (php's RSHUTDOWN only has a font cache
 /// to free then).
 pub fn loaded() -> bool {
-    HANDLE.get().is_some()
+    matches!(HANDLE.get(), Some(Ok(_)))
 }
 
 /// A libgd symbol, for shim.c.
@@ -161,19 +188,19 @@ macro_rules! libgd {
             $($name: unsafe extern "C" fn($($ty),*) $(-> $ret)?,)*
         }
 
-        fn api() -> &'static Api {
-            static API: OnceLock<Api> = OnceLock::new();
+        fn api() -> &'static Result<Api, String> {
+            static API: OnceLock<Result<Api, String>> = OnceLock::new();
             API.get_or_init(|| {
                 let h = handle();
                 unsafe {
-                    Api {
+                    Ok(Api {
                         $($name: std::mem::transmute::<
                             *mut c_void,
                             unsafe extern "C" fn($($ty),*) $(-> $ret)?,
-                        >(lookup(h, CStr::from_bytes_with_nul(
+                        >(try_lookup(h, CStr::from_bytes_with_nul(
                             concat!(stringify!($name), "\0").as_bytes(),
-                        ).unwrap())),)*
-                    }
+                        ).unwrap())?),)*
+                    })
                 }
             })
         }
@@ -181,7 +208,14 @@ macro_rules! libgd {
         $(
             #[allow(clippy::too_many_arguments, clippy::missing_safety_doc)]
             pub unsafe extern "C" fn $name($($arg: $ty),*) $(-> $ret)? {
-                unsafe { (api().$name)($($arg),*) }
+                let api = match api() {
+                    Ok(api) => api,
+                    Err(e) => {
+                        eprintln!("rhp: {e}");
+                        std::process::exit(1);
+                    }
+                };
+                unsafe { (api.$name)($($arg),*) }
             }
         )*
     };

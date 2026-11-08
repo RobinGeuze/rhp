@@ -29,6 +29,8 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
   Library Version" from `OpenSSL_version()`; `ICONV_VERSION` from
   `_libiconv_version` (macOS) or `gnu_get_libc_version()` (glibc);
   `GMP_VERSION` from libgmp's `gmp_version`;
+  `SODIUM_LIBRARY_VERSION` from `sodium_version_string()` and phpinfo's
+  "libsodium headers version" from version.h;
   `ZipArchive::LIBZIP_VERSION` from `zip_libzip_version()`, phpinfo's
   "Libzip version" from zipconf.h; `GD_VERSION` and phpinfo's "GD headers
   Version" from gd.h, "GD library Version" from `gdVersionString()`.
@@ -40,7 +42,7 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
 | Kind | Linked | Examples |
 |---|---|---|
 | Code rhp compiles: php-src C, frozen vendored libraries | static | php-src's crypt C, timelib, libavifinfo, lexbor, argon2 (in `rhp-csrc`); libmbfl and php_unicode.c (in `rhp-mbfl-sys`, LGPL); later oniguruma |
-| A third-party library whose static archive is the build php links | static | PCRE2, ICU, OpenSSL, libcurl, libsqlite3, libxml2 on Linux |
+| A third-party library whose static archive is the build php links | static | PCRE2, ICU, OpenSSL, libcurl, libsqlite3, libsodium, libxml2 on Linux |
 | The listed exceptions below | dynamic | |
 
 A static archive is "the build php links" when it comes from the same package
@@ -63,12 +65,17 @@ rather than linking dynamically quietly.
   library too. rhp does not link it but opens it with `dlopen` the first
   time a script uses ext/gd (`Mode::Loaded`; `ext/gd/sys.rs`): loading its
   dependency closure costs about 55M instructions, a quarter of an empty
-  `rhp -r ''`, which every process would pay. build.rs runs php's
+  `rhp -r ''`, which every process would pay. A libgd that cannot be
+  opened (or lacks a function rhp calls) is a fatal error of the gd
+  function that needed it. build.rs runs php's
   configure probe for the formats (`PHP_GD_CHECK_FORMAT`) against it, so
   registering ext/gd's functions needs no library.
 - libedit (ext/readline) on Linux: php's readline extension loads the
   distro's libedit.so; libedit-dev's archive would also need libtinfo's.
   On macOS it is the SDK's /usr/lib/libedit, as listed above.
+- libintl (ext/gettext) on macOS: Homebrew's gettext, LGPL-2.1+, as php
+  links it. On Linux gettext is part of glibc (`Mode::Libc`: nothing to
+  link).
 - LGPL libraries taken from the system: libgmp (LGPL-3.0+ or GPL-2.0+).
   Homebrew and libgmp-dev ship a `libgmp.a`, but linking it would put LGPL
   code into rhp's binary; linked dynamically, the user can replace it (see
@@ -487,6 +494,9 @@ One VM per OS thread (see the web SAPI plan). For C libraries:
   per-thread document tables. Trees never leave their VM's thread.
 - **No process-global side effects from a VM:** no `setlocale` (use
   `newlocale`/`uselocale`), no `putenv("TZ=…")`, no chdir(2) or umask(2).
+  The exceptions are the script's own requests, as in php: `setlocale()`,
+  and `putenv()` of `TZ` and the locale variables (`LC_*`, `LANG`,
+  `LANGUAGE`, which libintl reads), each restored at request end.
   A path handed to a library that opens files itself goes through
   `rhp_builtins::zend::virtual_cwd` first (`resolve`, `absolute` or `expand_filepath`,
   as the php code being ported does), and a file the library creates gets
@@ -642,3 +652,4 @@ Tables php-src owns are generated, committed, and checked by
 | `dumps` | the reference php: `tools/capture-ref-build.php tables`, plus constants gated on a newer library (`CONST_EXTRAS`) | `main/ini_table.rs`, `const_modules.rs`, `func_modules.rs` | `cargo test` on the reference host |
 | `curl-consts` | php-src `ext/curl/curl.stub.php` (names, `@cvalue`, `LIBCURL_VERSION_NUM` gates, `#[\Deprecated]`) and `curl_private.h` | `ext/curl/consts.rs`, `ext/curl/consts.c` (values from the linked curl.h) | CI job `generated` (php-src checkout) |
 | `zip-consts` | php-src `ext/zip/php_zip.stub.php`: `ZipArchive`'s constants, `@cvalue`, `#ifdef` guards, attributes | `ext/zip/consts.h` (values from the linked zip.h, through `ext/zip/shim.c`) | CI job `generated` (php-src checkout) |
+| `sockets-consts` | php-src `ext/sockets/sockets.stub.php`: the constants, `@cvalue`, `#if` guards | `ext/sockets/consts.h` (values from the system's socket headers, through `ext/sockets/shim.c`) | CI job `generated` (php-src checkout) |

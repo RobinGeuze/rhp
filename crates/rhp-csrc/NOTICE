@@ -65,6 +65,13 @@ ext/fileinfo/libmagic/
   compiled from libmagic's Magdir; php_libmagic.c and php_libmagic.h are
   php's own (PHP License).
 
+ext/calendar/
+  Scott E. Lee's serial day number conversions (THIRD-PARTY-NOTICES section
+  37): Copyright 1993-1995, Scott E. Lee, all rights reserved. Permission
+  granted to use, copy, modify, distribute and sell so long as the above
+  copyright and this permission statement are retained in all copies.
+  THERE IS NO WARRANTY - USE AT YOUR OWN RISK.
+
 ext/standard/libavifinfo/
   BSD-2-Clause (ext/standard/libavifinfo/LICENSE), with the Alliance for
   Open Media Patent License 1.0 (PATENTS). Copyright (c) 2021, Alliance for

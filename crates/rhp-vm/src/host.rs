@@ -2111,6 +2111,13 @@ impl Host for Vm {
         if let (Some(d), false) = (deprecated, silent) {
             self.class_const_deprecation(decl, name, &d)?;
         }
+        // A built-in class's `#[\Deprecated]` constant, as the opcode raises.
+        if !silent && self.is_internal_class(decl) {
+            let dname = self.classes[decl as usize].name.as_bytes();
+            if let Some(msg) = builtins::class_constant_deprecation(dname, name) {
+                self.diag(builtins::E_DEPRECATED, &msg)?;
+            }
+        }
         if self.classes[cid as usize].enum_backing.is_some() {
             self.update_class_constants(cid)?;
         }

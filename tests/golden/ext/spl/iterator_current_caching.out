@@ -40,3 +40,9 @@ current
 3
 current
 4
+int(1)
+string(7) "changed"
+valid 1
+valid 2
+valid valid 1
+valid 

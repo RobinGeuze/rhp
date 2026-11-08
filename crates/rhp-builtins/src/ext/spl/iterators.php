@@ -428,7 +428,15 @@ class RecursiveIteratorIterator implements OuterIterator {
         if (array_key_exists($l, $this->__cc)) { return $this->__cc[$l]; }
         $it = $this->__its[$l];
         if (self::__sxeDone($it)) { return null; }
-        return $this->__cc[$l] = $it->current();
+        $v = $it->current();
+        // spl_array's iterator reads the element each time, unless a
+        // subclass overrides current().
+        if (!($it instanceof ArrayIterator) || self::__userCurrent($it)) { $this->__cc[$l] = $v; }
+        return $v;
+    }
+    private static $__uc = [];
+    private static function __userCurrent($it): bool {
+        return self::$__uc[$it::class] ??= (new ReflectionMethod($it, 'current'))->class !== 'ArrayIterator';
     }
     private static function __sxeDone($it): bool { return ($it::class === 'SimpleXMLElement' || $it::class === 'SimpleXMLIterator') && !$it->valid(); }
     public function next(): void { $this->__forward(); }
@@ -687,11 +695,17 @@ class NoRewindIterator extends IteratorIterator {
 
 class InfiniteIterator extends IteratorIterator {
     public function __construct(Iterator $iterator) { parent::__construct($iterator); }
+    // spl_infinite_it_next: fetch without a second valid() check.
     public function next(): void {
         $this->__dfree();
-        $this->__it->next();
-        if (!$this->__it->valid()) { $this->__it->rewind(); }
-        $this->__dfetch();
+        $it = $this->__it;
+        $it->next();
+        if (!$it->valid()) {
+            $it->rewind();
+            if (!$it->valid()) { return; }
+        }
+        $this->__cur = $it->current(); $this->__has = true;
+        $this->__key = $it->key();
     }
 }
 

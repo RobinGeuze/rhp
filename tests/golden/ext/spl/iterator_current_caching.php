@@ -43,3 +43,13 @@ class ATree extends RecursiveArrayIterator {
 }
 $it = new RecursiveIteratorIterator(new ATree([1, [2, 3], 4]), RecursiveIteratorIterator::SELF_FIRST);
 foreach ($it as $v) { echo is_array($v) ? 'A' : $v, "\n"; }
+// RecursiveIteratorIterator over an array iterator reads the element anew.
+$rai = new RecursiveArrayIterator(['a' => 1, 'b' => 2]);
+$rii = new RecursiveIteratorIterator($rai);
+$rii->rewind(); var_dump($rii->current()); $rai['a'] = 'changed'; var_dump($rii->current());
+// InfiniteIterator::next() checks valid() once.
+class LogIt extends ArrayIterator {
+    public function valid(): bool { echo "valid "; return parent::valid(); }
+}
+$n = 0;
+foreach (new InfiniteIterator(new LogIt([1, 2])) as $v) { if (++$n > 3) { break; } echo "$v\n"; }

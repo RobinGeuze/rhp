@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests of tools.py's and composer_diff.py's comparison helpers.
+"""Unit tests of tools.py's, composer_diff.py's and console.py's comparison helpers.
 
     python3 tests/apps/harness_test.py
 """
@@ -11,6 +11,7 @@ from pathlib import Path
 sys.dont_write_bytecode = True  # no __pycache__ in the tree
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import composer_diff  # noqa: E402
+import console  # noqa: E402
 import tools  # noqa: E402
 
 CS_A = """Loaded config default.
@@ -151,6 +152,35 @@ class Platform(unittest.TestCase):
         a = composer_diff.mask("OpenSSL version: OpenSSL 4.0.3 29 Sep 2026\nlib-openssl 4.0.3 OpenSSL 4.0.3\n", [])
         b = composer_diff.mask("OpenSSL version: OpenSSL 4.1.0 23 Oct 2026\nlib-openssl 4.1.0 OpenSSL 4.1.0\n", [])
         self.assertEqual(a, b)
+
+
+class ConsoleTimeMasks(unittest.TestCase):
+    W = (1_800_000_000.4, 1_800_000_003.9)  # the command ran for 3.5 seconds
+
+    def mask(self, text, window=W):
+        spec = [{"name": n, "re": console.BUILTINS[n][0], "timed": console.BUILTINS[n][1], "in": ["stdout"]}
+                for n in ("now-epoch", "now-datetime")]
+        return console.masked(text, "stdout", "c", spec, [], window)
+
+    def test_during_the_run(self):
+        self.assertEqual(self.mask("t=1800000002 at 2027-01-15 08:00:03"), "t=<NOW> at <NOWDT>")
+        self.assertEqual(self.mask("1799999999 1800000005"), "<NOW> <NOW>")  # 2 s slack
+
+    def test_whole_minutes_away(self):
+        # A TTL or schedule: the offset stays in the placeholder, so php's
+        # now+1h and a candidate's now (or now+2h) do not compare equal.
+        self.assertEqual(self.mask("1800003601 1800007200"), "<NOW+3600s> <NOW+7200s>")
+        self.assertEqual(self.mask("2027-01-15 09:00:02"), "<NOWDT+3600s>")
+
+    def test_other_times_kept(self):
+        # Not of the run (away but not by whole minutes), before it, and
+        # beyond the horizon.
+        self.assertEqual(self.mask("1800000030 1800086430 1799913601 1799000000 1899999960"),
+                         "1800000030 1800086430 1799913601 1799000000 1899999960")
+        self.assertEqual(self.mask("2026-01-01 00:00:00"), "2026-01-01 00:00:00")
+
+    def test_without_a_window_nothing_is_masked(self):
+        self.assertEqual(self.mask("1800000002", None), "1800000002")
 
 
 if __name__ == "__main__":

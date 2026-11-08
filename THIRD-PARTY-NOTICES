@@ -59,6 +59,7 @@ software is linked into rhp or distributed with it.
 32. Apache printf   Apache Group licence 1.0-style (php's main/snprintf.c)
 33. libgd           GD licence (permissive, credit required)
 34. libedit         BSD-3-Clause
+35. http_parser     MIT (Ryan Dahl), with php's changes (PHP-3.01)
 
 
 ------------------------------------------------------------------------------
@@ -2954,3 +2955,35 @@ declares the functions it calls.
   LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
   OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
   SUCH DAMAGE.
+
+
+------------------------------------------------------------------------------
+35. http_parser
+------------------------------------------------------------------------------
+
+php-src's sapi/cli/php_http_parser.c and php_http_parser.h, the HTTP request
+parser of php's built-in web server: Ryan Dahl's http_parser (from nginx's
+parser), modified by Moriyoshi Koizumi for php-src. Compiled unmodified by
+crates/rhp-csrc from vendor/php-src/sapi/cli for `rhp -S`, with
+sapi/cli/mime_type_map.h (php's own, PHP License 3.01, section 4). php's
+changes come under the PHP License 3.01. The parser's licence:
+
+  Copyright 2009,2010 Ryan Dahl <ry@tinyclouds.org>
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to
+  deal in the Software without restriction, including without limitation the
+  rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+  sell copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+  IN THE SOFTWARE.

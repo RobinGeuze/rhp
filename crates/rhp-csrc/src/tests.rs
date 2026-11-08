@@ -109,6 +109,9 @@ fn archives_define_only_prefixed_symbols() {
     if cfg!(feature = "avifinfo") {
         want.push("librhp_csrc_avifinfo.a");
     }
+    if cfg!(feature = "cli_server") {
+        want.push("librhp_csrc_cli_server.a");
+    }
     if cfg!(feature = "crypt") {
         want.push("librhp_csrc_crypt.a");
     }

@@ -276,6 +276,20 @@ impl Vm {
 
     /// `isset($o->name)`: a set, non-null property reachable from the scope,
     /// else `__isset`, else false.
+    /// The class's `has_property` handler says a hooked property is not
+    /// set (DatePeriod made without its constructor).
+    fn handler_says_unset(
+        &mut self,
+        h: &ObjectHandle,
+        cls: ClassId,
+        k: &PhpStr,
+    ) -> Result<bool, Thrown> {
+        match self.class(cls).handlers.and_then(|t| t.has_property) {
+            Some(f) => Ok(f(self, h, k.as_bytes())? == Some(false)),
+            None => Ok(false),
+        }
+    }
+
     pub(crate) fn prop_isset(
         &mut self,
         top: usize,
@@ -292,6 +306,9 @@ impl Vm {
             PropRes::Slot(k)
                 if self.classes[cls as usize].hooked && self.hooked_entry(cls, k).is_some() =>
             {
+                if self.handler_says_unset(&h, cls, k)? {
+                    return Ok(false);
+                }
                 match self.hooked_read(&h, cls, k) {
                     Some(r) => return Ok(!matches!(deref(&r?), Value::Null)),
                     None => h.borrow().props().get(k).cloned(),
@@ -475,6 +492,9 @@ impl Vm {
             PropRes::Slot(k)
                 if self.classes[cls as usize].hooked && self.hooked_entry(cls, k).is_some() =>
             {
+                if self.handler_says_unset(&h, cls, k)? {
+                    return Ok(Value::Null);
+                }
                 match self.hooked_read(&h, cls, k) {
                     Some(r) => return r.map(|v| deref(&v)),
                     None => h.borrow().props().get(k).cloned(),

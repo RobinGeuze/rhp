@@ -1,0 +1,54 @@
+string(10) "2026-01-01"
+int(3)
+bool(false)
+bool(true)
+Cannot modify readonly property DatePeriod::$start
+Cannot unset DatePeriod::$start
+Cannot modify readonly property DatePeriod::$include_end_date
+Cannot unset DatePeriod::$include_end_date
+Cannot modify readonly property DatePeriod::$recurrences #0
+bool(true)
+bool(false)
+array(0) {
+}
+array(2) {
+  [0]=>
+  string(7) "virtual"
+  [1]=>
+  string(6) "public"
+}
+string(13) "?DateInterval"
+array(7) {
+  [0]=>
+  string(5) "start"
+  [1]=>
+  string(7) "current"
+  [2]=>
+  string(3) "end"
+  [3]=>
+  string(8) "interval"
+  [4]=>
+  string(11) "recurrences"
+  [5]=>
+  string(18) "include_start_date"
+  [6]=>
+  string(16) "include_end_date"
+}
+bool(false)
+array(7) {
+  [0]=>
+  string(5) "start"
+  [1]=>
+  string(7) "current"
+  [2]=>
+  string(3) "end"
+  [3]=>
+  string(8) "interval"
+  [4]=>
+  string(11) "recurrences"
+  [5]=>
+  string(18) "include_start_date"
+  [6]=>
+  string(16) "include_end_date"
+}
+bool(false)

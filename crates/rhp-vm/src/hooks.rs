@@ -222,6 +222,11 @@ impl Vm {
         h: &ObjectHandle,
         name: &PhpStr,
     ) -> Result<Value, Thrown> {
+        // A prelude class's get_property_ptr_ptr refusal (DatePeriod).
+        let cls = h.borrow().class;
+        if let Some(f) = self.class(cls).handlers.and_then(|t| t.write_property) {
+            f(self, h, name.as_bytes())?;
+        }
         let got = self.prop_fetch_raw(top, h, name)?;
         match &got {
             Value::Ref(_) | Value::Object(_) => Ok(got),

@@ -226,8 +226,63 @@ static INTERVAL_HANDLERS: ObjectHandlers = ObjectHandlers {
 static PERIOD_HANDLERS: ObjectHandlers = ObjectHandlers {
     get_properties_for: Some(date_period_get_properties_for),
     clone_obj: CloneObj::Custom(date_object_clone_period),
+    unset_property: Some(date_period_unset_property),
+    has_property: Some(date_period_has_property),
+    write_property: Some(date_period_write_property),
     ..ObjectHandlers::STD
 };
+
+/// date_period_write_property / _get_property_ptr_ptr: the virtual
+/// properties are read-only.
+fn date_period_write_property(
+    _host: &mut dyn Host,
+    _h: &ObjectHandle,
+    name: &[u8],
+) -> Result<(), Thrown> {
+    if super::classes::is_period_prop(name) {
+        return Err(Thrown::error(
+            "Error",
+            format!(
+                "Cannot modify readonly property DatePeriod::${}",
+                String::from_utf8_lossy(name)
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// date_period_has_property: a period made without its constructor has
+/// none of its properties set.
+fn date_period_has_property(
+    _host: &mut dyn Host,
+    h: &ObjectHandle,
+    name: &[u8],
+) -> Result<Option<bool>, Thrown> {
+    if super::classes::is_period_prop(name) && !period_state(h).initialized {
+        return Ok(Some(false));
+    }
+    Ok(None)
+}
+
+/// date_period_unset_property: the virtual properties cannot be unset.
+fn date_period_unset_property(
+    host: &mut dyn Host,
+    h: &ObjectHandle,
+    name: &[u8],
+) -> Result<(), Thrown> {
+    if super::classes::is_period_prop(name) {
+        let class = host.class_name(h.borrow().class).unwrap_or_default();
+        return Err(Thrown::error(
+            "Error",
+            format!(
+                "Cannot unset {}::${}",
+                String::from_utf8_lossy(&class),
+                String::from_utf8_lossy(name)
+            ),
+        ));
+    }
+    Ok(())
+}
 
 pub(crate) static CLASSES: &[ClassHandlers] = &[
     ClassHandlers {

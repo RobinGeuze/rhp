@@ -151,23 +151,15 @@ class DatePeriod implements IteratorAggregate {
     public function __wakeup() { __date('dp_wakeup', $this); }
     public static function __set_state(array $array) { return __date('dp_set_state', $array); }
     public function getIterator(): Iterator { return __date('dp_iterator', $this); }
-    public function __get($name) {
-        if (__date('dp_internal', $name)) { return __date('dp_get', $this, $name); }
-        return $this->$name;
-    }
-    public function __set($name, $value) {
-        __date('dp_set', $this, $name);
-        $this->$name = $value;
-    }
-    public function __isset($name) {
-        $r = __date('dp_isset', $this, $name);
-        if ($r === null) { return isset($this->$name); }
-        return $r;
-    }
-    public function __unset($name) {
-        __date('dp_unset', $this, $name);
-        unset($this->$name);
-    }
+    // The stub's @virtual properties, served by date_period_read_property /
+    // _write_property (dp_get / dp_set).
+    public ?DateTimeInterface $start { get => __date('dp_get', $this, 'start'); set(mixed $value) { __date('dp_set', $this, 'start'); } }
+    public ?DateTimeInterface $current { get => __date('dp_get', $this, 'current'); set(mixed $value) { __date('dp_set', $this, 'current'); } }
+    public ?DateTimeInterface $end { get => __date('dp_get', $this, 'end'); set(mixed $value) { __date('dp_set', $this, 'end'); } }
+    public ?DateInterval $interval { get => __date('dp_get', $this, 'interval'); set(mixed $value) { __date('dp_set', $this, 'interval'); } }
+    public int $recurrences { get => __date('dp_get', $this, 'recurrences'); set(mixed $value) { __date('dp_set', $this, 'recurrences'); } }
+    public bool $include_start_date { get => __date('dp_get', $this, 'include_start_date'); set(mixed $value) { __date('dp_set', $this, 'include_start_date'); } }
+    public bool $include_end_date { get => __date('dp_get', $this, 'include_end_date'); set(mixed $value) { __date('dp_set', $this, 'include_end_date'); } }
 }
 
 function date_create(string $datetime = "now", ?DateTimeZone $timezone = null) { return __date('date_create', 'DateTime', $datetime, $timezone); }

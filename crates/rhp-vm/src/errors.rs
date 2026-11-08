@@ -358,14 +358,17 @@ impl Vm {
     }
 
     /// Frame `i` is engine plumbing with no php counterpart: a prelude
-    /// class's `__`-prefixed helper, or a magic method standing in for
-    /// php's property, dimension or `get_method` handlers. Traces leave it
+    /// class's `__`-prefixed helper or property hook, or a magic method
+    /// standing in for php's property, dimension or `get_method` handlers. Traces leave it
     /// out (see [`Self::dispatched_method`]).
     fn is_plumbing_frame(&self, i: usize) -> bool {
         let f = &self.stack[i];
         f.include_kind().is_none()
             && f.proto.is_internal()
             && (is_engine_helper_name(f.proto.name.as_bytes())
+                // A prelude property hook (`$p::get`), php's read/write
+                // handler.
+                || f.proto.name.as_bytes().starts_with(b"$")
                 || f.defining_class.is_some_and(|c| {
                     is_handler_accessor(self.class(c).name.as_bytes(), f.proto.name.as_bytes())
                 }))

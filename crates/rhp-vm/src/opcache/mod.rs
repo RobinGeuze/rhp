@@ -436,7 +436,7 @@ impl Vm {
     /// `require_once` that resolved `given` to the cached script at `path`:
     /// php adds `given` as another key of it, included already or not.
     pub(crate) fn opcache_note_once(&mut self, given: &[u8], path: &[u8]) {
-        if !self.opcache_on() {
+        if !self.opcache_on() || self.revalidate_path() {
             return;
         }
         let key = self.persistent_key(given, path);
@@ -457,6 +457,12 @@ impl Vm {
             }
         }
         rhp_values::mem::uncounted(|| drop(msgs));
+    }
+
+    /// opcache.revalidate_path: php then never looks a script up, or adds
+    /// it, under the name it was asked for; only its resolved path counts.
+    fn revalidate_path(&self) -> bool {
+        ini_flag(&self.ini(b"opcache.revalidate_path"))
     }
 
     fn ini(&self, name: &[u8]) -> Vec<u8> {
@@ -621,7 +627,11 @@ impl Vm {
             script.last_used = request_time;
             Some(script.program(kind).cloned())
         });
-        let key = self.persistent_key(given, path);
+        let key = if self.revalidate_path() {
+            None
+        } else {
+            self.persistent_key(given, path)
+        };
         let add_key = |c: &mut Cache| c.add_key(key.as_deref(), path);
         match found {
             Some(Some(p)) => {
@@ -852,6 +862,7 @@ impl Vm {
         if given.is_empty()
             || builtins::main::streams::split_scheme(given).0 != b"file"
             || !self.opcache_on()
+            || self.revalidate_path()
         {
             return None;
         }

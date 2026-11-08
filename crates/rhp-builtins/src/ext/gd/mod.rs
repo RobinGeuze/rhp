@@ -1505,6 +1505,29 @@ fn image_output(host: &mut dyn Host, args: &[Value], f: &str, gd2: bool) -> Resu
     if quality == -1 {
         quality = 128;
     }
+    // PHP_GD_CHECK_OPEN_BASEDIR and VCWD_FOPEN(file, "wb") come before
+    // libgd writes anything.
+    let file = match file.filter(|p| !p.is_empty()) {
+        Some(path) => {
+            if !crate::main::fopen_wrappers::check(host, f, &path, true)? {
+                crate::warn(host, f, "Invalid filename")?;
+                return Ok(Value::Bool(false));
+            }
+            let resolved = crate::zend::virtual_cwd::resolve(&path).into_owned();
+            let fp = crate::zend::virtual_cwd::library_created(&resolved, 0o666, || {
+                std::fs::File::create(crate::zend::virtual_cwd::os_path(&resolved)).ok()
+            });
+            let Some(fp) = fp else {
+                let mut m = b"Unable to open \"".to_vec();
+                m.extend_from_slice(&path);
+                m.extend_from_slice(b"\" for writing");
+                crate::warn(host, f, &m)?;
+                return Ok(Value::Bool(false));
+            };
+            Some(fp)
+        }
+        None => None,
+    };
     let bytes = gd(host, f, || unsafe {
         let mut size: c_int = 0;
         let p = if gd2 {
@@ -1519,24 +1542,10 @@ fn image_output(host: &mut dyn Host, args: &[Value], f: &str, gd2: bool) -> Resu
         sys::gdFree(p);
         v
     })?;
-    match file.filter(|p| !p.is_empty()) {
-        Some(path) => {
-            // PHP_GD_CHECK_OPEN_BASEDIR, then VCWD_FOPEN(file, "wb").
-            if !crate::main::fopen_wrappers::check(host, f, &path, true)? {
-                crate::warn(host, f, "Invalid filename")?;
-                return Ok(Value::Bool(false));
-            }
-            let resolved = crate::zend::virtual_cwd::resolve(&path).into_owned();
-            let ok = crate::zend::virtual_cwd::library_created(&resolved, 0o666, || {
-                std::fs::write(crate::zend::virtual_cwd::os_path(&resolved), &bytes).is_ok()
-            });
-            if !ok {
-                let mut m = b"Unable to open \"".to_vec();
-                m.extend_from_slice(&path);
-                m.extend_from_slice(b"\" for writing");
-                crate::warn(host, f, &m)?;
-                return Ok(Value::Bool(false));
-            }
+    match file {
+        Some(mut fp) => {
+            use std::io::Write;
+            let _ = fp.write_all(&bytes);
         }
         None => host.write_out(&bytes),
     }

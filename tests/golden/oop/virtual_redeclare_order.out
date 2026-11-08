@@ -1,0 +1,81 @@
+object(B)#1 (4) {
+  ["a"]=>
+  int(1)
+  ["b"]=>
+  int(2)
+  ["v"]=>
+  int(3)
+  ["c"]=>
+  int(4)
+}
+Array
+(
+    [a] => 1
+    [b] => 2
+    [v] => 3
+    [c] => 4
+)
+Array
+(
+    [a] => 1
+    [v] => 9
+    [b] => 2
+    [c] => 4
+)
+a=1 v=9 b=2 c=4 
+object(L3)#2 (5) {
+  ["z"]=>
+  int(0)
+  ["x"]=>
+  int(10)
+  ["m"]=>
+  int(1)
+  ["y"]=>
+  int(20)
+  ["n"]=>
+  int(2)
+}
+Array
+(
+    [x] => 1
+    [y] => 2
+    [z] => 0
+    [m] => 1
+    [n] => 2
+)
+x=1 y=2 z=0 m=1 n=2 
+{"x":1,"y":2,"z":0,"m":1,"n":2}
+object(G)#1 (5) {
+  ["p":protected]=>
+  int(1)
+  ["q":"F":private]=>
+  int(2)
+  ["w"]=>
+  int(3)
+  ["v"]=>
+  int(4)
+  ["g"]=>
+  int(5)
+}
+p=1 v=4 q=2 w=3 g=5 
+Array
+(
+    [p] => 1
+    [q] => 2
+    [w] => 3
+    [v] => 4
+    [g] => 5
+)
+v=4 w=3 g=5 
+v=4 w=3 g=5 
+Array
+(
+    [w] => 3
+    [v] => 4
+    [g] => 5
+)
+F: iterateable
+G: iterateable
+H: iterateable
+P: iterateable
+Q: iterateable

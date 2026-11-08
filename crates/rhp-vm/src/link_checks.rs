@@ -188,8 +188,7 @@ impl Vm {
         // zend_do_inheritance_ex
         if let Some(pid) = proto.parent.as_ref().and_then(|p| class_of(self, p)) {
             let parent = &self.classes[pid];
-            let pname_raw = parent.name.as_bytes().to_vec();
-            let pname = String::from_utf8_lossy(&pname_raw).into_owned();
+            let pname = String::from_utf8_lossy(parent.name.as_bytes()).into_owned();
             let (pkind, pflags) = (parent.kind, parent.flags);
             if proto.kind == ClassKind::Interface {
                 if pkind != ClassKind::Interface {
@@ -199,8 +198,7 @@ impl Vm {
             } else if pkind == ClassKind::Enum {
                 let msg = format!("Class {name} cannot extend enum {pname}");
                 return fail(self, 64, msg);
-            } else if pflags.is_final && !pname_raw.windows(11).any(|w| w == b"@anonymous\0") {
-                // (rhp marks anonymous classes final; php does not.)
+            } else if pflags.is_final {
                 let msg = format!("Class {name} cannot extend final class {pname}");
                 return fail(self, 64, msg);
             } else if matches!(pkind, ClassKind::Interface | ClassKind::Trait) {

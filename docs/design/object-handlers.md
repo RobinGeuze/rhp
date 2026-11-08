@@ -201,6 +201,8 @@ Notes:
 - `not_cloneable` is set from the handlers (`CloneObj::None`) and for
   enums, and is inherited with them.
 - Every anonymous class is `not_serializable`, as zend_compile sets it.
+  It is not final (php sets no ZEND_ACC_FINAL), so an alias of one can be
+  extended.
 
 `no_dynamic` applies wherever php creates a property: plain assignment,
 and the fetches for a write or reference through a property (`$o->p[] =`,

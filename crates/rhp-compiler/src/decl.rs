@@ -761,7 +761,7 @@ pub(crate) fn compile_anon_class(
     );
     let flags = ClassFlags {
         is_abstract: false,
-        is_final: true,
+        is_final: false,
         is_readonly: has_modifier(&ac.modifiers, |m| matches!(m, Modifier::Readonly(_))),
         allow_dynamic: has_allow_dynamic(&ac.attribute_lists),
         // zend_compile_class_decl: every anonymous class.

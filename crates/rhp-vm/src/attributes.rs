@@ -145,6 +145,18 @@ impl Vm {
         Ok(())
     }
 
+    /// Frame `i` (a user frame) is at a call whose result it frees (php's
+    /// `!RETURN_VALUE_USED`).
+    pub(crate) fn frame_at_discarded_call(&self, i: usize) -> bool {
+        let f = &self.stack[i];
+        !f.proto.is_internal()
+            && f.pc > 0
+            && f.proto
+                .discard_calls
+                .binary_search(&((f.pc - 1) as rhp_bytecode::Pc))
+                .is_ok()
+    }
+
     /// The calling user frame is at a call whose result it frees.
     fn caller_discards(&self) -> bool {
         let Some(f) = self.stack.last() else {

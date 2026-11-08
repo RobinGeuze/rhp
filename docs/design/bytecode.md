@@ -492,6 +492,11 @@ reads each function's C body for the parameters php parses as any value, a
 resource or an open stream, so the VM checks those too and parses the
 scalars after them. The VM raises a `#[\Deprecated]` builtin's deprecation
 before any of this, from the stub's `since` and `message`.)
+A user function's object or array result that the caller does not use (a
+call in `FunctionProto::discard_calls`) is freed by `do_return` before the
+callee's variables and `$this`, as ZEND_RETURN does, so later objects get
+php's handles. A call run synchronously (`call_user_func`, a closure
+invoked in place) can still free it after the callee's frame.
 
 **Attributes the engine acts on.** The compiler runs php's internal
 attribute table (`rhp-compiler/src/attrs.rs`, zend_attributes.c): allowed

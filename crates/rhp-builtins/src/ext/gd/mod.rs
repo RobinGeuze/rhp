@@ -2430,17 +2430,19 @@ fn ttftext(host: &mut dyn Host, args: &[Value], f: &str, draw: bool) -> Result<V
         Some(_) => Some(arr(host, args, rest + 2, f)?),
         None => None,
     };
+    // gd.c names argument 2 for both forms: `$angle` for imageftbbox.
+    let arg2 = if draw { "size" } else { "angle" };
     let lim = (i64::MIN as f64 / 64.0, i64::MAX as f64 / 64.0);
     if ptsize < lim.0 || ptsize > lim.1 {
         return Err(verr(
             f,
             2,
-            "size",
+            arg2,
             &format!("must be between {} and {}", lim.0 as i64, lim.1 as i64),
         ));
     }
     if !ptsize.is_finite() {
-        return Err(verr(f, 2, "size", "must be finite"));
+        return Err(verr(f, 2, arg2, "must be finite"));
     }
     angle *= std::f64::consts::PI / 180.0;
     let mut linespace = None;

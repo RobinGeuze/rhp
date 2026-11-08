@@ -712,6 +712,12 @@ fn dispatch(host: &mut dyn Host, call: &Call) -> Result<Value, Thrown> {
                     b"Calling IntlCalendar::set() with more than 2 arguments is deprecated, use either IntlCalendar::setDate() or IntlCalendar::setDateTime() instead",
                 )?;
             }
+            if n > 6 {
+                return Err(Thrown::error(
+                    "ArgumentCountError",
+                    format!("{f}() expects at most 6 arguments, {n} given"),
+                ));
+            }
             for i in 0..n {
                 check_i32(call, i, call.long(i, 0))?;
             }

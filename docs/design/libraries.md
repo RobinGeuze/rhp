@@ -106,6 +106,12 @@ of the linked uvernum.h, and build.rs refuses an ICU built with
 php's formula moves to a newer `icu4c@N`, the `ICU_*` rows in `native.rs`
 follow (ref_build's "linked" section fails until they do).
 
+Where php's intl uses ICU's C++ API (MessageFormat, Calendar, TimeZone,
+DateFormat, BreakIterator) rhp does too, from `ext/intl/icu.cpp` and
+`ext/intl/breakiter.cpp`. The latter holds php's own
+`PHP::CodePointBreakIterator`, under that name, so `var_dump()` of an
+IntlCodePointBreakIterator shows php's `typeid` name.
+
 iconv has no row in `native.rs`: there is no .pc file or version macro to
 check (php reads `_libiconv_version` or `gnu_get_libc_version()` at run
 time), and on Linux it is part of libc. `ext/iconv/sys.rs` links it, and its
@@ -588,7 +594,7 @@ Tables php-src owns are generated, committed, and checked by
 | Generator | Source | Output | Checked |
 |---|---|---|---|
 | `html-tables` | php-src `ext/standard/html_tables/` (+ `html_tables.h` for HTML5 ties) | `rhp-builtins/src/ext/standard/html_tables.rs` | CI job `generated` (php-src checkout) |
-| `intl-consts` | php-src `ext/intl` stubs: global constants' and the implemented classes' (Collator, NumberFormatter, Locale) constants: names, types, `@cvalue`, `#if` guards and attributes (values come from the linked ICU's headers when `ext/intl/shim.c` compiles) | `rhp-builtins/src/ext/intl/consts.h`, `class_consts.h` | CI job `generated` (php-src checkout) |
+| `intl-consts` | php-src `ext/intl` stubs: global constants' and the class constants of every intl class: names, types, `@cvalue`, `#if` guards and attributes (values come from the linked ICU's headers when `ext/intl/shim.cpp` compiles) | `rhp-builtins/src/ext/intl/consts.h`, `class_consts.h` | CI job `generated` (php-src checkout) |
 | `parser` | the release tarball (`tools/php-dist.sha256`): Bison's `zend_language_parser.{c,h}`, `zend_ini_parser.{c,h}`; the numbers of the grammar rules whose actions rhp runs | `ext/tokenizer/ids.rs`, `zend/*_parser_tables.rs` | CI job `generated` (tarball cached on the pin) |
 | `dumps` | the reference php: `tools/capture-ref-build.php tables`, plus constants gated on a newer library (`CONST_EXTRAS`) | `main/ini_table.rs`, `const_modules.rs`, `func_modules.rs` | `cargo test` on the reference host |
 | `curl-consts` | php-src `ext/curl/curl.stub.php` (names, `@cvalue`, `LIBCURL_VERSION_NUM` gates, `#[\Deprecated]`) and `curl_private.h` | `ext/curl/consts.rs`, `ext/curl/consts.c` (values from the linked curl.h) | CI job `generated` (php-src checkout) |

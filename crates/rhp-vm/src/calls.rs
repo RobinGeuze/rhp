@@ -909,7 +909,16 @@ impl Vm {
                 }
                 let st = rhp_bytecode::signatures::method(cname, proto.name.as_bytes())?;
                 let name = format!("{}::{}", String::from_utf8_lossy(cname), st.name);
-                (name, st.min_args(), st.max_args())
+                // IntlCalendar::set() deprecates more than 2 arguments
+                // before zpp counts them; its body checks the maximum.
+                let max = if cname.eq_ignore_ascii_case(b"IntlCalendar")
+                    && proto.name.as_bytes().eq_ignore_ascii_case(b"set")
+                {
+                    None
+                } else {
+                    st.max_args()
+                };
+                (name, st.min_args(), max)
             }
             Some(_) => return None,
             None => {

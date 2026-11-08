@@ -30,6 +30,7 @@ mod breakiterator;
 mod calendar;
 mod collator;
 mod common;
+mod converter;
 mod cpp;
 mod dateformat;
 mod dates;
@@ -38,6 +39,7 @@ mod formatter;
 mod grapheme;
 mod idn;
 mod iterator;
+mod listformatter;
 mod locale;
 mod msgformat;
 mod normalizer;
@@ -49,7 +51,7 @@ mod transliterator;
 mod uchar;
 
 pub(crate) use error::ERROR_LEVEL_DEPRECATION;
-pub(crate) use error::{error_reset, error_set, error_set_code, error_set_msg, u_error_name};
+pub(crate) use error::{error_reset, error_set_code, u_error_name};
 
 use sys::{UChar, UErrorCode};
 
@@ -544,6 +546,8 @@ pub fn register(m: &mut crate::Registry) {
             ("__resbundle", resourcebundle::fn_helper, 3, None),
             ("__translit", transliterator::fn_helper, 3, None),
             ("__intlchar", uchar::fn_helper, 3, None),
+            ("__listfmt", listformatter::fn_helper, 3, None),
+            ("__uconv", converter::fn_helper, 3, None),
             ("__spoof", spoofchecker::fn_helper, 3, None),
             ("__msgfmt", msgformat::fn_helper, 3, None),
             ("__datefmt", dateformat::fn_helper, 3, None),
@@ -570,6 +574,11 @@ pub(crate) static CLASSES: &[crate::zend::object_handlers::ClassHandlers] = &[
     crate::zend::object_handlers::ClassHandlers {
         class: "NumberFormatter",
         handlers: &formatter::HANDLERS,
+        create_object: true,
+    },
+    crate::zend::object_handlers::ClassHandlers {
+        class: "IntlListFormatter",
+        handlers: &listformatter::HANDLERS,
         create_object: true,
     },
     crate::zend::object_handlers::ClassHandlers {
@@ -613,6 +622,11 @@ pub(crate) static CLASSES: &[crate::zend::object_handlers::ClassHandlers] = &[
         create_object: true,
     },
     crate::zend::object_handlers::ClassHandlers {
+        class: "UConverter",
+        handlers: &converter::HANDLERS,
+        create_object: true,
+    },
+    crate::zend::object_handlers::ClassHandlers {
         class: "Transliterator",
         handlers: &transliterator::HANDLERS,
         create_object: true,
@@ -645,8 +659,41 @@ const CLASSES_AFTER: &[(&common::ClassSpec, &[(&str, &str)])] = &[
     (&breakiterator::RBBI_SPEC, &[]),
     (&breakiterator::CPBI_SPEC, &[]),
     (&iterator::PARTS_SPEC, &[]),
+    (&converter::SPEC, &[]),
     (&uchar::SPEC, &[]),
 ];
+
+unsafe extern "C" {
+    fn rhp_intl_info_version(which: i32) -> *const std::ffi::c_char;
+}
+sys::icu! {
+    pub fn ucal_getTZDataVersion(status: *mut UErrorCode) -> *const std::ffi::c_char;
+}
+
+/// `PHP_MINFO_FUNCTION(intl)`'s rows (its ini entries follow).
+pub(crate) fn info_rows() -> Vec<(&'static str, String)> {
+    let v = |which| {
+        // SAFETY: a static string or NULL.
+        let p = unsafe { rhp_intl_info_version(which) };
+        (!p.is_null()).then(|| String::from_utf8_lossy(&c_bytes(p)).into_owned())
+    };
+    let mut rows = vec![("Internationalization support", "enabled".to_string())];
+    rows.push(("ICU version", v(0).unwrap_or_default()));
+    if let Some(d) = v(1) {
+        rows.push(("ICU Data version", d));
+    }
+    let mut status = sys::U_ZERO_ERROR;
+    // SAFETY: ICU's static version string.
+    let tz = unsafe { ucal_getTZDataVersion(&mut status) };
+    if status == sys::U_ZERO_ERROR {
+        rows.push((
+            "ICU TZData version",
+            String::from_utf8_lossy(&c_bytes(tz)).into_owned(),
+        ));
+    }
+    rows.push(("ICU Unicode version", v(2).unwrap_or_default()));
+    rows
+}
 
 /// The intl classes, in php_intl.c's MINIT order: their constants from
 /// the linked ICU, their methods calling the procedural functions' code
@@ -662,6 +709,10 @@ pub fn prelude() -> &'static str {
             );
         }
         for (marker, list) in [
+            (
+                "// %CLASSES AFTER NumberFormatter%\n",
+                &[(&listformatter::SPEC, &[][..])][..],
+            ),
             ("// %CLASSES BEFORE IntlException%\n", CLASSES_BEFORE),
             ("// %CLASSES AFTER IntlException%", CLASSES_AFTER),
         ] {

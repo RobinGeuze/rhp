@@ -26,6 +26,10 @@ const STUBS: &[&str] = &[
 const CLASS_STUBS: &[(&str, &str)] = &[
     ("ext/intl/collator/collator.stub.php", "Collator"),
     ("ext/intl/formatter/formatter.stub.php", "NumberFormatter"),
+    (
+        "ext/intl/listformatter/listformatter.stub.php",
+        "IntlListFormatter",
+    ),
     ("ext/intl/locale/locale.stub.php", "Locale"),
     (
         "ext/intl/dateformat/dateformat.stub.php",
@@ -49,6 +53,7 @@ const CLASS_STUBS: &[(&str, &str)] = &[
         "ext/intl/breakiterator/breakiterator_iterators.stub.php",
         "IntlPartsIterator",
     ),
+    ("ext/intl/converter/converter.stub.php", "UConverter"),
     ("ext/intl/uchar/uchar.stub.php", "IntlChar"),
 ];
 
@@ -199,7 +204,10 @@ fn class_constants(text: &str, class: &str) -> Result<String, String> {
             }
             continue;
         }
-        if t == head || t.starts_with(&format!("{head} ")) {
+        let decl = t
+            .trim_start_matches("final ")
+            .trim_start_matches("abstract ");
+        if decl == head || decl.starts_with(&format!("{head} ")) {
             in_class = true;
             continue;
         }

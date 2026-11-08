@@ -69,19 +69,6 @@ pub(crate) fn error_set_code(code: UErrorCode) {
     ERR.with(|e| e.borrow_mut().code = code);
 }
 
-/// The global message alone, without php's `intl.error_level` and
-/// `intl.use_exceptions` reporting (two grapheme helpers that have no
-/// host).
-pub(crate) fn error_set_msg(fname: &str, msg: &str) {
-    ERR.with(|e| e.borrow_mut().msg = Some(format!("{fname}(): {msg}")));
-}
-
-/// `intl_error_set(NULL, code, msg)` without the reporting.
-pub(crate) fn error_set(fname: &str, code: UErrorCode, msg: &str) {
-    error_set_code(code);
-    error_set_msg(fname, msg);
-}
-
 /// Runs a constructor body with php's forced settings.
 pub(crate) fn in_ctor<T>(f: impl FnOnce() -> T) -> T {
     let old = CTOR.with(|c| c.replace(true));

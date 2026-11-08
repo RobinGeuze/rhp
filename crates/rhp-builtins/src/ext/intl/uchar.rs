@@ -396,6 +396,8 @@ pub(super) fn fn_helper(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
 unsafe extern "C" {
     /// icu.cpp: ICU's `U8_NEXT` over `len` bytes from 0; the index after.
     fn rhp_u8_next(s: *const u8, len: i32, cp: *mut UChar32) -> i32;
+    /// The same from index `i`.
+    pub(super) fn rhp_u8_next_from(s: *const u8, i: i32, len: i32, cp: *mut UChar32) -> i32;
 }
 
 type EnumTypesFn = extern "C" fn(*const c_void, UChar32, UChar32, i32) -> UBool;

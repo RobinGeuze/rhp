@@ -130,8 +130,9 @@ fn ret(ty: &str, name: &str) -> String {
 }
 
 /// The functions whose php bodies count their arguments themselves
-/// ("Too many arguments"): they take any number.
-const COUNT_OWN_ARGS: &[&str] = &["intlgregcal_create_instance", "__construct"];
+/// ("Too many arguments", or a deprecation before zpp's count check):
+/// they take any number.
+const COUNT_OWN_ARGS: &[&str] = &["intlgregcal_create_instance", "__construct", "set"];
 
 fn params(ps: &[Param], name: &str) -> String {
     let mut out = Vec::new();

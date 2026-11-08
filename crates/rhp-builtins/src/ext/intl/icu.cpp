@@ -683,5 +683,12 @@ int32_t rhp_u8_next(const uint8_t *s, int32_t len, UChar32 *cp) {
 	*cp = c;
 	return i;
 }
+/* U8_NEXT from index `i` (UConverter's toUCallback strings); the index after. */
+int32_t rhp_u8_next_from(const uint8_t *s, int32_t i, int32_t len, UChar32 *cp) {
+	UChar32 c;
+	U8_NEXT(s, i, len, c);
+	*cp = c;
+	return i;
+}
 
 } /* extern "C" */

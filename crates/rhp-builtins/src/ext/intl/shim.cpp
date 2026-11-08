@@ -24,6 +24,10 @@
 #include <unicode/uscript.h>
 #include <unicode/timezone.h>
 #include <unicode/brkiter.h>
+#include <unicode/ucnv.h>
+#include <unicode/ulistformatter.h>
+#include <unicode/ures.h>
+#include <unicode/ucnv_cb.h>
 
 /* php's own @cvalue macros (intl_data.h, grapheme.h, idn.h) */
 #define INTL_MAX_LOCALE_LEN (ULOC_FULLNAME_CAPACITY - 1)
@@ -53,6 +57,9 @@
 #define PARTS_ITERATOR_KEY_SEQUENTIAL 0
 #define PARTS_ITERATOR_KEY_LEFT 1
 #define PARTS_ITERATOR_KEY_RIGHT 2
+/* listformatter_class.h */
+#define INTL_LISTFORMATTER_FALLBACK_TYPE_AND 0
+#define INTL_LISTFORMATTER_FALLBACK_WIDTH_WIDE 0
 
 using icu::BreakIterator;
 using icu::TimeZone;
@@ -128,5 +135,31 @@ static_assert(sizeof(UChar) == 2, "UChar");
 static_assert(sizeof(UIDNAInfo) == 16, "UIDNAInfo");
 static_assert(offsetof(UIDNAInfo, isTransitionalDifferent) == 2, "UIDNAInfo.isTransitionalDifferent");
 static_assert(offsetof(UIDNAInfo, errors) == 4, "UIDNAInfo.errors");
+static_assert(U_INVALID_STATE_ERROR == 27, "U_INVALID_STATE_ERROR");
+static_assert(U_USING_FALLBACK_WARNING == -128 && U_USING_DEFAULT_WARNING == -127, "U_USING_*_WARNING");
+static_assert(U_AMBIGUOUS_ALIAS_WARNING == -122, "U_AMBIGUOUS_ALIAS_WARNING");
+static_assert(URES_STRING == 0 && URES_BINARY == 1 && URES_TABLE == 2 && URES_INT == 7
+	&& URES_ARRAY == 8 && URES_INT_VECTOR == 14, "URES_*");
+static_assert(UCNV_UNASSIGNED == 0 && UCNV_ILLEGAL == 1 && UCNV_IRREGULAR == 2 && UCNV_RESET == 3
+	&& UCNV_CLOSE == 4 && UCNV_CLONE == 5, "UConverterCallbackReason");
+/* converter.rs's ToUArgs / FromUArgs */
+static_assert(offsetof(UConverterToUnicodeArgs, source) == 2 * sizeof(void *), "ToUArgs.source");
+static_assert(offsetof(UConverterToUnicodeArgs, target) == 4 * sizeof(void *), "ToUArgs.target");
+static_assert(sizeof(UConverterToUnicodeArgs) == 7 * sizeof(void *), "ToUArgs");
+static_assert(offsetof(UConverterFromUnicodeArgs, target) == 4 * sizeof(void *), "FromUArgs.target");
+static_assert(sizeof(UConverterFromUnicodeArgs) == 7 * sizeof(void *), "FromUArgs");
+
+/* PHP_MINFO_FUNCTION(intl)'s version macros: 0 ICU, 1 ICU data, 2 Unicode. */
+const char *rhp_intl_info_version(int which)
+{
+	switch (which) {
+		case 0: return U_ICU_VERSION;
+#ifdef U_ICU_DATA_VERSION
+		case 1: return U_ICU_DATA_VERSION;
+#endif
+		case 2: return U_UNICODE_VERSION;
+		default: return NULL;
+	}
+}
 
 } /* extern "C" */

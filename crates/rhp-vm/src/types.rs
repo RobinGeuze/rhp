@@ -232,16 +232,25 @@ impl Vm {
             // frame (its scope and `$this`), deprecations included.
             let callable = needs_callable_check(&ty.kinds, &cur);
             let checked = if callable {
-                let this = proto.this_cv.and_then(|cv| match &frame.regs[cv as usize] {
-                    Value::Object(h) => Some(h.clone()),
-                    _ => None,
-                });
-                let saved = self
-                    .fcc_scope
-                    .replace(Some((frame.defining_class, frame.called_class)));
+                // A prelude function checks it as php's zpp does, in the
+                // scope of the innermost user frame (its caller).
+                let (scope, called, this) = if proto.is_internal() {
+                    let outer = self.fcc_scope.take();
+                    let s = self.callable_scope();
+                    self.fcc_scope.set(outer);
+                    s
+                } else {
+                    let this = proto.this_cv.and_then(|cv| match &frame.regs[cv as usize] {
+                        Value::Object(h) => Some(h.clone()),
+                        _ => None,
+                    });
+                    (frame.defining_class, frame.called_class, this)
+                };
+                let saved = self.fcc_scope.replace(Some((scope, called)));
                 let saved_this = self.fcc_this.replace(this);
                 let mut deps = Vec::new();
                 let _ = self.resolve_callable_ex(&cur, proto.is_internal(), &mut deps);
+                let ctx = if proto.is_internal() { scope } else { ctx };
                 let r = self.check_one(&cur, ty, strict, ctx);
                 self.fcc_scope.set(saved);
                 *self.fcc_this.borrow_mut() = saved_this;

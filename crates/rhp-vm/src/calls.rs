@@ -1543,10 +1543,22 @@ impl Vm {
                     .fcc_scope
                     .replace(Some((cd.bound_class, cd.bound_static)));
                 let saved_this = self.fcc_this.replace(cd.bound_this.clone());
-                // A dynamic call's raw arguments, as plain values.
+                // A dynamic call's raw arguments: references for the
+                // wrapped callee's by-reference parameters, else values.
                 let args = if dynamic {
-                    let args = self.settle_undef_args(args, |_| false)?;
-                    args.iter().map(deref).collect()
+                    let proto = self.callable_proto(&w).map(|(p, _)| p);
+                    let refs: Vec<bool> = (0..args.len() as u16)
+                        .map(|i| match &proto {
+                            Some(p) => param_is_ref(p, i),
+                            None => self.builtin_callable_arg_is_ref(&w, i),
+                        })
+                        .collect();
+                    let is_ref = |i: usize| refs.get(i).copied().unwrap_or(false);
+                    let args = self.settle_undef_args(args, is_ref)?;
+                    args.into_iter()
+                        .enumerate()
+                        .map(|(i, a)| if is_ref(i) { a } else { deref(&a) })
+                        .collect()
                 } else {
                     args
                 };
@@ -2445,6 +2457,17 @@ impl Vm {
 
     /// The user-code proto a callable value would run (for named-argument
     /// placement before a dynamic call), with its scope class.
+    /// Whether the builtin callable `c` takes argument `idx` by reference.
+    #[inline(never)]
+    pub(crate) fn builtin_callable_arg_is_ref(&self, c: &Value, idx: u16) -> bool {
+        use rhp_bytecode::signatures::Signature;
+        match self.resolve_callable(c) {
+            Ok(Callee::Builtin(n)) => rhp_bytecode::signatures::function(n.as_bytes())
+                .is_some_and(|s| s.by_ref(idx as usize)),
+            _ => false,
+        }
+    }
+
     pub(crate) fn callable_proto(&self, c: &Value) -> Option<(Rc<FunctionProto>, Option<ClassId>)> {
         if let Value::Closure(cd) = deref(c) {
             return match &cd.wrapped {

@@ -2432,9 +2432,11 @@ impl Vm {
                 }
                 Instr::ValueArgIsRef { dst, callee, idx } => {
                     let c = self.reg_get(top, callee);
-                    let r = self
-                        .callable_proto(&c)
-                        .is_some_and(|(p, _)| crate::calls::param_is_ref(&p, idx));
+                    let r = match self.callable_proto(&c) {
+                        Some((p, _)) => crate::calls::param_is_ref(&p, idx),
+                        // A builtin's by-reference positions (its stub).
+                        None => self.builtin_callable_arg_is_ref(&c, idx),
+                    };
                     self.reg_set(top, dst, Value::Bool(r));
                 }
                 Instr::FuncArgIsRef { dst, func, idx } => {

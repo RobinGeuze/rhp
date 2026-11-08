@@ -712,6 +712,7 @@ impl ProtoBuilder<'_> {
             }
             _ => self.compile_expr(fc.function)?,
         };
+        let callee = self.snapshot_callee(&fc.argument_list, fc.function, callee);
         // INIT_DYNAMIC_CALL resolves the callee before the arguments run;
         // only an argument that can be seen running needs that done apart.
         if args_run_code(&fc.argument_list) {
@@ -1513,6 +1514,25 @@ impl ProtoBuilder<'_> {
         t
     }
 
+    /// A callee part held in a plain variable (`$f(...)`, `$o->$m(...)`) is
+    /// read before the arguments run (INIT_DYNAMIC_CALL / INIT_METHOD_CALL):
+    /// copy it to a temp when an argument could assign it (`$f($f = 'b')`).
+    fn snapshot_callee(
+        &mut self,
+        list: &crate::parse::cst::ArgumentList,
+        expr: &Expression,
+        r: Reg,
+    ) -> Reg {
+        if !matches!(expr, Expression::Variable(Variable::Direct(_)))
+            || !list.arguments.iter().any(arg_may_write)
+        {
+            return r;
+        }
+        let t = self.alloc_temp();
+        self.emit(Instr::Mov { dst: t, src: r });
+        t
+    }
+
     /// The by-ref mask for a method/constructor name (empty if none).
     pub(crate) fn method_ref_mask(&self, name_lc: &[u8]) -> Vec<bool> {
         self.cx.method_ref_mask(name_lc)
@@ -1533,6 +1553,7 @@ impl ProtoBuilder<'_> {
     ) -> Result<Reg, Thrown> {
         self.check_method_name(selector)?;
         let obj = self.compile_expr(object)?;
+        let obj = self.snapshot_callee(args, object, obj);
         // `$o?->m(...)`: a null object makes the whole chain null, without
         // evaluating the arguments.
         if null_safe {
@@ -1571,6 +1592,18 @@ impl ProtoBuilder<'_> {
                     Ok(dst)
                 }
                 Sel::Dyn(name) => {
+                    // `$o->$m($m = …)`: the name is read first.
+                    let name = if matches!(
+                        selector,
+                        crate::parse::cst::ClassLikeMemberSelector::Variable(Variable::Direct(_))
+                    ) && args.arguments.iter().any(arg_may_write)
+                    {
+                        let t = self.alloc_temp();
+                        self.emit(Instr::Mov { dst: t, src: name });
+                        t
+                    } else {
+                        name
+                    };
                     if has_spread(args) || has_named(args) {
                         let args = self.build_args_array(
                             Some(args),

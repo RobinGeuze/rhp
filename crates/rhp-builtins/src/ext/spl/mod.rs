@@ -23,7 +23,18 @@ static SPL_FIXEDARRAY_HANDLERS: ObjectHandlers = ObjectHandlers {
     ..ObjectHandlers::STD
 };
 
+/// `SplObjectStorage`'s spl_object_storage_compare_objects.
+static SPL_OBJECT_STORAGE_HANDLERS: ObjectHandlers = ObjectHandlers {
+    compare: Some(spl_object_storage_compare_objects),
+    ..ObjectHandlers::STD
+};
+
 pub(crate) static CLASSES: &[ClassHandlers] = &[
+    ClassHandlers {
+        class: "SplObjectStorage",
+        handlers: &SPL_OBJECT_STORAGE_HANDLERS,
+        create_object: true,
+    },
     ClassHandlers {
         class: "SplFixedArray",
         handlers: &SPL_FIXEDARRAY_HANDLERS,
@@ -94,6 +105,56 @@ fn spl_array_get_properties_for(
         PropPurpose::Debug => Ok(None),
         PropPurpose::Serialize | PropPurpose::GetObjectVars => Ok(None),
     }
+}
+
+/// spl_object_storage_compare_objects: two plain SplObjectStorage objects
+/// compare their storage as zend_hash_compare (unordered): the counts, then
+/// each object's info against the other's; a subclass is uncomparable.
+fn spl_object_storage_compare_objects(
+    host: &mut dyn Host,
+    a: &Value,
+    b: &Value,
+) -> Result<Option<i32>, Thrown> {
+    // ZEND_COMPARE_OBJECTS_FALLBACK
+    if !crate::zend::object_handlers::has_handlers(host, a, &SPL_OBJECT_STORAGE_HANDLERS)
+        || !crate::zend::object_handlers::has_handlers(host, b, &SPL_OBJECT_STORAGE_HANDLERS)
+    {
+        return Ok(None);
+    }
+    let (Value::Object(x), Value::Object(y)) = (a, b) else {
+        return Ok(None);
+    };
+    let plain = |h: &ObjectHandle| {
+        host.class_name(h.borrow().class)
+            .is_some_and(|n| n == b"SplObjectStorage")
+    };
+    if !plain(x) || !plain(y) {
+        return Ok(Some(1));
+    }
+    let info = |h: &ObjectHandle| match h
+        .borrow()
+        .props()
+        .get(&PhpStr::from("\0SplObjectStorage\0__v"))
+        .map(deref)
+    {
+        Some(Value::Array(a)) => a,
+        _ => PhpArray::new(),
+    };
+    let (s1, s2) = (info(x), info(y));
+    if s1.len() != s2.len() {
+        return Ok(Some(if s1.len() > s2.len() { 1 } else { -1 }));
+    }
+    for (k, v) in s1.iter() {
+        let Some(w) = s2.get(&k) else {
+            return Ok(Some(1));
+        };
+        match crate::host::host_compare(host, v, w)? {
+            std::cmp::Ordering::Equal => {}
+            std::cmp::Ordering::Less => return Ok(Some(-1)),
+            std::cmp::Ordering::Greater => return Ok(Some(1)),
+        }
+    }
+    Ok(Some(0))
 }
 
 /// spl_fixedarray_object_get_properties_for: the elements (not for

@@ -146,10 +146,11 @@ class SplObjectStorage implements Countable, SeekableIterator, Serializable, Arr
         if (!$ok || !is_array($m)) { throw new UnexpectedValueException("Error at offset $p of $n bytes"); }
         __object_properties_load($this, $m);
     }
-    public function __debugInfo() {
+    // spl_object_storage_debug_info: the properties, then the storage.
+    public function __debugInfo(): array {
         $st = [];
         foreach ($this->__o as $h => $o) { $st[] = ['obj' => $o, 'inf' => $this->__v[$h]]; }
-        return ["\0SplObjectStorage\0storage" => $st];
+        return __spl_user_props($this) + ["\0SplObjectStorage\0storage" => $st];
     }
 }
 

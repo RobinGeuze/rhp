@@ -1,0 +1,13 @@
+bool(false)
+bool(true)
+int(-1)
+bool(true)
+bool(false)
+int(-1)
+bool(false)
+bool(false)
+bool(false)
+bool(false)
+
+Deprecated: Creation of dynamic property SplObjectStorage::$dyn is deprecated in /Users/robing/gits/rhp/.claude/worktrees/rest/w3-prelude-surface/tests/golden/ext/spl/storage_compare.php on line 12
+bool(true)

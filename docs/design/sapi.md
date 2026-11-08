@@ -57,9 +57,18 @@ builtins) and `sapi/cgi/cgi_main.c` (the CGI front end).
   php's messages (`-v` and `-i` run after module startup, so its
   warnings come first); the php-cli modes rhp lacks (`-l`, `-m`, `-s`,
   `-w`, `-B`/`-R`/`-F`/`-E`, `--rf` and friends, `--ini`,
-  `--repeat`) are refused after php's own checks, and `-a` (the
-  interactive shell, readline_cli.c, not ported) gets the error of a php
-  without readline.
+  `--repeat`) are refused after php's own checks. `-a` runs
+  readline_cli.c's interactive shell (rhp-builtins
+  `ext/readline/cli.rs`): `Script::Shell` sets `Vm::set_interactive`, so
+  after request startup the shell reads lines with libedit's
+  `readline()`, gathers them until `cli_is_valid_code` sees a complete
+  statement, and evaluates each one in the global scope as "php shell
+  code" (`Host::shell_eval`: an uncaught throwable is a warning, a fatal
+  error or `exit` only sets the exit status). `#name=value` lines set ini
+  directives, `cli.prompt` and `cli.pager` work as in php (php-cli's
+  writes reach the shell through `readline_shell_output`), and tab
+  completion offers variables, directives, functions, constants and
+  classes.
 
 ## The embedding API
 

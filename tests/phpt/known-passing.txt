@@ -9788,6 +9788,7 @@ ext/random/tests/03_randomizer/serialize.phpt
 ext/random/tests/03_randomizer/serialize_disallowed.phpt
 ext/readline/tests/bug69054.phpt
 ext/readline/tests/bug72538.phpt
+ext/readline/tests/bug77812-libedit.phpt
 ext/readline/tests/gh16812.phpt
 ext/readline/tests/gh18139.phpt
 ext/readline/tests/libedit_callback_handler_install_001.phpt
@@ -9796,6 +9797,7 @@ ext/readline/tests/libedit_info_001.phpt
 ext/readline/tests/libedit_write_history_001.phpt
 ext/readline/tests/readline_basic.phpt
 ext/readline/tests/readline_clear_history_001.phpt
+ext/readline/tests/readline_cli_ini_directive.phpt
 ext/readline/tests/readline_completion_function_001.phpt
 ext/readline/tests/readline_read_history_open_basedir_001.phpt
 ext/readline/tests/readline_without_input.phpt
@@ -15322,8 +15324,11 @@ sapi/cli/tests/002-unix.phpt
 sapi/cli/tests/002.phpt
 sapi/cli/tests/003-2.phpt
 sapi/cli/tests/003.phpt
+sapi/cli/tests/009.phpt
+sapi/cli/tests/012-2.phpt
 sapi/cli/tests/012.phpt
 sapi/cli/tests/015.phpt
+sapi/cli/tests/017.phpt
 sapi/cli/tests/019.phpt
 sapi/cli/tests/021.phpt
 sapi/cli/tests/025.phpt

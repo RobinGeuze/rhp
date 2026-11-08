@@ -394,6 +394,8 @@ pub struct Vm {
     main_ret: Option<Value>,
     // The next include runs as the request's next primary script.
     primary_next: bool,
+    // php -a: the readline shell runs instead of a script.
+    interactive: bool,
     // The shutdown sequence's stack ({main} as an internal frame) is set up.
     in_shutdown_scope: bool,
     // Per-run extension state (`Host::module_state`), by module key.

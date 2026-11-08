@@ -808,6 +808,16 @@ pub trait Host {
     fn executing_file(&self) -> Option<Vec<u8>>;
     /// Global variable `name` from the global symbol table (an
     /// auto-global is armed first), None when unset.
+    /// php -a: evaluate one statement's `code` in the global scope as the
+    /// file `name` (zend_eval_stringl under zend_try): errors are reported,
+    /// an uncaught throwable as a warning, `exit` only sets the status.
+    fn shell_eval(&mut self, _code: &[u8], _name: &str) {}
+    /// `EG(exit_status)`.
+    fn exit_status(&self) -> i32 {
+        0
+    }
+    /// Set `EG(exit_status)`.
+    fn set_exit_status(&mut self, _status: i32) {}
     fn global_var(&mut self, _name: &[u8]) -> Option<Value> {
         None
     }

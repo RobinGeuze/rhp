@@ -188,6 +188,7 @@ impl Vm {
             finished_main: None,
             main_ret: None,
             primary_next: false,
+            interactive: false,
             in_shutdown_scope: false,
             module_states: HashMap::new(),
             sapi: request::SapiState::new(sapi),
@@ -486,6 +487,12 @@ impl Vm {
     }
 
     /// Skip auto_prepend_file (`-r` code).
+    /// php -a: after the (empty) main script, the readline shell reads and
+    /// runs statements until its input ends.
+    pub fn set_interactive(&mut self) {
+        self.interactive = true;
+    }
+
     pub fn disable_auto_prepend(&mut self) {
         self.auto_prepend = false;
     }
@@ -1015,6 +1022,11 @@ impl Vm {
         let status = match self.run(prog) {
             Ok(c) => c,
             Err(t) => self.uncaught_in_main(t)?,
+        };
+        let status = if self.interactive {
+            builtins::readline_shell_run(self)
+        } else {
+            status
         };
         let status = self.primary_script_done(status)?;
         let status = self.shutdown_sequence(status, &mut |vm, t| vm.top_level_throw(t))?;

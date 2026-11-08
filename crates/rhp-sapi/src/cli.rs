@@ -3,8 +3,7 @@
 //! `rhp` reads options, and reports bad ones, as php does. The modes rhp
 //! does not have (`-i`, `-l`, `-m`, `-s`, `-w`, `-B`/`-R`/`-F`/`-E`,
 //! `--rf` and friends, `--ini`, `--repeat`) are refused once php would run
-//! them, after its own checks. `-a` is an error, as in a php without
-//! readline.
+//! them, after its own checks. `-a` runs readline_cli.c's shell.
 
 use crate::getopt::{opt, Opt, OptDef, PhpGetopt, NO_ARG, OPTIONAL, REQUIRED};
 use crate::Script;
@@ -173,6 +172,7 @@ pub fn main_bytes(raw: &[Vec<u8>]) -> i32 {
     let mut exec_direct: Option<String> = None;
     let (mut exec_run, mut exec_begin, mut exec_end) = (false, false, false);
     let mut hide_argv = false;
+    let mut interactive = false;
     let mut num_repeats = 1;
     let mut g = PhpGetopt::new(args, OPTIONS);
     loop {
@@ -182,11 +182,16 @@ pub fn main_bytes(raw: &[Vec<u8>]) -> i32 {
             Opt::Char(c, arg) => (c, arg),
         };
         match c {
-            // rhp has no readline (extension_loaded('readline') is false),
-            // so this is php without it, and php's `interactive` is never
-            // set. The reference build has readline and CI's php does not,
-            // so -a can have no CLI fixture.
-            b'a' => param_error = Some("Interactive shell (-a) requires the readline extension.\n"),
+            // ext/readline (on libedit) installs the shell.
+            b'a' => {
+                if !interactive {
+                    if mode != Mode::Standard {
+                        param_error = Some(MODE_CONFLICT);
+                        continue;
+                    }
+                    interactive = true;
+                }
+            }
             b'F' | b'R' => {
                 if mode == Mode::ProcessStdin {
                     if exec_run || script_file.is_some() {
@@ -225,7 +230,7 @@ pub fn main_bytes(raw: &[Vec<u8>]) -> i32 {
                         param_error = Some("You can use -r only once.\n");
                         continue;
                     }
-                } else if mode != Mode::Standard {
+                } else if mode != Mode::Standard || interactive {
                     param_error = Some(MODE_CONFLICT);
                     continue;
                 }
@@ -247,7 +252,7 @@ pub fn main_bytes(raw: &[Vec<u8>]) -> i32 {
                         });
                         continue;
                     }
-                } else if mode != Mode::Standard {
+                } else if mode != Mode::Standard || interactive {
                     param_error = Some(MODE_CONFLICT);
                     continue;
                 }
@@ -291,6 +296,10 @@ pub fn main_bytes(raw: &[Vec<u8>]) -> i32 {
     if num_repeats > 1 {
         return refuse(16);
     }
+    if interactive {
+        print!("Interactive shell\n\n");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+    }
 
     // The first operand is the script, unless `--` came before it.
     let mut optind = g.optind;
@@ -303,6 +312,8 @@ pub fn main_bytes(raw: &[Vec<u8>]) -> i32 {
         optind += 1;
     }
     let script = match (script_file, exec_direct) {
+        // The shell runs instead of the script.
+        _ if interactive && mode == Mode::Standard => Script::Shell,
         (Some(file), None) => Script::File(file),
         // php wipes its arguments for -H before it runs, the -r code
         // among them.

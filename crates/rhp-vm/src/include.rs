@@ -792,6 +792,59 @@ impl Vm {
         ret
     }
 
+    /// php -a's `zend_eval_stringl(code, NULL, name)` under `zend_try`:
+    /// the code compiled as `name` and run in the global scope as a
+    /// top-level script. A compile error is displayed, an uncaught
+    /// throwable reported as a warning, and a fatal error or `exit` only
+    /// sets the exit status.
+    pub(crate) fn shell_eval_code(&mut self, code: &[u8], name: &str) {
+        let mut source = b"<?php ".to_vec();
+        source.extend_from_slice(code);
+        let Some(mut cb) = self.includer.take() else {
+            return;
+        };
+        let compiled = cb(name, &source);
+        self.includer = Some(cb);
+        let prog = match compiled {
+            Ok(p) => Rc::new(p),
+            Err(IncludeError::Parse {
+                class,
+                message,
+                line,
+                diags,
+            }) => {
+                self.emit_parse_diags(name.as_bytes(), &diags);
+                self.report_parse_error(class, &message, name, line);
+                return;
+            }
+            Err(e) => {
+                if let Thrown::Exit(code) = self.include_error(e, name, true) {
+                    self.sapi.exit_status = code;
+                }
+                return;
+            }
+        };
+        self.emit_compile_diags(&prog);
+        let r = self
+            .install_file(b"", &prog)
+            .and_then(|(main, unit)| self.run_as_primary(main, unit));
+        match r {
+            Ok(_) => {}
+            Err(Thrown::Exit(code)) => self.sapi.exit_status = code,
+            Err(t) => {
+                // The global scope survives the unwound frames.
+                if !self.stack.is_empty() {
+                    self.stack.truncate(1);
+                    self.finished_main = self.stack.pop();
+                }
+                self.report_uncaught_as(t, builtins::E_WARNING, "Warning");
+            }
+        }
+        if let Some(Thrown::Exit(code)) = self.pending_throw.take() {
+            self.sapi.exit_status = code;
+        }
+    }
+
     /// A loaded file run as the request's next primary script: its `{main}`
     /// replaces the finished one at the bottom of the stack, in the global
     /// scope.

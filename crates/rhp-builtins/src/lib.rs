@@ -33,6 +33,10 @@ pub use diag::{
     open_failed, warn, warn_arg,
 };
 pub use ext::pcre;
+/// php -a's shell (readline_cli.c) and php-cli's write hook into it.
+pub use ext::readline::cli::{
+    shell_output as readline_shell_output, shell_run as readline_shell_run,
+};
 pub use ext::standard::http_fopen_wrapper;
 pub use host::{
     host_compare, host_loose_eq, Host, MagicFetch, ObCall, ScopeVar, StreamKind, StreamMeta,

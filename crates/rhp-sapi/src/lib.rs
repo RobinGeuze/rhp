@@ -68,6 +68,8 @@ pub enum Script {
     Code(String),
     /// No script file and no `-r`: the script is read from standard input.
     Stdin,
+    /// php -a: the readline shell reads statements from the terminal.
+    Shell,
 }
 
 /// One request for [`run_request`].
@@ -177,6 +179,8 @@ impl Sapi for CliSapi {
     fn ub_write(&mut self, data: &[u8]) -> bool {
         // What went through Rust's stdout (the STDOUT stream) goes first.
         let _ = std::io::stdout().flush();
+        // php -a's hooks: the last byte, the prompt code's or pager's copy.
+        rhp_builtins::readline_shell_output(data);
         write_fd(1, data)
     }
 
@@ -426,6 +430,11 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
             (file, source, path.clone())
         }
         Script::Source { path, bytes } => (path.clone(), bytes.clone(), path.clone()),
+        Script::Shell => (
+            "Standard input code".to_string(),
+            Vec::new(),
+            "Standard input code".to_string(),
+        ),
         Script::Stdin => {
             let mut src = Vec::new();
             if let Err(e) = std::io::Read::read_to_end(&mut std::io::stdin(), &mut src) {
@@ -544,6 +553,9 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
     vm.set_argv(argv);
     if let Script::Code(_) = req.script {
         vm.disable_auto_prepend();
+    }
+    if let Script::Shell = req.script {
+        vm.set_interactive();
     }
     install_includer(&mut vm);
     let code = match vm.run_main(&program) {

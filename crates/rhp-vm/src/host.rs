@@ -695,6 +695,18 @@ impl Host for Vm {
             .or_else(|| self.main_script_path.clone())
     }
 
+    fn shell_eval(&mut self, code: &[u8], name: &str) {
+        self.shell_eval_code(code, name);
+    }
+
+    fn exit_status(&self) -> i32 {
+        self.sapi.exit_status
+    }
+
+    fn set_exit_status(&mut self, status: i32) {
+        self.sapi.exit_status = status;
+    }
+
     fn global_var(&mut self, name: &[u8]) -> Option<Value> {
         let v = match self.globals.get(name) {
             Some(c) => crate::deref(&c.borrow()),

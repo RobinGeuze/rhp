@@ -5,6 +5,14 @@ function router_fn() {}
 $fromrouter = 1;
 register_shutdown_function(function () { error_log("shutdown ran"); });
 $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+if ($path === '/sub/w.php') {
+    // Its handler loads a file while w.php compiles (a compile warning).
+    set_error_handler(function ($no, $str) {
+        require __DIR__ . '/sub/eh.inc';
+        echo "handled: $str\n";
+        return true;
+    });
+}
 if (str_starts_with($path, '/sub/') || $path === '/a.css' || $path === '/gone.txt') {
     return false;
 }

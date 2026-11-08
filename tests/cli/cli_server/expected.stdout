@@ -88,6 +88,18 @@ Stack trace:
   thrown in <b>{DIR}/doc/sub/f.php</b> on line <b>1</b><br />
 
 -----
+HTTP/1.1 200 OK
+Host: 127.0.0.1
+Date: X
+Connection: close
+X-Powered-By: PHP/8.5.12
+Content-type: text/html; charset=UTF-8
+
+eh.inc
+handled: w(): Optional parameter $a declared before required parameter $b is implicitly treated as a required parameter
+w ran
+
+-----
 HTTP/1.1 400 Bad Request
 Host: 127.0.0.1
 Date: X
@@ -136,7 +148,7 @@ code.url { background-color: #eeeeee; font-family:monospace; padding:0 2px;}
 [T] 127.0.0.1:P Closing
 [T] 127.0.0.1:P Accepted
 [T] shutdown ran
-[T] 127.0.0.1:P [404]: GET /gone.txt - No such file or directory
+[T] 127.0.0.1:P [404]: GET /gone.txt - E
 [T] 127.0.0.1:P Closing
 [T] 127.0.0.1:P Accepted
 [T] 127.0.0.1:P [304]: GET /sub/n.php
@@ -151,6 +163,10 @@ code.url { background-color: #eeeeee; font-family:monospace; padding:0 2px;}
 Stack trace:
 #0 {main}
   thrown in {DIR}/doc/sub/f.php on line 1
+[T] shutdown ran
+[T] 127.0.0.1:P Closing
+[T] 127.0.0.1:P Accepted
+[T] 127.0.0.1:P [200]: GET /sub/w.php
 [T] shutdown ran
 [T] 127.0.0.1:P Closing
 [T] 127.0.0.1:P Accepted

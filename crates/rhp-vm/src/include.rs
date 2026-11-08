@@ -239,6 +239,10 @@ impl Vm {
         raw_path: Vec<u8>,
         kind: IncludeKind,
     ) -> Result<Value, Thrown> {
+        // Taken first: user code that runs while the file loads (a stream
+        // wrapper, an error handler for a compile warning, an autoloader)
+        // may include files of its own.
+        let primary = std::mem::take(&mut self.primary_next);
         let path_str = String::from_utf8_lossy(&raw_path).into_owned();
         builtins::main::streams::clear_errno();
         // php looks a script up in opcache by the name it was asked for
@@ -428,7 +432,11 @@ impl Vm {
             return Err(t);
         }
         let (main, unit) = self.install_file(&realpath, &prog)?;
-        let ret = self.run_included(main, unit, top, kind.name())?;
+        let ret = if primary {
+            self.run_as_primary(main, unit)?
+        } else {
+            self.run_included(main, unit, top, kind.name())?
+        };
         // A file with no `return` yields int(1).
         Ok(match ret {
             Value::Null => Value::Int(1),
@@ -729,9 +737,6 @@ impl Vm {
         caller_top: usize,
         kind: &'static str,
     ) -> Result<Value, Thrown> {
-        if std::mem::take(&mut self.primary_next) {
-            return self.run_as_primary(main, unit);
-        }
         if self.stack.len() >= self.max_depth {
             return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
         }

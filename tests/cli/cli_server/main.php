@@ -15,8 +15,8 @@ for ($i = 0; $i < 100 && $addr === null; $i++) {
 function mask(string $s): string {
     $s = preg_replace('/^Date: .*\r\n/m', "Date: X\r\n", $s);
     $s = preg_replace('/127\.0\.0\.1:\d+/', '127.0.0.1:P', $s);
-    // The 501 and 400 pages' reason is whatever errno held.
-    $s = preg_replace('/(NOTIMPLEMENTED \/|%00\S*) - .*/', '$1 - E', $s);
+    // An error page's reason is whatever errno held (php's too varies).
+    $s = preg_replace('/(\[[45]\d\d\]: \S+ \S+) - .*/', '$1 - E', $s);
     return preg_replace('/^\[[^\]]+\]/m', '[T]', $s);
 }
 function req(string $addr, string $request): void {
@@ -33,6 +33,7 @@ req($addr, "GET /gone.txt HTTP/1.1\r\n{$h}\r\n");
 req($addr, "GET /sub/n.php HTTP/1.1\r\n{$h}\r\n");
 req($addr, "GET /sub/p.php HTTP/1.1\r\n{$h}\r\n");
 req($addr, "GET /sub/f.php HTTP/1.1\r\n{$h}\r\n");
+req($addr, "GET /sub/w.php HTTP/1.1\r\n{$h}\r\n");
 // A NUL ends the path stat() sees: 400, not the file or a fallback.
 req($addr, "GET /sub/s.php%00.txt HTTP/1.1\r\n{$h}\r\n");
 req($addr, "SMURF / HTTP/1.1\r\n{$h}\r\n");

@@ -10198,6 +10198,7 @@ ext/posix/tests/posix_setpgid_error.phpt
 ext/posix/tests/posix_setuid_basic.phpt
 ext/posix/tests/posix_setuid_variation5.phpt
 ext/posix/tests/posix_strerror_error.phpt
+ext/posix/tests/posix_sysconf.phpt
 ext/posix/tests/posix_times.phpt
 ext/posix/tests/posix_times_basic.phpt
 ext/posix/tests/posix_ttyname.phpt
@@ -11872,6 +11873,7 @@ ext/spl/tests/regexiterator_setpregflags.phpt
 ext/spl/tests/serialize_property_tables.phpt
 ext/spl/tests/spl_001.phpt
 ext/spl/tests/spl_002.phpt
+ext/spl/tests/spl_004.phpt
 ext/spl/tests/spl_006.phpt
 ext/spl/tests/spl_007.phpt
 ext/spl/tests/spl_autoload_001.phpt

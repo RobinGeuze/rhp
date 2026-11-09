@@ -74,7 +74,7 @@ passing, so the percentages are of all php-src tests.
 | ext/pdo | 128 | 132 | 97.0% | PDO core; the driver tests run against pdo_sqlite through its `--REDIRECTTEST--` |
 | ext/pdo_sqlite | 82 | 89 | 92.1% | `Pdo\Sqlite` on libsqlite3, linked statically |
 | ext/phar | 19 | 574 | 3.3% | reads and runs phars (composer.phar); no write API |
-| ext/posix | 47 | 61 | 77.0% | |
+| ext/posix | 48 | 61 | 78.7% | |
 | ext/random | 68 | 69 | 98.6% | the functions, `Random\Randomizer` and the engines |
 | ext/readline | 16 | 28 | 57.1% | on libedit: the functions, history, the callback interface and the interactive shell (`php -a`) |
 | ext/reflection | 481 | 540 | 89.1% | |
@@ -82,7 +82,7 @@ passing, so the percentages are of all php-src tests.
 | ext/simplexml | 158 | 165 | 95.8% | on libxml2 |
 | ext/sockets | 58 | 119 | 48.7% | the socket calls, `AddressInfo` and the constants; no `socket_sendmsg`/`socket_recvmsg`, no multicast options |
 | ext/sodium | 31 | 31 | 100.0% | on libsodium, linked statically |
-| ext/spl | 655 | 796 | 82.3% | |
+| ext/spl | 656 | 796 | 82.4% | |
 | ext/sqlite3 | 93 | 101 | 92.1% | `SQLite3` on the libsqlite3 pdo_sqlite links |
 | ext/tokenizer | 51 | 54 | 94.4% | a port of the Zend scanner |
 | ext/xml | 61 | 71 | 85.9% | on libxml2 |
@@ -92,7 +92,7 @@ passing, so the percentages are of all php-src tests.
 | ext/zlib | 133 | 161 | 82.6% | system zlib; no incremental deflate/inflate contexts |
 | other ext/ | 1 | 2,858 | 0.0% | the 1 passing is an ext/uri test that needs none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **16,855** | **22,219** | **75.9%** | |
+| **total** | **16,857** | **22,219** | **75.9%** | |
 
 Not implemented, so counted under other ext/: com_dotnet, dba, dl_test, enchant, exif, ffi, ftp, imap, ldap, mysqli, odbc, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pgsql, shmop, skeleton, snmp, soap, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->

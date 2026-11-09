@@ -753,9 +753,6 @@ impl Vm {
         caller_top: usize,
         kind: &'static str,
     ) -> Result<Value, Thrown> {
-        if self.stack.len() >= self.max_depth {
-            return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
-        }
         let mut frame = Frame::new(main.clone(), unit, 0);
         frame.capture = true;
         frame.include = Some((kind, caller_top));

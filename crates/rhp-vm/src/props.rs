@@ -66,12 +66,15 @@ impl Vm {
         if ce.hooked {
             return None;
         }
-        let at = ce.cache.prop(name, frame.defining_class)?;
-        let (_, pe) = ce.props.get_index(at)?;
-        if pe.name != *name {
-            return None;
+        let hit = ce.cache.prop(name, frame.defining_class)?;
+        let (_, pe) = ce.props.get_index(hit.at)?;
+        if !hit.same_key {
+            if pe.name != *name {
+                return None;
+            }
+            ce.cache.refresh_prop(name, frame.defining_class);
         }
-        f(h, at, pe)
+        f(h, hit.at, pe)
     }
 
     /// `FETCH_OBJ_R` of a set declared property through the lookup cache

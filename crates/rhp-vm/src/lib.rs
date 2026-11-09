@@ -21,6 +21,7 @@ mod const_link;
 mod dispatch;
 mod errors;
 mod fibers;
+mod frame_stack;
 mod gc;
 mod generators;
 mod hooks;
@@ -85,7 +86,9 @@ pub struct Vm {
     /// The output layer (main/output.c): the `ob_start` handler stack every
     /// write passes through on its way to [`Vm::emit_stdout`].
     output: output::Output,
-    stack: Vec<Frame>,
+    stack: frame_stack::FrameStack,
+    /// Register files of returned frames, for the next calls.
+    reg_pool: frame_stack::RegPool,
     /// The programs installed so far: the main script is unit 0, then each
     /// included file and eval()'d string, in load order. A program installed
     /// right after one that added no closures and no class declarations
@@ -125,7 +128,6 @@ pub struct Vm {
     /// The `#[\Deprecated]` global constants whose deprecation is being
     /// raised (php's CONST_PROTECT_RECURSION).
     const_guard: Vec<Vec<u8>>,
-    max_depth: usize,
     /// After max_execution_time ran out: the (frame, pc) of the last user
     /// instruction run. php raises the timeout where a jump lands or a
     /// function starts (its VM interrupt checks).
@@ -172,7 +174,7 @@ pub struct Vm {
     unset_typed_props: HashMap<u32, Vec<PhpStr>>,
     // Globals that became PHP references (`global $x`, `=&`, by-ref passing):
     // php's shutdown sweep only destroys plain (non-reference) object globals.
-    ref_globals: std::collections::HashSet<Vec<u8>>,
+    ref_globals: rustc_hash::FxHashSet<Vec<u8>>,
     // `static $x`: persistent cells keyed by (function proto pointer, unit,
     // class, var name).
     statics: rustc_hash::FxHashMap<StaticKey, Rc<RefCell<Value>>>,
@@ -489,7 +491,7 @@ struct Frame {
     /// traces, and the frame whose variable scope it runs in.
     include: Option<(&'static str, usize)>,
     /// Variables created by name (`$$n = v`) that have no compiled slot.
-    dyn_vars: indexmap::IndexMap<Vec<u8>, Rc<RefCell<Value>>, rustc_hash::FxBuildHasher>,
+    dyn_vars: DynVars,
     /// Runs in the global scope ({main}, or a file included from it): its
     /// CVs are the global symbol table's cells.
     global_scope: bool,
@@ -506,6 +508,44 @@ struct Frame {
     /// Called by a prelude function: php has no such call, so its `$this`
     /// is no possible root when the frame ends.
     internal_caller: bool,
+    /// What php's VM stack holds for this frame, in bytes, and whether it
+    /// took a page of its own (set by [`frame_stack::FrameStack::push`]).
+    vm_size: u32,
+    vm_page: bool,
+}
+
+type DynVarMap = indexmap::IndexMap<Vec<u8>, Rc<RefCell<Value>>, rustc_hash::FxBuildHasher>;
+
+/// A frame's variables created by name, boxed on first use (keeps `Frame`
+/// small: calls move it).
+#[derive(Default)]
+struct DynVars(Option<Box<DynVarMap>>);
+
+impl DynVars {
+    fn get(&self, name: &[u8]) -> Option<&Rc<RefCell<Value>>> {
+        self.0.as_ref()?.get(name)
+    }
+
+    fn insert(&mut self, name: Vec<u8>, cell: Rc<RefCell<Value>>) {
+        self.0.get_or_insert_default().insert(name, cell);
+    }
+
+    fn shift_remove(&mut self, name: &[u8]) -> Option<Rc<RefCell<Value>>> {
+        self.0.as_mut()?.shift_remove(name)
+    }
+
+    /// The variable `name`, created undefined when missing.
+    fn cell(&mut self, name: &[u8]) -> Rc<RefCell<Value>> {
+        self.0
+            .get_or_insert_default()
+            .entry(name.to_vec())
+            .or_insert_with(|| Rc::new(RefCell::new(Value::Undef)))
+            .clone()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&Vec<u8>, &Rc<RefCell<Value>>)> {
+        self.0.iter().flat_map(|m| m.iter())
+    }
 }
 
 /// A running foreach's iterator: `(pos_reg, arr, by_ref, id)`.
@@ -513,6 +553,22 @@ type FeLive = (Reg, Reg, bool, u32);
 
 impl Drop for Frame {
     fn drop(&mut self) {
+        self.release();
+        if self.regs.capacity() > 0 {
+            // Temporaries go with the register file; its buffer was not
+            // counted (`frame_stack`).
+            self.regs.clear();
+            let regs = std::mem::take(&mut self.regs);
+            rhp_values::mem::uncounted(|| drop(regs));
+        }
+    }
+}
+
+impl Frame {
+    /// Free the frame's variables, `$this` and Closure as php's
+    /// leave helper does (what dropping it starts with; done again, it
+    /// does nothing).
+    fn release(&mut self) {
         if let Some(live) = self.fe_live.take() {
             for (pos, arr, by_ref, id) in *live {
                 dispatch::release_fe_iter(&mut self.regs, pos, arr, by_ref, id);
@@ -575,8 +631,13 @@ impl Frame {
         // it is read (a copy reads `Undef` as null, a move turns it into
         // null, and `undef_cv` never warns for one).
         let n = proto.num_registers as usize;
-        let mut regs = Vec::with_capacity(n);
-        regs.resize_with(n, || Value::Undef);
+        let regs = frame_stack::alloc_regs(n, rhp_values::mem::state());
+        Self::with_regs(proto, unit, ret_dst, regs)
+    }
+
+    /// [`Frame::new`] with a register file of undefined registers.
+    #[inline]
+    fn with_regs(proto: Rc<FunctionProto>, unit: UnitId, ret_dst: Reg, regs: Vec<Value>) -> Self {
         Frame {
             proto,
             unit,
@@ -591,11 +652,13 @@ impl Frame {
             holes: 0,
             extra_args: Vec::new(),
             include: None,
-            dyn_vars: indexmap::IndexMap::default(),
+            dyn_vars: DynVars::default(),
             global_scope: false,
             closure: None,
             fe_live: None,
             internal_caller: false,
+            vm_size: 0,
+            vm_page: false,
         }
     }
 }

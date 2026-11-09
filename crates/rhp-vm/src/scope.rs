@@ -92,7 +92,7 @@ impl Vm {
             };
             out.insert(ArrayKey::from_php_str(name), v);
         }
-        for (name, cell) in &f.dyn_vars {
+        for (name, cell) in f.dyn_vars.iter() {
             if cell.borrow().is_undef() {
                 continue;
             }

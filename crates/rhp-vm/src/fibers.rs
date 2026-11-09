@@ -59,7 +59,7 @@ enum Status {
 /// The per-stack execution state php keeps per fiber
 /// (zend_fiber_capture_vm_state), swapped into the [`Vm`] on each switch.
 pub(crate) struct ExecCtx {
-    stack: Vec<Frame>,
+    stack: crate::frame_stack::FrameStack,
     native_calls: Vec<NativeCall>,
     gen_stack: Vec<u32>,
     gen_resumes: Vec<(usize, u32, u32)>,
@@ -384,7 +384,11 @@ impl Vm {
             None => builtins::zend::builtin_functions::error_reporting_level(self),
         };
         let ctx = ExecCtx {
-            stack: vec![entry_frame()],
+            stack: {
+                let mut s = crate::frame_stack::FrameStack::new_fiber(self.mem);
+                s.push(entry_frame());
+                s
+            },
             native_calls: Vec::new(),
             gen_stack: Vec::new(),
             gen_resumes: Vec::new(),
@@ -798,7 +802,7 @@ pub(crate) fn fiber_gc_values(h: &ObjectHandle, out: &mut Vec<Value>) -> bool {
     out.extend(d.named.iter().map(|(_, v)| v.clone()));
     if d.status == Status::Suspended {
         if let Some(ctx) = &d.ctx {
-            for f in &ctx.stack {
+            for f in ctx.stack.iter() {
                 f.gc_children(out);
             }
             // A suspended Generator method holds its object (php's

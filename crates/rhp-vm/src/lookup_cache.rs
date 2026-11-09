@@ -35,6 +35,19 @@ struct Entry {
     /// The index in the class's table (property slot, method entry, or
     /// class id).
     at: u32,
+    /// The address of the name string last found here (`PhpStr::addr`;
+    /// 0 for names held as bytes). A lookup with that same string (the
+    /// same call site, or one sharing its name) needs no comparison.
+    key: usize,
+}
+
+/// A cache hit: the index, and whether it was found with the very string
+/// that last matched it (else the caller compares names, then calls
+/// `refresh`).
+#[derive(Clone, Copy)]
+pub(crate) struct Hit {
+    pub(crate) at: usize,
+    pub(crate) same_key: bool,
 }
 
 #[inline(always)]
@@ -43,25 +56,45 @@ fn slot(hash: u64, scope: u32, n: usize) -> usize {
     (x >> 40) as usize & (n - 1)
 }
 
-/// A lazily allocated two-way table: a key's slot and its neighbour.
+/// A lazily allocated two-way table: a key's slot and its neighbour. Its
+/// size (a power of two) is chosen when it is first filled.
 #[derive(Default)]
 struct Table(OnceCell<Box<[Cell<Entry>]>>);
 
 impl Table {
     #[inline(always)]
-    fn get(&self, hash: u64, scope: u32, n: usize) -> Option<u32> {
+    fn find(&self, hash: u64, scope: u32) -> Option<&Cell<Entry>> {
         let t = self.0.get()?;
-        let i = slot(hash, scope, n);
-        let e = t[i].get();
+        let i = slot(hash, scope, t.len());
+        let c = &t[i];
+        let e = c.get();
         if e.hash == hash && e.scope == scope {
-            return Some(e.at);
+            return Some(c);
         }
-        let e = t[i ^ 1].get();
-        (e.hash == hash && e.scope == scope).then_some(e.at)
+        let c = &t[i ^ 1];
+        let e = c.get();
+        (e.hash == hash && e.scope == scope).then_some(c)
+    }
+
+    #[inline(always)]
+    fn get(&self, hash: u64, scope: u32, key: usize) -> Option<Hit> {
+        let e = self.find(hash, scope)?.get();
+        Some(Hit {
+            at: e.at as usize,
+            same_key: e.key == key && key != 0,
+        })
+    }
+
+    /// Remember `key` as the string that last matched the entry.
+    #[inline]
+    fn refresh(&self, hash: u64, scope: u32, key: usize) {
+        if let Some(c) = self.find(hash, scope) {
+            c.set(Entry { key, ..c.get() });
+        }
     }
 
     #[cold]
-    fn put(&self, hash: u64, scope: u32, at: u32, n: usize) {
+    fn put(&self, hash: u64, scope: u32, at: u32, key: usize, n: usize) {
         // Engine data php keeps in the op_array's run-time cache: not
         // counted in memory_get_usage().
         let t = rhp_values::mem::uncounted(|| {
@@ -71,14 +104,25 @@ impl Table {
         // Two ways: a key whose slot is taken goes to its neighbour, so two
         // keys a loop uses together (a property read from the class's
         // scope and from outside) don't evict each other on every pass.
-        let i = slot(hash, scope, n);
+        let i = slot(hash, scope, t.len());
         let i = if t[i].get().hash != 0 && t[i ^ 1].get().hash == 0 {
             i ^ 1
         } else {
             i
         };
-        t[i].set(Entry { hash, scope, at });
+        t[i].set(Entry {
+            hash,
+            scope,
+            at,
+            key,
+        });
     }
+}
+
+/// Method-cache slots for a class of `n` methods: room for each (php
+/// caches per call site, so a class with many methods never thrashes).
+fn method_slots(n: usize) -> usize {
+    (2 * n).next_power_of_two().clamp(SLOTS, 1024)
 }
 
 /// A linked class's property and method lookup cache. Cloning gives an
@@ -104,39 +148,54 @@ fn scope_key(scope: Option<ClassId>) -> u32 {
 impl ClassCache {
     /// The property slot `name` resolved to from `scope`, if cached.
     #[inline(always)]
-    pub(crate) fn prop(&self, name: &PhpStr, scope: Option<ClassId>) -> Option<usize> {
+    pub(crate) fn prop(&self, name: &PhpStr, scope: Option<ClassId>) -> Option<Hit> {
         self.props
-            .get(name.hash_value(), scope_key(scope), SLOTS)
-            .map(|at| at as usize)
+            .get(name.hash_value(), scope_key(scope), name.addr())
     }
 
     pub(crate) fn put_prop(&self, name: &PhpStr, scope: Option<ClassId>, at: usize) {
+        self.props.put(
+            name.hash_value(),
+            scope_key(scope),
+            at as u32,
+            name.addr(),
+            SLOTS,
+        );
+    }
+
+    /// `name` matched the property entry it hit.
+    #[inline]
+    pub(crate) fn refresh_prop(&self, name: &PhpStr, scope: Option<ClassId>) {
         self.props
-            .put(name.hash_value(), scope_key(scope), at as u32, SLOTS);
+            .refresh(name.hash_value(), scope_key(scope), name.addr());
     }
 
     /// The method-table index `name` resolved to, if cached.
     #[inline(always)]
-    pub(crate) fn method(&self, name: &PhpStr) -> Option<usize> {
-        self.methods
-            .get(name.hash_value(), 0, SLOTS)
-            .map(|at| at as usize)
+    pub(crate) fn method(&self, name: &PhpStr) -> Option<Hit> {
+        self.methods.get(name.hash_value(), 0, name.addr())
     }
 
-    pub(crate) fn put_method(&self, name: &PhpStr, at: usize) {
-        self.methods.put(name.hash_value(), 0, at as u32, SLOTS);
+    /// Cache `name` at index `at` of a table of `n` methods.
+    pub(crate) fn put_method(&self, name: &PhpStr, at: usize, n: usize) {
+        self.methods
+            .put(name.hash_value(), 0, at as u32, name.addr(), method_slots(n));
+    }
+
+    /// `name` matched the method entry it hit.
+    #[inline]
+    pub(crate) fn refresh_method(&self, name: &PhpStr) {
+        self.methods.refresh(name.hash_value(), 0, name.addr());
     }
 
     /// The static-property table index `name` resolved to, if cached.
     #[inline(always)]
     pub(crate) fn static_prop(&self, name: &PhpStr) -> Option<usize> {
-        self.statics
-            .get(name.hash_value(), 0, SLOTS)
-            .map(|at| at as usize)
+        self.statics.get(name.hash_value(), 0, 0).map(|h| h.at)
     }
 
     pub(crate) fn put_static_prop(&self, name: &PhpStr, at: usize) {
-        self.statics.put(name.hash_value(), 0, at as u32, SLOTS);
+        self.statics.put(name.hash_value(), 0, at as u32, 0, SLOTS);
     }
 
     /// Forget the property entries (they name scope classes).
@@ -151,12 +210,19 @@ pub(crate) struct ClassNameCache(Table);
 
 impl ClassNameCache {
     #[inline(always)]
-    pub(crate) fn get(&self, name: &PhpStr) -> Option<ClassId> {
-        self.0.get(name.hash_value(), 0, CLASS_SLOTS)
+    pub(crate) fn get(&self, name: &PhpStr) -> Option<Hit> {
+        self.0.get(name.hash_value(), 0, name.addr())
     }
 
     pub(crate) fn put(&self, name: &PhpStr, id: ClassId) {
-        self.0.put(name.hash_value(), 0, id, CLASS_SLOTS);
+        self.0
+            .put(name.hash_value(), 0, id, name.addr(), CLASS_SLOTS);
+    }
+
+    /// `name` matched the class it hit.
+    #[inline]
+    pub(crate) fn refresh(&self, name: &PhpStr) {
+        self.0.refresh(name.hash_value(), 0, name.addr());
     }
 }
 
@@ -191,11 +257,11 @@ pub(crate) fn fold_hash(name: &[u8]) -> u64 {
 impl ClassBytesCache {
     #[inline(always)]
     pub(crate) fn get(&self, hash: u64) -> Option<ClassId> {
-        self.0.get(hash, 0, CLASS_SLOTS)
+        self.0.get(hash, 0, 0).map(|h| h.at as ClassId)
     }
 
     pub(crate) fn put(&self, hash: u64, id: ClassId) {
-        self.0.put(hash, 0, id, CLASS_SLOTS);
+        self.0.put(hash, 0, id, 0, CLASS_SLOTS);
     }
 }
 
@@ -206,6 +272,8 @@ impl Vm {
         for c in &mut self.classes {
             c.cache.flush();
         }
+        // A name's entry may now hold another class's id.
+        self.class_names = ClassNameCache::default();
     }
 }
 

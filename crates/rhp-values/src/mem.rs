@@ -414,6 +414,33 @@ impl MemState {
         self.tick.set(on || self.gc_due.get());
     }
 
+    /// Count `size` bytes the VM takes outside the allocator, as one block
+    /// (a VM stack page, which rhp keeps as frames): it may cross the limit
+    /// like any allocation.
+    #[inline]
+    pub fn charge(&self, size: usize) {
+        if self.active.get() {
+            self.on_alloc(size);
+        }
+    }
+
+    /// Give back what [`MemState::charge`] counted.
+    #[inline]
+    pub fn discharge(&self, size: usize) {
+        if self.active.get() {
+            self.on_free(size);
+        }
+    }
+
+    /// [`uncounted`] through this reference (no thread-local lookup).
+    #[inline]
+    pub fn uncounted<T>(&self, f: impl FnOnce() -> T) -> T {
+        let was = self.active.replace(false);
+        let r = f();
+        self.active.set(was);
+        r
+    }
+
     /// A cycle collection is due, or no longer.
     pub fn gc_due(&self, on: bool) {
         self.gc_due.set(on);

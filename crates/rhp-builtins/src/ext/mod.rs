@@ -97,6 +97,18 @@ pub(crate) fn modules() -> Vec<ModuleDef> {
             reset: date::reset_state,
             object_freed: None,
         },
+        // ext/lexbor: the library behind Dom\HTMLDocument and the CSS
+        // selectors (rhp-csrc builds it), with no functions of its own.
+        ModuleDef {
+            name: "lexbor",
+            cli_only: false,
+            functions: |_| {},
+            constants: no_constants,
+            prelude_php: "",
+            wrappers: no_wrappers,
+            reset: no_state,
+            object_freed: None,
+        },
         ModuleDef {
             name: "hash",
             cli_only: false,

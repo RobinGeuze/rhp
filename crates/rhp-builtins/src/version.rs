@@ -221,6 +221,9 @@ pub const EXT_DOM: &str = "20031129";
 // (crate::ext::iconv), GMP_VERSION from the linked libgmp (crate::ext::gmp),
 // ZipArchive::LIBZIP_VERSION from the linked libzip (crate::ext::zip),
 // ZLIB_VERSION from the linked zlib (zlib_version below).
+/// The vendored lexbor's LEXBOR_VERSION_STRING (rhp-csrc's
+/// ext/lexbor/lexbor/core/base.h), which phpinfo() shows.
+pub const LEXBOR_VERSION: &str = "2.7.0";
 /// `MB_ONIGURUMA_VERSION`.
 pub const ONIGURUMA_VERSION: &str = "6.9.10";
 

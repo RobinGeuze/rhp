@@ -708,6 +708,10 @@ fn static_minfo(e: &str) -> Option<Vec<(&'static str, String)>> {
     Some(match e {
         "bcmath" => vec![("BCMath support", s("enabled"))],
         "calendar" => vec![("Calendar support", s("enabled"))],
+        "lexbor" => vec![
+            ("Lexbor support", s("active")),
+            ("Lexbor version", s(version::LEXBOR_VERSION)),
+        ],
         "gettext" => vec![("GetText Support", s("enabled"))],
         "sockets" => vec![("Sockets Support", s("enabled"))],
         "sodium" => crate::ext::sodium::info_rows(),

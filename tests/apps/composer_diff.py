@@ -127,12 +127,7 @@ SUITES = {
 
 # Differences with a known cause in rhp, by (suite, step name); a step name
 # of None covers the whole suite. Remove an entry once it prints FIXED.
-SOCKETS = "counts the ext-sockets suggestion: rhp does not report sockets loaded"
-KNOWN = {
-    ("basic", "composer install"): SOCKETS,
-    ("stream", "composer install --no-cache"): SOCKETS,
-    ("ziparchive", "composer install --no-cache"): SOCKETS,
-}
+KNOWN = {}
 
 COMPOSER_JSON = {
     "name": "rhp/composer-test",

@@ -1151,6 +1151,7 @@ Illuminate\Tests\Console\ConsoleApplicationTest::testCommandInputDoesntPromptWhe
 Illuminate\Tests\Console\ConsoleApplicationTest::testCommandInputPromptsWhenRequiredArgumentIsMissing
 Illuminate\Tests\Console\ConsoleApplicationTest::testCommandInputPromptsWhenRequiredArgumentsAreMissing
 Illuminate\Tests\Console\ConsoleApplicationTest::testLaravelNotSetOnSymfonyCommands
+Illuminate\Tests\Console\ConsoleApplicationTest::testLoadIgnoresTestFiles
 Illuminate\Tests\Console\ConsoleApplicationTest::testResolveAddsCommandViaApplicationResolution
 Illuminate\Tests\Console\ConsoleApplicationTest::testResolvingCommandsWithAliasViaAttribute
 Illuminate\Tests\Console\ConsoleApplicationTest::testResolvingCommandsWithAliasViaProperty
@@ -2192,6 +2193,9 @@ Illuminate\Tests\Database\DatabaseEloquentGlobalScopesTest::testClosureGlobalSco
 Illuminate\Tests\Database\DatabaseEloquentGlobalScopesTest::testClosureGlobalScopeIsApplied
 Illuminate\Tests\Database\DatabaseEloquentGlobalScopesTest::testGlobalScopeCanBeRemoved
 Illuminate\Tests\Database\DatabaseEloquentGlobalScopesTest::testGlobalScopeCanBeRemovedAfterTheQueryIsExecuted
+Illuminate\Tests\Database\DatabaseEloquentGlobalScopesTest::testGlobalScopeInAttributeIsApplied
+Illuminate\Tests\Database\DatabaseEloquentGlobalScopesTest::testGlobalScopeInInheritedAttributeIsApplied
+Illuminate\Tests\Database\DatabaseEloquentGlobalScopesTest::testGlobalScopeInParentClassAttributeIsApplied
 Illuminate\Tests\Database\DatabaseEloquentGlobalScopesTest::testGlobalScopeIsApplied
 Illuminate\Tests\Database\DatabaseEloquentGlobalScopesTest::testGlobalScopesCanBeRegisteredViaArray
 Illuminate\Tests\Database\DatabaseEloquentGlobalScopesTest::testGlobalScopesWithOrWhereConditionsAreNested
@@ -2700,6 +2704,7 @@ Illuminate\Tests\Database\DatabaseEloquentModelTest::testArrayAccessToAttributes
 Illuminate\Tests\Database\DatabaseEloquentModelTest::testAttributeManipulation
 Illuminate\Tests\Database\DatabaseEloquentModelTest::testBelongsToCreatesProperRelation
 Illuminate\Tests\Database\DatabaseEloquentModelTest::testBelongsToManyCreatesProperRelation
+Illuminate\Tests\Database\DatabaseEloquentModelTest::testBootedCallbacksAreSeparatedByClass
 Illuminate\Tests\Database\DatabaseEloquentModelTest::testCalculatedAttributes
 Illuminate\Tests\Database\DatabaseEloquentModelTest::testCallbacksCanBeRunAfterBootingHasFinished
 Illuminate\Tests\Database\DatabaseEloquentModelTest::testCastOnArrayFormatWithOneElement
@@ -5620,6 +5625,7 @@ Illuminate\Tests\Foundation\Http\KernelTest::testAddToMiddlewarePriorityBefore
 Illuminate\Tests\Foundation\Http\KernelTest::testGetMiddlewareGroups
 Illuminate\Tests\Foundation\Http\KernelTest::testGetMiddlewarePriority
 Illuminate\Tests\Foundation\Http\KernelTest::testGetRouteMiddleware
+Illuminate\Tests\Foundation\Http\KernelTest::testItTriggersTerminatingEvent
 Illuminate\Tests\Foundation\Http\Middleware\ConvertEmptyStringsToNullTest::testConvertsEmptyStringsToNull
 Illuminate\Tests\Foundation\Http\Middleware\ConvertEmptyStringsToNullTest::testSkipConvertsEmptyStringsToNull
 Illuminate\Tests\Foundation\Http\Middleware\TransformsRequestTest::testKeyBudgetIncludesNestedPathsAndPreservesDottedKeys
@@ -7109,7 +7115,12 @@ Illuminate\Tests\Integration\Database\DatabaseEloquentModelAttributeCastingTest:
 Illuminate\Tests\Integration\Database\DatabaseEloquentModelAttributeCastingTest::testBasicCustomCasting
 Illuminate\Tests\Integration\Database\DatabaseEloquentModelAttributeCastingTest::testCastsThatOnlyHaveGetterDoNotPersistAnythingToModelOnSave
 Illuminate\Tests\Integration\Database\DatabaseEloquentModelAttributeCastingTest::testCastsThatOnlyHaveGetterThatReturnsDateTimeAreCached
+Illuminate\Tests\Integration\Database\DatabaseEloquentModelAttributeCastingTest::testCastsThatOnlyHaveGetterThatReturnsDateTimeAreNotCached
+Illuminate\Tests\Integration\Database\DatabaseEloquentModelAttributeCastingTest::testCastsThatOnlyHaveGetterThatReturnsDateTimeAreNotCachedFluent
 Illuminate\Tests\Integration\Database\DatabaseEloquentModelAttributeCastingTest::testCastsThatOnlyHaveGetterThatReturnsObjectAreCached
+Illuminate\Tests\Integration\Database\DatabaseEloquentModelAttributeCastingTest::testCastsThatOnlyHaveGetterThatReturnsObjectAreNotCached
+Illuminate\Tests\Integration\Database\DatabaseEloquentModelAttributeCastingTest::testCastsThatOnlyHaveGetterThatReturnsObjectAreNotCachedFluent
+Illuminate\Tests\Integration\Database\DatabaseEloquentModelAttributeCastingTest::testCastsThatOnlyHaveGetterThatReturnsPrimitivesAreNotCached
 Illuminate\Tests\Integration\Database\DatabaseEloquentModelAttributeCastingTest::testGetOriginalWithCastValueObjects
 Illuminate\Tests\Integration\Database\DatabaseEloquentModelAttributeCastingTest::testOneWayCasting
 Illuminate\Tests\Integration\Database\DatabaseEloquentModelAttributeCastingTest::testSettingRawAttributesClearsTheCastCache
@@ -7340,6 +7351,7 @@ Illuminate\Tests\Integration\Database\EloquentLazyEagerLoadingTest\EloquentLazyE
 Illuminate\Tests\Integration\Database\EloquentMassPrunableTest::testPrunableMethodMustBeImplemented
 Illuminate\Tests\Integration\Database\EloquentMassPrunableTest::testPrunesRecords
 Illuminate\Tests\Integration\Database\EloquentMassPrunableTest::testPrunesSoftDeletedRecords
+Illuminate\Tests\Integration\Database\EloquentModelCustomEventsTest\EloquentModelCustomEventsTest::testAddObservableEventFromTrait
 Illuminate\Tests\Integration\Database\EloquentModelCustomEventsTest\EloquentModelCustomEventsTest::testCustomEventListenersAreFired
 Illuminate\Tests\Integration\Database\EloquentModelCustomEventsTest\EloquentModelCustomEventsTest::testFlushListenersClearsCustomEvents
 Illuminate\Tests\Integration\Database\EloquentModelDateCastingTest\EloquentModelDateCastingTest::testCustomDateCastsAreComparedAsDatesForCarbonInstances
@@ -7681,6 +7693,8 @@ Illuminate\Tests\Integration\Database\MigratorEventsTest::testMigrationEventsCon
 Illuminate\Tests\Integration\Database\MigratorEventsTest::testMigrationEventsContainTheOptionsAndPretendTrue
 Illuminate\Tests\Integration\Database\MigratorEventsTest::testMigrationSkippedEventIsFired
 Illuminate\Tests\Integration\Database\MigratorEventsTest::testTheNoMigrationEventIsFiredWhenNothingToMigrate
+Illuminate\Tests\Integration\Database\ModelInspectorTest::test_command_returns_json
+Illuminate\Tests\Integration\Database\ModelInspectorTest::test_extracts_model_data
 Illuminate\Tests\Integration\Database\QueryBuilderTest::testAddSelect
 Illuminate\Tests\Integration\Database\QueryBuilderTest::testAddSelectWithSubQuery
 Illuminate\Tests\Integration\Database\QueryBuilderTest::testChunkMap
@@ -9375,6 +9389,180 @@ Illuminate\Tests\JsonSchema\StringTypeTest::test_it_sets_pattern
 Illuminate\Tests\JsonSchema\TypeTest::test_as_a_array_representation
 Illuminate\Tests\JsonSchema\TypeTest::test_does_have_a_string_representation
 Illuminate\Tests\JsonSchema\TypeTest::test_does_have_a_stringable_representation
+Illuminate\Tests\JsonSchema\TypeTest::test_nullable_may_be_unset
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #0
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #1
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #10
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #11
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #12
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #13
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #14
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #15
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #16
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #17
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #18
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #19
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #2
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #20
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #21
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #22
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #23
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #24
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #25
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #26
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #27
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #28
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #29
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #3
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #30
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #31
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #32
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #33
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #34
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #35
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #36
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #37
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #38
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #39
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #4
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #40
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #41
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #42
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #43
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #44
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #45
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #46
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #47
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #48
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #49
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #5
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #50
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #51
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #52
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #53
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #54
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #55
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #56
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #57
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #58
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #59
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #6
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #60
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #61
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #62
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #63
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #64
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #65
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #66
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #67
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #68
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #69
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #7
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #70
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #71
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #72
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #73
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #74
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #75
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #76
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #77
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #78
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #8
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_invalid_json_schemas with data set #9
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #0
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #1
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #10
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #11
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #12
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #13
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #14
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #15
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #16
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #17
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #18
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #19
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #2
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #20
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #21
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #22
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #23
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #24
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #25
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #26
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #27
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #28
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #29
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #3
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #30
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #31
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #32
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #33
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #34
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #35
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #36
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #37
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #38
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #39
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #4
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #40
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #41
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #42
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #43
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #44
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #45
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #46
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #47
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #48
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #49
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #5
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #50
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #51
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #52
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #53
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #54
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #55
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #56
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #57
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #58
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #59
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #6
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #60
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #61
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #62
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #63
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #64
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #65
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #66
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #67
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #68
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #69
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #7
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #70
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #71
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #72
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #73
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #74
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #75
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #76
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #77
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #78
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #79
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #8
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #80
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #81
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #82
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #83
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #84
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #85
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #86
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #87
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #88
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #89
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #9
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #90
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #91
+Illuminate\Tests\JsonSchema\TypeTest::test_produces_valid_json_schemas with data set #92
+Illuminate\Tests\JsonSchema\TypeTest::test_required_may_be_unset
 Illuminate\Tests\JsonSchema\TypeTest::test_throws_with_invalid_enum_string
 Illuminate\Tests\JsonSchema\TypeTest::test_throws_with_not_an_enum_class
 Illuminate\Tests\JsonSchema\TypeTest::test_throws_with_unit_enum_class

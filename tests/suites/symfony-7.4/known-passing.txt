@@ -2376,6 +2376,12 @@ Symfony\Component\Cache\Tests\Marshaller\DefaultMarshallerTest::testSerialize
 Symfony\Component\Cache\Tests\Marshaller\DefaultMarshallerTest::testSerializeDebug
 Symfony\Component\Cache\Tests\Marshaller\DeflateMarshallerTest::testMarshall
 Symfony\Component\Cache\Tests\Marshaller\DeflateMarshallerTest::testUnmarshall
+Symfony\Component\Cache\Tests\Marshaller\SodiumMarshallerTest::testMarshall
+Symfony\Component\Cache\Tests\Marshaller\SodiumMarshallerTest::testUnmarshall
+Symfony\Component\Cache\Tests\Marshaller\SodiumMarshallerTest::testUnmarshallDoesNotForwardUndecryptedValues
+Symfony\Component\Cache\Tests\Marshaller\SodiumMarshallerTest::testUnmarshallForwardsEmptyValues
+Symfony\Component\Cache\Tests\Marshaller\SodiumMarshallerTest::testUnmarshallThrowsOnUnencryptedValues
+Symfony\Component\Cache\Tests\Marshaller\SodiumMarshallerTest::testUnmarshallThrowsWhenNoKeyMatches
 Symfony\Component\Cache\Tests\Messenger\EarlyExpirationDispatcherTest::testEarlyExpiration
 Symfony\Component\Cache\Tests\Messenger\EarlyExpirationDispatcherTest::testFetch
 Symfony\Component\Cache\Tests\Messenger\EarlyExpirationHandlerTest::testHandle
@@ -5058,6 +5064,7 @@ Symfony\Component\Console\Tests\Tester\CommandTesterTest::testGetInput
 Symfony\Component\Console\Tests\Tester\CommandTesterTest::testGetOutput
 Symfony\Component\Console\Tests\Tester\CommandTesterTest::testGetStatusCode
 Symfony\Component\Console\Tests\Tester\CommandTesterTest::testGetStatusCodeWithoutCallingExecuteBefore
+Symfony\Component\Console\Tests\Tester\CommandTesterTest::testInvokableDefinitionWithInputAttribute
 Symfony\Component\Console\Tests\Tester\CommandTesterTest::testInvokableWithFalsyAnswerInArrayQuestion
 Symfony\Component\Console\Tests\Tester\CommandTesterTest::testInvokableWithInputAttribute with data set "admin enabled with defaults"
 Symfony\Component\Console\Tests\Tester\CommandTesterTest::testInvokableWithInputAttribute with data set "all set"
@@ -5225,6 +5232,8 @@ Symfony\Component\DependencyInjection\Tests\Compiler\AutoAliasServicePassTest::t
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testArgumentWithIdTarget
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testArgumentWithParsedTarget
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testArgumentWithTarget
+Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testArgumentWithTypoTarget
+Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testArgumentWithTypoTargetAnonymous
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testAsDecoratorAttribute
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testAutowireAttribute
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testAutowireAttributeKeepsPercentEscaping
@@ -5246,6 +5255,7 @@ Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testDoNot
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testDontTriggerAutowiring
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testDontUseAbstractServices
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testEmptyStringIsKept
+Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testErroredServiceLocator
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testExceptionWhenAliasDoesNotExist
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testExceptionWhenAliasExists
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testExplicitMethodInjectionAttribute
@@ -5267,6 +5277,7 @@ Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testMulti
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testNamedArgumentAliasResolveCollisions
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testNestedAttributes
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testNoTypeArgsCannotBeAutowired
+Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testNotWireableCalls with data set #0
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testNotWireableCalls with data set #1
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testNotWireableCalls with data set #2
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testOptionalArgsNoRequiredForCoreClasses
@@ -5278,6 +5289,7 @@ Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testParam
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testParameterWithNullableIntersectionIsAutowiredWhenAliasExists
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testParameterWithNullableIntersectionIsSkippedWhenAliasDoesNotExist
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testParentClassNotFoundThrowsException
+Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testParentClassNotFoundThrowsExceptionWithoutConfigComponent
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testPrivateConstructorThrowsAutowireException
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testProcess
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testProcessAutowireInterface
@@ -5296,7 +5308,10 @@ Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testTarge
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testTypeCollision
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testTypeNamespaceExcluded
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testTypeNotGuessable
+Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testTypeNotGuessableCompositeType
+Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testTypeNotGuessableIntersectionType
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testTypeNotGuessableNoServicesFound
+Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testTypeNotGuessableUnionType
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testTypeNotGuessableWithSubclass
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testTypeNotGuessableWithTypeSet
 Symfony\Component\DependencyInjection\Tests\Compiler\AutowirePassTest::testTypeSymbolExcluded
@@ -6359,6 +6374,7 @@ Symfony\Component\DependencyInjection\Tests\EnvVarProcessorTest::testRequireFile
 Symfony\Component\DependencyInjection\Tests\EnvVarProcessorTest::testRequireMissingFile
 Symfony\Component\DependencyInjection\Tests\EnvVarProcessorTest::testReset
 Symfony\Component\DependencyInjection\Tests\Exception\AutowiringFailedExceptionTest::testGetMessageCallbackWhenMessageIsNotANotClosure
+Symfony\Component\DependencyInjection\Tests\Exception\AutowiringFailedExceptionTest::testLazyness
 Symfony\Component\DependencyInjection\Tests\Exception\InvalidParameterTypeExceptionTest::testExceptionMessage with data set "function"
 Symfony\Component\DependencyInjection\Tests\Exception\InvalidParameterTypeExceptionTest::testExceptionMessage with data set "static method"
 Symfony\Component\DependencyInjection\Tests\Extension\AbstractExtensionTest::testConfiguration
@@ -6705,6 +6721,7 @@ Symfony\Component\DependencyInjection\Tests\Loader\YamlFileLoaderTest::testParse
 Symfony\Component\DependencyInjection\Tests\Loader\YamlFileLoaderTest::testParseShortServiceClosure
 Symfony\Component\DependencyInjection\Tests\Loader\YamlFileLoaderTest::testParsesIteratorArgument
 Symfony\Component\DependencyInjection\Tests\Loader\YamlFileLoaderTest::testPrependExtensionConfig
+Symfony\Component\DependencyInjection\Tests\Loader\YamlFileLoaderTest::testProcessNotExistingActionParam
 Symfony\Component\DependencyInjection\Tests\Loader\YamlFileLoaderTest::testPrototypeWithNamespace
 Symfony\Component\DependencyInjection\Tests\Loader\YamlFileLoaderTest::testPrototypeWithNamespaceAndNoResource
 Symfony\Component\DependencyInjection\Tests\Loader\YamlFileLoaderTest::testPrototypeWithNullOrEmptyNode with data set #0
@@ -6822,6 +6839,7 @@ Symfony\Component\EventDispatcher\Tests\ChildEventDispatcherTest::testHasListene
 Symfony\Component\EventDispatcher\Tests\ChildEventDispatcherTest::testHasListenersWithoutEventsReturnsFalseAfterHasListenersWithEventHasBeenCalled
 Symfony\Component\EventDispatcher\Tests\ChildEventDispatcherTest::testInitialState
 Symfony\Component\EventDispatcher\Tests\ChildEventDispatcherTest::testMutatingWhilePropagationIsStopped
+Symfony\Component\EventDispatcher\Tests\ChildEventDispatcherTest::testNamedClosures
 Symfony\Component\EventDispatcher\Tests\ChildEventDispatcherTest::testPriorityFindsLazyListeners
 Symfony\Component\EventDispatcher\Tests\ChildEventDispatcherTest::testRemoveFindsLazyListeners
 Symfony\Component\EventDispatcher\Tests\ChildEventDispatcherTest::testRemoveListener
@@ -6912,6 +6930,7 @@ Symfony\Component\EventDispatcher\Tests\EventDispatcherTest::testHasListenersWhe
 Symfony\Component\EventDispatcher\Tests\EventDispatcherTest::testHasListenersWithoutEventsReturnsFalseAfterHasListenersWithEventHasBeenCalled
 Symfony\Component\EventDispatcher\Tests\EventDispatcherTest::testInitialState
 Symfony\Component\EventDispatcher\Tests\EventDispatcherTest::testMutatingWhilePropagationIsStopped
+Symfony\Component\EventDispatcher\Tests\EventDispatcherTest::testNamedClosures
 Symfony\Component\EventDispatcher\Tests\EventDispatcherTest::testPriorityFindsLazyListeners
 Symfony\Component\EventDispatcher\Tests\EventDispatcherTest::testRemoveFindsLazyListeners
 Symfony\Component\EventDispatcher\Tests\EventDispatcherTest::testRemoveListener
@@ -6944,12 +6963,485 @@ Symfony\Component\Filesystem\Tests\ExceptionTest::testCustomMessage
 Symfony\Component\Filesystem\Tests\ExceptionTest::testGeneratedMessage
 Symfony\Component\Filesystem\Tests\ExceptionTest::testGeneratedMessageWithoutPath
 Symfony\Component\Filesystem\Tests\ExceptionTest::testGetPath
+Symfony\Component\Filesystem\Tests\FilesystemTest::testAppendToFile
+Symfony\Component\Filesystem\Tests\FilesystemTest::testAppendToFileCreateTheFileIfNotExists
+Symfony\Component\Filesystem\Tests\FilesystemTest::testAppendToFileFollowsSymlink
+Symfony\Component\Filesystem\Tests\FilesystemTest::testAppendToFileWithResource
+Symfony\Component\Filesystem\Tests\FilesystemTest::testAppendToFileWithZlibScheme
+Symfony\Component\Filesystem\Tests\FilesystemTest::testChgrpById
+Symfony\Component\Filesystem\Tests\FilesystemTest::testChgrpByName
+Symfony\Component\Filesystem\Tests\FilesystemTest::testChgrpFail
+Symfony\Component\Filesystem\Tests\FilesystemTest::testChgrpLink
+Symfony\Component\Filesystem\Tests\FilesystemTest::testChgrpLinkFails
+Symfony\Component\Filesystem\Tests\FilesystemTest::testChgrpRecursive
+Symfony\Component\Filesystem\Tests\FilesystemTest::testChgrpSymlinkById
+Symfony\Component\Filesystem\Tests\FilesystemTest::testChgrpSymlinkByName
+Symfony\Component\Filesystem\Tests\FilesystemTest::testChgrpSymlinkFails
+Symfony\Component\Filesystem\Tests\FilesystemTest::testChmodAppliesUmask
+Symfony\Component\Filesystem\Tests\FilesystemTest::testChmodChangesFileMode
+Symfony\Component\Filesystem\Tests\FilesystemTest::testChmodChangesModeOfArrayOfFiles
+Symfony\Component\Filesystem\Tests\FilesystemTest::testChmodChangesModeOfTraversableFileObject
+Symfony\Component\Filesystem\Tests\FilesystemTest::testChmodChangesZeroModeOnSubdirectoriesOnRecursive
+Symfony\Component\Filesystem\Tests\FilesystemTest::testChmodRecursive
+Symfony\Component\Filesystem\Tests\FilesystemTest::testChownById
+Symfony\Component\Filesystem\Tests\FilesystemTest::testChownByName
+Symfony\Component\Filesystem\Tests\FilesystemTest::testChownFail
+Symfony\Component\Filesystem\Tests\FilesystemTest::testChownLink
+Symfony\Component\Filesystem\Tests\FilesystemTest::testChownLinkFails
+Symfony\Component\Filesystem\Tests\FilesystemTest::testChownRecursiveById
+Symfony\Component\Filesystem\Tests\FilesystemTest::testChownRecursiveByName
+Symfony\Component\Filesystem\Tests\FilesystemTest::testChownSymlink
+Symfony\Component\Filesystem\Tests\FilesystemTest::testChownSymlinkFails
 Symfony\Component\Filesystem\Tests\FilesystemTest::testCopyCreatesNewFile
 Symfony\Component\Filesystem\Tests\FilesystemTest::testCopyCreatesTargetDirectoryIfItDoesNotExist
 Symfony\Component\Filesystem\Tests\FilesystemTest::testCopyDoesNotOverrideExistingFileByDefault
 Symfony\Component\Filesystem\Tests\FilesystemTest::testCopyFails
+Symfony\Component\Filesystem\Tests\FilesystemTest::testCopyForOriginUrlsAndExistingLocalFileDefaultsToCopy
 Symfony\Component\Filesystem\Tests\FilesystemTest::testCopyOverridesExistingFileIfForced
 Symfony\Component\Filesystem\Tests\FilesystemTest::testCopyOverridesExistingFileIfModified
+Symfony\Component\Filesystem\Tests\FilesystemTest::testCopyShouldKeepExecutionPermission
+Symfony\Component\Filesystem\Tests\FilesystemTest::testCopyShouldKeepRestrictivePermissions
+Symfony\Component\Filesystem\Tests\FilesystemTest::testDumpFile
+Symfony\Component\Filesystem\Tests\FilesystemTest::testDumpFileCleansUpAfterFailure
+Symfony\Component\Filesystem\Tests\FilesystemTest::testDumpFileFollowsSymlink
+Symfony\Component\Filesystem\Tests\FilesystemTest::testDumpFileOverwritesAnExistingFile
+Symfony\Component\Filesystem\Tests\FilesystemTest::testDumpFileWithResource
+Symfony\Component\Filesystem\Tests\FilesystemTest::testDumpFileWithZlibScheme
+Symfony\Component\Filesystem\Tests\FilesystemTest::testDumpKeepsExistingPermissionsWhenOverwritingAnExistingFile
+Symfony\Component\Filesystem\Tests\FilesystemTest::testDumpRemovesTmpFilesOnFailure
+Symfony\Component\Filesystem\Tests\FilesystemTest::testFilesExists
+Symfony\Component\Filesystem\Tests\FilesystemTest::testFilesExistsTraversableObjectOfFilesAndDirectories
+Symfony\Component\Filesystem\Tests\FilesystemTest::testFilesNotExistsTraversableObjectOfFilesAndDirectories
+Symfony\Component\Filesystem\Tests\FilesystemTest::testInvalidFileNotExists
+Symfony\Component\Filesystem\Tests\FilesystemTest::testIsAbsolutePath with data set #0
+Symfony\Component\Filesystem\Tests\FilesystemTest::testIsAbsolutePath with data set #1
+Symfony\Component\Filesystem\Tests\FilesystemTest::testIsAbsolutePath with data set #2
+Symfony\Component\Filesystem\Tests\FilesystemTest::testIsAbsolutePath with data set #3
+Symfony\Component\Filesystem\Tests\FilesystemTest::testLink
+Symfony\Component\Filesystem\Tests\FilesystemTest::testLinkIsNotOverwrittenIfAlreadyCreated
+Symfony\Component\Filesystem\Tests\FilesystemTest::testLinkIsOverwrittenIfPointsToDifferentTarget
+Symfony\Component\Filesystem\Tests\FilesystemTest::testLinkWithSameTarget
+Symfony\Component\Filesystem\Tests\FilesystemTest::testLinkWithSeveralTargets
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #0
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #1
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #10
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #11
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #12
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #13
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #14
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #15
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #16
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #17
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #18
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #19
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #2
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #20
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #21
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #22
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #23
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #24
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #25
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #26
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #27
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #28
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #29
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #3
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #30
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #4
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #5
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #6
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #7
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #8
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelative with data set #9
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelativeWithExistingFile
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelativeWithRelativeEndPath
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMakePathRelativeWithRelativeStartPath
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMirrorAvoidCopyingTargetDirectoryIfInSourceDirectory
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMirrorContentsWithSameNameAsSourceOrTargetWithDeleteOption
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMirrorContentsWithSameNameAsSourceOrTargetWithoutDeleteOption
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMirrorCopiesFilesAndDirectoriesRecursively
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMirrorCopiesLinkedDirectoryContents
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMirrorCopiesLinks
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMirrorCopiesRelativeLinkedContents
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMirrorCreatesEmptyDirectory
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMirrorFromSubdirectoryInToParentDirectory
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMirrorWithCustomIteratorAndDeleteOption
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMkdirCreatesDirectoriesFails
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMkdirCreatesDirectoriesFromArray
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMkdirCreatesDirectoriesFromTraversableObject
+Symfony\Component\Filesystem\Tests\FilesystemTest::testMkdirCreatesDirectoriesRecursively
+Symfony\Component\Filesystem\Tests\FilesystemTest::testReadAbsoluteLink
+Symfony\Component\Filesystem\Tests\FilesystemTest::testReadBrokenLink
+Symfony\Component\Filesystem\Tests\FilesystemTest::testReadDirectory
+Symfony\Component\Filesystem\Tests\FilesystemTest::testReadFile
+Symfony\Component\Filesystem\Tests\FilesystemTest::testReadLinkCanonicalizePath
+Symfony\Component\Filesystem\Tests\FilesystemTest::testReadLinkCanonicalizedPathDoesNotExist
+Symfony\Component\Filesystem\Tests\FilesystemTest::testReadLinkDefaultPathDoesNotExist
+Symfony\Component\Filesystem\Tests\FilesystemTest::testReadLinkDefaultPathNotLink
+Symfony\Component\Filesystem\Tests\FilesystemTest::testReadNonExistentFile
+Symfony\Component\Filesystem\Tests\FilesystemTest::testReadRelativeLink
+Symfony\Component\Filesystem\Tests\FilesystemTest::testReadUnreadableFile
+Symfony\Component\Filesystem\Tests\FilesystemTest::testRemoveCleansArrayOfFilesAndDirectories
+Symfony\Component\Filesystem\Tests\FilesystemTest::testRemoveCleansFilesAndDirectoriesIteratively
+Symfony\Component\Filesystem\Tests\FilesystemTest::testRemoveCleansInvalidLinks
+Symfony\Component\Filesystem\Tests\FilesystemTest::testRemoveCleansTraversableObjectOfFilesAndDirectories
+Symfony\Component\Filesystem\Tests\FilesystemTest::testRemoveIgnoresNonExistingFiles
+Symfony\Component\Filesystem\Tests\FilesystemTest::testRemoveLink
+Symfony\Component\Filesystem\Tests\FilesystemTest::testRemoveSymlink
+Symfony\Component\Filesystem\Tests\FilesystemTest::testRemoveThrowsExceptionOnPermissionDenied
+Symfony\Component\Filesystem\Tests\FilesystemTest::testRename
+Symfony\Component\Filesystem\Tests\FilesystemTest::testRenameOverwritesTheTargetIfItAlreadyExists
+Symfony\Component\Filesystem\Tests\FilesystemTest::testRenameThrowsExceptionIfTargetAlreadyExists
+Symfony\Component\Filesystem\Tests\FilesystemTest::testRenameThrowsExceptionOnError
+Symfony\Component\Filesystem\Tests\FilesystemTest::testSymlink
+Symfony\Component\Filesystem\Tests\FilesystemTest::testSymlinkCreatesTargetDirectoryIfItDoesNotExist
+Symfony\Component\Filesystem\Tests\FilesystemTest::testSymlinkIsNotOverwrittenIfAlreadyCreated
+Symfony\Component\Filesystem\Tests\FilesystemTest::testSymlinkIsOverwrittenIfPointsToDifferentTarget
+Symfony\Component\Filesystem\Tests\FilesystemTest::testTempnam
+Symfony\Component\Filesystem\Tests\FilesystemTest::testTempnamOnUnwritableFallsBackToSysTmp
+Symfony\Component\Filesystem\Tests\FilesystemTest::testTempnamTrimsTrailingWhitespaceFromTruncatedPrefix
+Symfony\Component\Filesystem\Tests\FilesystemTest::testTempnamWithFileScheme
+Symfony\Component\Filesystem\Tests\FilesystemTest::testTempnamWithHTTPSchemeFails
+Symfony\Component\Filesystem\Tests\FilesystemTest::testTempnamWithMockScheme
+Symfony\Component\Filesystem\Tests\FilesystemTest::testTempnamWithPHPTempSchemeFails
+Symfony\Component\Filesystem\Tests\FilesystemTest::testTempnamWithSuffix
+Symfony\Component\Filesystem\Tests\FilesystemTest::testTempnamWithSuffix0
+Symfony\Component\Filesystem\Tests\FilesystemTest::testTempnamWithSuffixIsPrivate
+Symfony\Component\Filesystem\Tests\FilesystemTest::testTouchCreatesEmptyFile
+Symfony\Component\Filesystem\Tests\FilesystemTest::testTouchCreatesEmptyFilesFromArray
+Symfony\Component\Filesystem\Tests\FilesystemTest::testTouchCreatesEmptyFilesFromTraversableObject
+Symfony\Component\Filesystem\Tests\FilesystemTest::testTouchFails
+Symfony\Component\Filesystem\Tests\FilesystemTest::testTouchWithZeroTimestamp
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #0
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #1
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #10
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #11
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #12
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #13
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #14
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #15
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #16
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #17
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #18
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #19
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #2
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #20
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #21
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #22
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #23
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #24
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #25
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #26
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #27
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #28
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #29
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #3
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #30
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #31
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #32
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #33
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #34
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #35
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #36
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #37
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #38
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #39
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #4
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #40
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #41
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #42
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #43
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #44
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #45
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #5
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #6
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #7
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #8
+Symfony\Component\Filesystem\Tests\PathTest::testCanonicalize with data set #9
+Symfony\Component\Filesystem\Tests\PathTest::testChangeExtension with data set #0
+Symfony\Component\Filesystem\Tests\PathTest::testChangeExtension with data set #1
+Symfony\Component\Filesystem\Tests\PathTest::testChangeExtension with data set #10
+Symfony\Component\Filesystem\Tests\PathTest::testChangeExtension with data set #11
+Symfony\Component\Filesystem\Tests\PathTest::testChangeExtension with data set #2
+Symfony\Component\Filesystem\Tests\PathTest::testChangeExtension with data set #3
+Symfony\Component\Filesystem\Tests\PathTest::testChangeExtension with data set #4
+Symfony\Component\Filesystem\Tests\PathTest::testChangeExtension with data set #5
+Symfony\Component\Filesystem\Tests\PathTest::testChangeExtension with data set #6
+Symfony\Component\Filesystem\Tests\PathTest::testChangeExtension with data set #7
+Symfony\Component\Filesystem\Tests\PathTest::testChangeExtension with data set #8
+Symfony\Component\Filesystem\Tests\PathTest::testChangeExtension with data set #9
+Symfony\Component\Filesystem\Tests\PathTest::testGetDirectory with data set #0
+Symfony\Component\Filesystem\Tests\PathTest::testGetDirectory with data set #1
+Symfony\Component\Filesystem\Tests\PathTest::testGetDirectory with data set #10
+Symfony\Component\Filesystem\Tests\PathTest::testGetDirectory with data set #11
+Symfony\Component\Filesystem\Tests\PathTest::testGetDirectory with data set #12
+Symfony\Component\Filesystem\Tests\PathTest::testGetDirectory with data set #13
+Symfony\Component\Filesystem\Tests\PathTest::testGetDirectory with data set #14
+Symfony\Component\Filesystem\Tests\PathTest::testGetDirectory with data set #15
+Symfony\Component\Filesystem\Tests\PathTest::testGetDirectory with data set #16
+Symfony\Component\Filesystem\Tests\PathTest::testGetDirectory with data set #17
+Symfony\Component\Filesystem\Tests\PathTest::testGetDirectory with data set #18
+Symfony\Component\Filesystem\Tests\PathTest::testGetDirectory with data set #2
+Symfony\Component\Filesystem\Tests\PathTest::testGetDirectory with data set #3
+Symfony\Component\Filesystem\Tests\PathTest::testGetDirectory with data set #4
+Symfony\Component\Filesystem\Tests\PathTest::testGetDirectory with data set #5
+Symfony\Component\Filesystem\Tests\PathTest::testGetDirectory with data set #6
+Symfony\Component\Filesystem\Tests\PathTest::testGetDirectory with data set #7
+Symfony\Component\Filesystem\Tests\PathTest::testGetDirectory with data set #8
+Symfony\Component\Filesystem\Tests\PathTest::testGetDirectory with data set #9
+Symfony\Component\Filesystem\Tests\PathTest::testGetExtension with data set #0
+Symfony\Component\Filesystem\Tests\PathTest::testGetExtension with data set #1
+Symfony\Component\Filesystem\Tests\PathTest::testGetExtension with data set #10
+Symfony\Component\Filesystem\Tests\PathTest::testGetExtension with data set #2
+Symfony\Component\Filesystem\Tests\PathTest::testGetExtension with data set #3
+Symfony\Component\Filesystem\Tests\PathTest::testGetExtension with data set #4
+Symfony\Component\Filesystem\Tests\PathTest::testGetExtension with data set #5
+Symfony\Component\Filesystem\Tests\PathTest::testGetExtension with data set #6
+Symfony\Component\Filesystem\Tests\PathTest::testGetExtension with data set #7
+Symfony\Component\Filesystem\Tests\PathTest::testGetExtension with data set #8
+Symfony\Component\Filesystem\Tests\PathTest::testGetExtension with data set #9
+Symfony\Component\Filesystem\Tests\PathTest::testGetFilenameWithoutExtension with data set #0
+Symfony\Component\Filesystem\Tests\PathTest::testGetFilenameWithoutExtension with data set #1
+Symfony\Component\Filesystem\Tests\PathTest::testGetFilenameWithoutExtension with data set #10
+Symfony\Component\Filesystem\Tests\PathTest::testGetFilenameWithoutExtension with data set #11
+Symfony\Component\Filesystem\Tests\PathTest::testGetFilenameWithoutExtension with data set #12
+Symfony\Component\Filesystem\Tests\PathTest::testGetFilenameWithoutExtension with data set #13
+Symfony\Component\Filesystem\Tests\PathTest::testGetFilenameWithoutExtension with data set #14
+Symfony\Component\Filesystem\Tests\PathTest::testGetFilenameWithoutExtension with data set #15
+Symfony\Component\Filesystem\Tests\PathTest::testGetFilenameWithoutExtension with data set #16
+Symfony\Component\Filesystem\Tests\PathTest::testGetFilenameWithoutExtension with data set #17
+Symfony\Component\Filesystem\Tests\PathTest::testGetFilenameWithoutExtension with data set #2
+Symfony\Component\Filesystem\Tests\PathTest::testGetFilenameWithoutExtension with data set #3
+Symfony\Component\Filesystem\Tests\PathTest::testGetFilenameWithoutExtension with data set #4
+Symfony\Component\Filesystem\Tests\PathTest::testGetFilenameWithoutExtension with data set #5
+Symfony\Component\Filesystem\Tests\PathTest::testGetFilenameWithoutExtension with data set #6
+Symfony\Component\Filesystem\Tests\PathTest::testGetFilenameWithoutExtension with data set #7
+Symfony\Component\Filesystem\Tests\PathTest::testGetFilenameWithoutExtension with data set #8
+Symfony\Component\Filesystem\Tests\PathTest::testGetFilenameWithoutExtension with data set #9
+Symfony\Component\Filesystem\Tests\PathTest::testGetHomeDirectoryFailsIfNotSupportedOperatingSystem
+Symfony\Component\Filesystem\Tests\PathTest::testGetHomeDirectoryForUnix
+Symfony\Component\Filesystem\Tests\PathTest::testGetHomeDirectoryForWindows
+Symfony\Component\Filesystem\Tests\PathTest::testGetLongestCommonBasePath with data set #0
+Symfony\Component\Filesystem\Tests\PathTest::testGetLongestCommonBasePath with data set #1
+Symfony\Component\Filesystem\Tests\PathTest::testGetLongestCommonBasePath with data set #10
+Symfony\Component\Filesystem\Tests\PathTest::testGetLongestCommonBasePath with data set #11
+Symfony\Component\Filesystem\Tests\PathTest::testGetLongestCommonBasePath with data set #12
+Symfony\Component\Filesystem\Tests\PathTest::testGetLongestCommonBasePath with data set #13
+Symfony\Component\Filesystem\Tests\PathTest::testGetLongestCommonBasePath with data set #14
+Symfony\Component\Filesystem\Tests\PathTest::testGetLongestCommonBasePath with data set #15
+Symfony\Component\Filesystem\Tests\PathTest::testGetLongestCommonBasePath with data set #16
+Symfony\Component\Filesystem\Tests\PathTest::testGetLongestCommonBasePath with data set #17
+Symfony\Component\Filesystem\Tests\PathTest::testGetLongestCommonBasePath with data set #18
+Symfony\Component\Filesystem\Tests\PathTest::testGetLongestCommonBasePath with data set #19
+Symfony\Component\Filesystem\Tests\PathTest::testGetLongestCommonBasePath with data set #2
+Symfony\Component\Filesystem\Tests\PathTest::testGetLongestCommonBasePath with data set #20
+Symfony\Component\Filesystem\Tests\PathTest::testGetLongestCommonBasePath with data set #21
+Symfony\Component\Filesystem\Tests\PathTest::testGetLongestCommonBasePath with data set #3
+Symfony\Component\Filesystem\Tests\PathTest::testGetLongestCommonBasePath with data set #4
+Symfony\Component\Filesystem\Tests\PathTest::testGetLongestCommonBasePath with data set #5
+Symfony\Component\Filesystem\Tests\PathTest::testGetLongestCommonBasePath with data set #6
+Symfony\Component\Filesystem\Tests\PathTest::testGetLongestCommonBasePath with data set #7
+Symfony\Component\Filesystem\Tests\PathTest::testGetLongestCommonBasePath with data set #8
+Symfony\Component\Filesystem\Tests\PathTest::testGetLongestCommonBasePath with data set #9
+Symfony\Component\Filesystem\Tests\PathTest::testGetRoot with data set #0
+Symfony\Component\Filesystem\Tests\PathTest::testGetRoot with data set #1
+Symfony\Component\Filesystem\Tests\PathTest::testGetRoot with data set #2
+Symfony\Component\Filesystem\Tests\PathTest::testGetRoot with data set #3
+Symfony\Component\Filesystem\Tests\PathTest::testGetRoot with data set #4
+Symfony\Component\Filesystem\Tests\PathTest::testGetRoot with data set #5
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #0
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #1
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #10
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #11
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #12
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #13
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #14
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #15
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #16
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #17
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #18
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #19
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #2
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #20
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #21
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #22
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #23
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #24
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #25
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #26
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #27
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #3
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #4
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #5
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #6
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #7
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #8
+Symfony\Component\Filesystem\Tests\PathTest::testHasExtension with data set #9
+Symfony\Component\Filesystem\Tests\PathTest::testIsAbsolute with data set #0
+Symfony\Component\Filesystem\Tests\PathTest::testIsAbsolute with data set #1
+Symfony\Component\Filesystem\Tests\PathTest::testIsAbsolute with data set #10
+Symfony\Component\Filesystem\Tests\PathTest::testIsAbsolute with data set #11
+Symfony\Component\Filesystem\Tests\PathTest::testIsAbsolute with data set #2
+Symfony\Component\Filesystem\Tests\PathTest::testIsAbsolute with data set #3
+Symfony\Component\Filesystem\Tests\PathTest::testIsAbsolute with data set #4
+Symfony\Component\Filesystem\Tests\PathTest::testIsAbsolute with data set #5
+Symfony\Component\Filesystem\Tests\PathTest::testIsAbsolute with data set #6
+Symfony\Component\Filesystem\Tests\PathTest::testIsAbsolute with data set #7
+Symfony\Component\Filesystem\Tests\PathTest::testIsAbsolute with data set #8
+Symfony\Component\Filesystem\Tests\PathTest::testIsAbsolute with data set #9
+Symfony\Component\Filesystem\Tests\PathTest::testIsBasePath with data set #0
+Symfony\Component\Filesystem\Tests\PathTest::testIsBasePath with data set #1
+Symfony\Component\Filesystem\Tests\PathTest::testIsBasePath with data set #10
+Symfony\Component\Filesystem\Tests\PathTest::testIsBasePath with data set #11
+Symfony\Component\Filesystem\Tests\PathTest::testIsBasePath with data set #12
+Symfony\Component\Filesystem\Tests\PathTest::testIsBasePath with data set #13
+Symfony\Component\Filesystem\Tests\PathTest::testIsBasePath with data set #14
+Symfony\Component\Filesystem\Tests\PathTest::testIsBasePath with data set #15
+Symfony\Component\Filesystem\Tests\PathTest::testIsBasePath with data set #16
+Symfony\Component\Filesystem\Tests\PathTest::testIsBasePath with data set #2
+Symfony\Component\Filesystem\Tests\PathTest::testIsBasePath with data set #3
+Symfony\Component\Filesystem\Tests\PathTest::testIsBasePath with data set #4
+Symfony\Component\Filesystem\Tests\PathTest::testIsBasePath with data set #5
+Symfony\Component\Filesystem\Tests\PathTest::testIsBasePath with data set #6
+Symfony\Component\Filesystem\Tests\PathTest::testIsBasePath with data set #7
+Symfony\Component\Filesystem\Tests\PathTest::testIsBasePath with data set #8
+Symfony\Component\Filesystem\Tests\PathTest::testIsBasePath with data set #9
+Symfony\Component\Filesystem\Tests\PathTest::testIsLocal with data set #0
+Symfony\Component\Filesystem\Tests\PathTest::testIsLocal with data set #1
+Symfony\Component\Filesystem\Tests\PathTest::testIsLocal with data set #2
+Symfony\Component\Filesystem\Tests\PathTest::testIsLocal with data set #3
+Symfony\Component\Filesystem\Tests\PathTest::testIsLocal with data set #4
+Symfony\Component\Filesystem\Tests\PathTest::testIsRelative with data set #0
+Symfony\Component\Filesystem\Tests\PathTest::testIsRelative with data set #1
+Symfony\Component\Filesystem\Tests\PathTest::testIsRelative with data set #10
+Symfony\Component\Filesystem\Tests\PathTest::testIsRelative with data set #11
+Symfony\Component\Filesystem\Tests\PathTest::testIsRelative with data set #2
+Symfony\Component\Filesystem\Tests\PathTest::testIsRelative with data set #3
+Symfony\Component\Filesystem\Tests\PathTest::testIsRelative with data set #4
+Symfony\Component\Filesystem\Tests\PathTest::testIsRelative with data set #5
+Symfony\Component\Filesystem\Tests\PathTest::testIsRelative with data set #6
+Symfony\Component\Filesystem\Tests\PathTest::testIsRelative with data set #7
+Symfony\Component\Filesystem\Tests\PathTest::testIsRelative with data set #8
+Symfony\Component\Filesystem\Tests\PathTest::testIsRelative with data set #9
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #0
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #1
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #10
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #11
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #12
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #13
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #14
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #15
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #16
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #17
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #18
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #19
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #2
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #20
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #21
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #22
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #23
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #24
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #25
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #26
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #27
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #28
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #29
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #3
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #30
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #31
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #32
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #33
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #34
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #35
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #36
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #37
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #4
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #5
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #6
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #7
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #8
+Symfony\Component\Filesystem\Tests\PathTest::testJoin with data set #9
+Symfony\Component\Filesystem\Tests\PathTest::testJoinVarArgs
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsolute with data set #0
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsolute with data set #1
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsolute with data set #10
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsolute with data set #11
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsolute with data set #12
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsolute with data set #13
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsolute with data set #14
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsolute with data set #15
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsolute with data set #16
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsolute with data set #17
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsolute with data set #18
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsolute with data set #19
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsolute with data set #2
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsolute with data set #20
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsolute with data set #21
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsolute with data set #22
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsolute with data set #23
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsolute with data set #24
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsolute with data set #3
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsolute with data set #4
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsolute with data set #5
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsolute with data set #6
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsolute with data set #7
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsolute with data set #8
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsolute with data set #9
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsoluteDoesNotFailIfDifferentRoot with data set #0
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsoluteDoesNotFailIfDifferentRoot with data set #1
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsoluteFailsIfBasePathEmpty
+Symfony\Component\Filesystem\Tests\PathTest::testMakeAbsoluteFailsIfBasePathNotAbsolute
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #0
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #1
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #10
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #11
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #12
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #13
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #14
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #15
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #16
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #17
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #18
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #19
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #2
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #20
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #21
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #22
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #23
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #24
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #25
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #26
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #27
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #28
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #29
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #3
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #30
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #31
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #32
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #33
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #34
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #35
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #36
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #37
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #38
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #39
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #4
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #40
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #41
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #42
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #43
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #44
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #45
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #5
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #6
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #7
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #8
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelative with data set #9
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelativeFailsIfAbsolutePathAndBasePathEmpty
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelativeFailsIfAbsolutePathAndBasePathNotAbsolute
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelativeFailsIfDifferentRoot with data set #0
+Symfony\Component\Filesystem\Tests\PathTest::testMakeRelativeFailsIfDifferentRoot with data set #1
+Symfony\Component\Filesystem\Tests\PathTest::testNormalize
 Symfony\Component\Finder\Tests\Comparator\ComparatorTest::testInvalidOperator
 Symfony\Component\Finder\Tests\Comparator\ComparatorTest::testTestFails with data set #0
 Symfony\Component\Finder\Tests\Comparator\ComparatorTest::testTestFails with data set #1
@@ -8445,6 +8937,12 @@ Symfony\Component\HttpFoundation\Tests\RedirectResponseTest::testGetTargetUrl
 Symfony\Component\HttpFoundation\Tests\RedirectResponseTest::testRedirectResponseConstructorEmptyUrl
 Symfony\Component\HttpFoundation\Tests\RedirectResponseTest::testRedirectResponseConstructorWrongStatusCode
 Symfony\Component\HttpFoundation\Tests\RedirectResponseTest::testSetTargetUrl
+Symfony\Component\HttpFoundation\Tests\RequestFunctionalTest::testFormUrlEncodedBodyParsing with data set #0
+Symfony\Component\HttpFoundation\Tests\RequestFunctionalTest::testFormUrlEncodedBodyParsing with data set #1
+Symfony\Component\HttpFoundation\Tests\RequestFunctionalTest::testFormUrlEncodedBodyParsing with data set #2
+Symfony\Component\HttpFoundation\Tests\RequestFunctionalTest::testMultipartFormDataBodyParsing with data set #0
+Symfony\Component\HttpFoundation\Tests\RequestFunctionalTest::testMultipartFormDataBodyParsing with data set #1
+Symfony\Component\HttpFoundation\Tests\RequestFunctionalTest::testMultipartFormDataBodyParsing with data set #2
 Symfony\Component\HttpFoundation\Tests\RequestMatcher\AttributesRequestMatcherTest::test with data set "with-closure"
 Symfony\Component\HttpFoundation\Tests\RequestMatcher\AttributesRequestMatcherTest::test with data set #0
 Symfony\Component\HttpFoundation\Tests\RequestMatcher\AttributesRequestMatcherTest::test with data set #1
@@ -9026,6 +9524,12 @@ Symfony\Component\HttpFoundation\Tests\RequestTest::testUrlencodedStringPrefix w
 Symfony\Component\HttpFoundation\Tests\RequestTest::testUrlencodedStringPrefix with data set #6
 Symfony\Component\HttpFoundation\Tests\RequestTest::testUrlencodedStringPrefix with data set #7
 Symfony\Component\HttpFoundation\Tests\RequestTest::testVeryLongHosts
+Symfony\Component\HttpFoundation\Tests\ResponseFunctionalTest::testCookie with data set #0
+Symfony\Component\HttpFoundation\Tests\ResponseFunctionalTest::testCookie with data set #1
+Symfony\Component\HttpFoundation\Tests\ResponseFunctionalTest::testCookie with data set #2
+Symfony\Component\HttpFoundation\Tests\ResponseFunctionalTest::testCookie with data set #3
+Symfony\Component\HttpFoundation\Tests\ResponseFunctionalTest::testCookie with data set #4
+Symfony\Component\HttpFoundation\Tests\ResponseFunctionalTest::testCookie with data set #5
 Symfony\Component\HttpFoundation\Tests\ResponseHeaderBagTest::testAllPreserveCase
 Symfony\Component\HttpFoundation\Tests\ResponseHeaderBagTest::testCacheControlClone
 Symfony\Component\HttpFoundation\Tests\ResponseHeaderBagTest::testCacheControlHeader
@@ -9301,6 +9805,19 @@ Symfony\Component\HttpFoundation\Tests\Session\SessionTest::testSetId
 Symfony\Component\HttpFoundation\Tests\Session\SessionTest::testSetIdAfterStart
 Symfony\Component\HttpFoundation\Tests\Session\SessionTest::testSetName
 Symfony\Component\HttpFoundation\Tests\Session\SessionTest::testStart
+Symfony\Component\HttpFoundation\Tests\Session\Storage\Handler\AbstractSessionHandlerTest::testSession with data set #0
+Symfony\Component\HttpFoundation\Tests\Session\Storage\Handler\AbstractSessionHandlerTest::testSession with data set #1
+Symfony\Component\HttpFoundation\Tests\Session\Storage\Handler\AbstractSessionHandlerTest::testSession with data set #10
+Symfony\Component\HttpFoundation\Tests\Session\Storage\Handler\AbstractSessionHandlerTest::testSession with data set #11
+Symfony\Component\HttpFoundation\Tests\Session\Storage\Handler\AbstractSessionHandlerTest::testSession with data set #12
+Symfony\Component\HttpFoundation\Tests\Session\Storage\Handler\AbstractSessionHandlerTest::testSession with data set #2
+Symfony\Component\HttpFoundation\Tests\Session\Storage\Handler\AbstractSessionHandlerTest::testSession with data set #3
+Symfony\Component\HttpFoundation\Tests\Session\Storage\Handler\AbstractSessionHandlerTest::testSession with data set #4
+Symfony\Component\HttpFoundation\Tests\Session\Storage\Handler\AbstractSessionHandlerTest::testSession with data set #5
+Symfony\Component\HttpFoundation\Tests\Session\Storage\Handler\AbstractSessionHandlerTest::testSession with data set #6
+Symfony\Component\HttpFoundation\Tests\Session\Storage\Handler\AbstractSessionHandlerTest::testSession with data set #7
+Symfony\Component\HttpFoundation\Tests\Session\Storage\Handler\AbstractSessionHandlerTest::testSession with data set #8
+Symfony\Component\HttpFoundation\Tests\Session\Storage\Handler\AbstractSessionHandlerTest::testSession with data set #9
 Symfony\Component\HttpFoundation\Tests\Session\Storage\Handler\IdentityMarshallerTest::testMarshall
 Symfony\Component\HttpFoundation\Tests\Session\Storage\Handler\IdentityMarshallerTest::testMarshallInvalidData with data set #0
 Symfony\Component\HttpFoundation\Tests\Session\Storage\Handler\IdentityMarshallerTest::testMarshallInvalidData with data set #1
@@ -11114,9 +11631,16 @@ Symfony\Component\HttpKernel\Tests\HttpCache\SubRequestHandlerTest::testTrustedH
 Symfony\Component\HttpKernel\Tests\HttpCache\SubRequestHandlerTest::testTrustedXForwardedForHeader
 Symfony\Component\HttpKernel\Tests\HttpCache\SubRequestHandlerTest::testUntrustedHeadersAreRemoved
 Symfony\Component\HttpKernel\Tests\HttpClientKernelTest::testHandlePassesMaxRedirectsHttpClientOption
+Symfony\Component\HttpKernel\Tests\HttpKernelBrowserTest::testAcceptHeaderNotSet
+Symfony\Component\HttpKernel\Tests\HttpKernelBrowserTest::testDoRequest
 Symfony\Component\HttpKernel\Tests\HttpKernelBrowserTest::testFilterResponseConvertsCookies
 Symfony\Component\HttpKernel\Tests\HttpKernelBrowserTest::testFilterResponseSupportsStreamedResponses
 Symfony\Component\HttpKernel\Tests\HttpKernelBrowserTest::testFilterResponseSupportsStreamedResponsesWithChunks
+Symfony\Component\HttpKernel\Tests\HttpKernelBrowserTest::testGetScript
+Symfony\Component\HttpKernel\Tests\HttpKernelBrowserTest::testKernelIsTerminatedAfterTheResponseContentIsSent
+Symfony\Component\HttpKernel\Tests\HttpKernelBrowserTest::testStreamedResponseThatFlushesIsCaptured
+Symfony\Component\HttpKernel\Tests\HttpKernelBrowserTest::testUploadedFile
+Symfony\Component\HttpKernel\Tests\HttpKernelBrowserTest::testUploadedFileWhenNoFileSelected
 Symfony\Component\HttpKernel\Tests\HttpKernelTest::testHandleAllowChangingControllerAndArguments
 Symfony\Component\HttpKernel\Tests\HttpKernelTest::testHandleAllowChangingControllerArguments
 Symfony\Component\HttpKernel\Tests\HttpKernelTest::testHandleExceptionWithARedirectionResponse
@@ -11709,7 +12233,120 @@ Symfony\Component\Mime\Tests\Part\DataPartTest::testConstructorWithResource
 Symfony\Component\Mime\Tests\Part\DataPartTest::testFromPath
 Symfony\Component\Mime\Tests\Part\DataPartTest::testFromPathWithMeta
 Symfony\Component\Mime\Tests\Part\DataPartTest::testFromPathWithNotAFile
+Symfony\Component\Mime\Tests\Part\DataPartTest::testFromPathWithUrl
+Symfony\Component\Mime\Tests\Part\DataPartTest::testGetContentType
+Symfony\Component\Mime\Tests\Part\DataPartTest::testGetFilename
+Symfony\Component\Mime\Tests\Part\DataPartTest::testHasContentId
 Symfony\Component\Mime\Tests\Part\DataPartTest::testHeaders
+Symfony\Component\Mime\Tests\Part\DataPartTest::testSerialize
+Symfony\Component\Mime\Tests\Part\DataPartTest::testSerializePreservesContentId
+Symfony\Component\Mime\Tests\Part\DataPartTest::testSerializeSubclassImplementingSleep with data set #0
+Symfony\Component\Mime\Tests\Part\DataPartTest::testSerializeSubclassImplementingSleep with data set #1
+Symfony\Component\Mime\Tests\Part\DataPartTest::testSetContentId
+Symfony\Component\Mime\Tests\Part\DataPartTest::testSetContentIdInvalid
+Symfony\Component\Mime\Tests\Part\DataPartTest::testUnserializeNativePayloadWithContentId
+Symfony\Component\Mime\Tests\Part\DataPartTest::testUnserializeRejectsNonStringValue with data set "cid int"
+Symfony\Component\Mime\Tests\Part\DataPartTest::testUnserializeRejectsNonStringValue with data set "cid object"
+Symfony\Component\Mime\Tests\Part\DataPartTest::testUnserializeRejectsNonStringValue with data set "filename int"
+Symfony\Component\Mime\Tests\Part\DataPartTest::testUnserializeRejectsNonStringValue with data set "filename object"
+Symfony\Component\Mime\Tests\Part\DataPartTest::testUnserializeRejectsNonStringValue with data set "mediaType int"
+Symfony\Component\Mime\Tests\Part\DataPartTest::testUnserializeRejectsNonStringValue with data set "mediaType null"
+Symfony\Component\Mime\Tests\Part\DataPartTest::testUnserializeRejectsNonStringValue with data set "mediaType object"
+Symfony\Component\Mime\Tests\Part\DataPartTest::testUnserializeRejectsObjectInTypedStringProperty with data set #0
+Symfony\Component\Mime\Tests\Part\DataPartTest::testUnserializeRejectsObjectInTypedStringProperty with data set #1
+Symfony\Component\Mime\Tests\Part\DataPartTest::testUnserializeRejectsObjectInTypedStringProperty with data set #2
+Symfony\Component\Mime\Tests\Part\MessagePartTest::testConstructor
+Symfony\Component\Mime\Tests\Part\MessagePartTest::testHeaders
+Symfony\Component\Mime\Tests\Part\MessagePartTest::testSerialize
+Symfony\Component\Mime\Tests\Part\Multipart\AlternativePartTest::testConstructor
+Symfony\Component\Mime\Tests\Part\Multipart\DigestPartTest::testConstructor
+Symfony\Component\Mime\Tests\Part\Multipart\FormDataPartTest::testBoundaryContentTypeHeader
+Symfony\Component\Mime\Tests\Part\Multipart\FormDataPartTest::testConstructor
+Symfony\Component\Mime\Tests\Part\Multipart\FormDataPartTest::testContentLineLength
+Symfony\Component\Mime\Tests\Part\Multipart\FormDataPartTest::testExceptionOnFormFieldsWithDisallowedTypesInsideArray
+Symfony\Component\Mime\Tests\Part\Multipart\FormDataPartTest::testExceptionOnFormFieldsWithIntegerKeysAndMultipleValues
+Symfony\Component\Mime\Tests\Part\Multipart\FormDataPartTest::testGetPartsThrowsOnUnexpectedFieldType
+Symfony\Component\Mime\Tests\Part\Multipart\FormDataPartTest::testNestedArrayParts
+Symfony\Component\Mime\Tests\Part\Multipart\FormDataPartTest::testSerialize
+Symfony\Component\Mime\Tests\Part\Multipart\FormDataPartTest::testToString
+Symfony\Component\Mime\Tests\Part\Multipart\FormDataPartTest::testUnserializeNativePayload
+Symfony\Component\Mime\Tests\Part\Multipart\MixedPartTest::testConstructor
+Symfony\Component\Mime\Tests\Part\Multipart\MixedPartTest::testSerialize
+Symfony\Component\Mime\Tests\Part\Multipart\MixedPartTest::testUnserializeNativePayload
+Symfony\Component\Mime\Tests\Part\Multipart\MixedPartTest::testUnserializeRejectsObjectInBoundary
+Symfony\Component\Mime\Tests\Part\Multipart\RelatedPartTest::testConstructor
+Symfony\Component\Mime\Tests\Part\Multipart\RelatedPartTest::testSerialize
+Symfony\Component\Mime\Tests\Part\Multipart\RelatedPartTest::testUnserializeNativePayload
+Symfony\Component\Mime\Tests\Part\SMimePartTest::testSerializeSubclassImplementingSleep with data set #0
+Symfony\Component\Mime\Tests\Part\SMimePartTest::testSerializeSubclassImplementingSleep with data set #1
+Symfony\Component\Mime\Tests\Part\SMimePartTest::testUnserializeRejectsNonStringValue with data set "subtype int"
+Symfony\Component\Mime\Tests\Part\SMimePartTest::testUnserializeRejectsNonStringValue with data set "subtype null"
+Symfony\Component\Mime\Tests\Part\SMimePartTest::testUnserializeRejectsNonStringValue with data set "subtype object"
+Symfony\Component\Mime\Tests\Part\SMimePartTest::testUnserializeRejectsNonStringValue with data set "type int"
+Symfony\Component\Mime\Tests\Part\SMimePartTest::testUnserializeRejectsNonStringValue with data set "type null"
+Symfony\Component\Mime\Tests\Part\SMimePartTest::testUnserializeRejectsNonStringValue with data set "type object"
+Symfony\Component\Mime\Tests\Part\SMimePartTest::testUnserializeRejectsObjectInTypedStringProperty with data set #0
+Symfony\Component\Mime\Tests\Part\SMimePartTest::testUnserializeRejectsObjectInTypedStringProperty with data set #1
+Symfony\Component\Mime\Tests\Part\SMimePartTest::testUnserializeRejectsObjectInTypedStringProperty with data set #2
+Symfony\Component\Mime\Tests\Part\TextPartTest::testConstructor
+Symfony\Component\Mime\Tests\Part\TextPartTest::testConstructorWithFile
+Symfony\Component\Mime\Tests\Part\TextPartTest::testConstructorWithNonStringOrResource
+Symfony\Component\Mime\Tests\Part\TextPartTest::testConstructorWithResource
+Symfony\Component\Mime\Tests\Part\TextPartTest::testConstructorWithUnknownFile
+Symfony\Component\Mime\Tests\Part\TextPartTest::testCustomEncoderNeedsToRegisterFirst
+Symfony\Component\Mime\Tests\Part\TextPartTest::testCustomEncoding
+Symfony\Component\Mime\Tests\Part\TextPartTest::testEncoding
+Symfony\Component\Mime\Tests\Part\TextPartTest::testHeaders
+Symfony\Component\Mime\Tests\Part\TextPartTest::testOverwriteDefaultEncoder
+Symfony\Component\Mime\Tests\Part\TextPartTest::testSerialize
+Symfony\Component\Mime\Tests\Part\TextPartTest::testSerializeSubclassImplementingSleep with data set #0
+Symfony\Component\Mime\Tests\Part\TextPartTest::testSerializeSubclassImplementingSleep with data set #1
+Symfony\Component\Mime\Tests\Part\TextPartTest::testUnserializeRejectsNonStringValue with data set "charset int"
+Symfony\Component\Mime\Tests\Part\TextPartTest::testUnserializeRejectsNonStringValue with data set "charset object"
+Symfony\Component\Mime\Tests\Part\TextPartTest::testUnserializeRejectsNonStringValue with data set "disposition int"
+Symfony\Component\Mime\Tests\Part\TextPartTest::testUnserializeRejectsNonStringValue with data set "disposition object"
+Symfony\Component\Mime\Tests\Part\TextPartTest::testUnserializeRejectsNonStringValue with data set "encoding int"
+Symfony\Component\Mime\Tests\Part\TextPartTest::testUnserializeRejectsNonStringValue with data set "encoding null"
+Symfony\Component\Mime\Tests\Part\TextPartTest::testUnserializeRejectsNonStringValue with data set "encoding object"
+Symfony\Component\Mime\Tests\Part\TextPartTest::testUnserializeRejectsNonStringValue with data set "name int"
+Symfony\Component\Mime\Tests\Part\TextPartTest::testUnserializeRejectsNonStringValue with data set "name object"
+Symfony\Component\Mime\Tests\Part\TextPartTest::testUnserializeRejectsNonStringValue with data set "subtype int"
+Symfony\Component\Mime\Tests\Part\TextPartTest::testUnserializeRejectsNonStringValue with data set "subtype null"
+Symfony\Component\Mime\Tests\Part\TextPartTest::testUnserializeRejectsNonStringValue with data set "subtype object"
+Symfony\Component\Mime\Tests\Part\TextPartTest::testUnserializeRejectsObjectInTypedStringProperty with data set #0
+Symfony\Component\Mime\Tests\Part\TextPartTest::testUnserializeRejectsObjectInTypedStringProperty with data set #1
+Symfony\Component\Mime\Tests\Part\TextPartTest::testUnserializeRejectsObjectInTypedStringProperty with data set #2
+Symfony\Component\Mime\Tests\Part\TextPartTest::testUnserializeRejectsObjectInTypedStringProperty with data set #3
+Symfony\Component\Mime\Tests\Part\TextPartTest::testUnserializeRejectsObjectInTypedStringProperty with data set #4
+Symfony\Component\Mime\Tests\RawMessageTest::testDestructClosesResource
+Symfony\Component\Mime\Tests\RawMessageTest::testSerialization with data set "array"
+Symfony\Component\Mime\Tests\RawMessageTest::testSerialization with data set "generator"
+Symfony\Component\Mime\Tests\RawMessageTest::testSerialization with data set "string"
+Symfony\Component\Mime\Tests\RawMessageTest::testSerialization with data set "traversable"
+Symfony\Component\Mime\Tests\RawMessageTest::testToIterable with data set "array"
+Symfony\Component\Mime\Tests\RawMessageTest::testToIterable with data set "generator"
+Symfony\Component\Mime\Tests\RawMessageTest::testToIterable with data set "string"
+Symfony\Component\Mime\Tests\RawMessageTest::testToIterable with data set "traversable"
+Symfony\Component\Mime\Tests\RawMessageTest::testToIterableLegacy with data set "array"
+Symfony\Component\Mime\Tests\RawMessageTest::testToIterableLegacy with data set "generator"
+Symfony\Component\Mime\Tests\RawMessageTest::testToIterableLegacy with data set "string"
+Symfony\Component\Mime\Tests\RawMessageTest::testToIterableLegacy with data set "traversable"
+Symfony\Component\Mime\Tests\RawMessageTest::testToIterableOnResourceRewindsAndYieldsLines
+Symfony\Component\Mime\Tests\RawMessageTest::testToIterableOnResourceYieldsAFinalFalsyLine
+Symfony\Component\Mime\Tests\RawMessageTest::testToString with data set "array"
+Symfony\Component\Mime\Tests\RawMessageTest::testToString with data set "generator"
+Symfony\Component\Mime\Tests\RawMessageTest::testToString with data set "string"
+Symfony\Component\Mime\Tests\RawMessageTest::testToString with data set "traversable"
+Symfony\Component\Mime\Tests\Test\Constraint\EmailAddressContainsTest::testFailureDescription
+Symfony\Component\Mime\Tests\Test\Constraint\EmailAddressContainsTest::testToString
+Symfony\Component\Mime\Tests\Test\Constraint\EmailAttachmentCountTest::testFailureDescription
+Symfony\Component\Mime\Tests\Test\Constraint\EmailAttachmentCountTest::testToString
+Symfony\Component\Mime\Tests\Test\Constraint\EmailHasHeaderTest::testFailureDescription
+Symfony\Component\Mime\Tests\Test\Constraint\EmailHasHeaderTest::testToString
+Symfony\Component\Mime\Tests\Test\Constraint\EmailHtmlBodyContainsTest::testFailureDescription
+Symfony\Component\Mime\Tests\Test\Constraint\EmailHtmlBodyContainsTest::testToString
+Symfony\Component\Mime\Tests\Test\Constraint\EmailTextBodyContainsTest::testFailureDescription
+Symfony\Component\Mime\Tests\Test\Constraint\EmailTextBodyContainsTest::testToString
 Symfony\Component\Process\Tests\CreateNewConsoleTest::testItReturnsFastAfterStart
 Symfony\Component\Process\Tests\CreateNewConsoleTest::testOptionCreateNewConsole
 Symfony\Component\Process\Tests\ExecutableFinderTest::testEmptyDirInPath
@@ -15208,6 +15845,7 @@ Symfony\Component\String\Tests\Inflector\SpanishInflectorTest::testUninflected w
 Symfony\Component\String\Tests\LazyStringTest::testFromStringable
 Symfony\Component\String\Tests\LazyStringTest::testIsNotStringable
 Symfony\Component\String\Tests\LazyStringTest::testIsStringable
+Symfony\Component\String\Tests\LazyStringTest::testLazyCallable
 Symfony\Component\String\Tests\LazyStringTest::testLazyString
 Symfony\Component\String\Tests\LazyStringTest::testResolve
 Symfony\Component\String\Tests\LazyStringTest::testReturnTypeError
@@ -16733,6 +17371,7 @@ Symfony\Component\Translation\Tests\Writer\TranslationWriterTest::testFormatIsNo
 Symfony\Component\Translation\Tests\Writer\TranslationWriterTest::testGetFormats
 Symfony\Component\Translation\Tests\Writer\TranslationWriterTest::testUnwritableDirectory
 Symfony\Component\Translation\Tests\Writer\TranslationWriterTest::testWrite
+Symfony\Component\VarDumper\Tests\Caster\AddressInfoCasterTest::testCaster
 Symfony\Component\VarDumper\Tests\Caster\CasterTest::testAnonymousClass
 Symfony\Component\VarDumper\Tests\Caster\CasterTest::testClassHierarchy
 Symfony\Component\VarDumper\Tests\Caster\CasterTest::testFilter with data set #0
@@ -16752,7 +17391,17 @@ Symfony\Component\VarDumper\Tests\Caster\CasterTest::testFilter with data set #9
 Symfony\Component\VarDumper\Tests\Caster\CasterTest::testTypeErrorInDebugInfo
 Symfony\Component\VarDumper\Tests\Caster\CurlCasterTest::testCastCurl
 Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastDocument
+Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastHTMLDocument
 Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastImplementation
+Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastModernAttr
+Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastModernDocumentType
+Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastModernElement
+Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastModernImplementation
+Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastModernNode
+Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastModernProcessingInstruction
+Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastModernText
+Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastModernXPath
+Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastXMLDocument
 Symfony\Component\VarDumper\Tests\Caster\DateCasterTest::testCastDateTime with data set #0
 Symfony\Component\VarDumper\Tests\Caster\DateCasterTest::testCastDateTime with data set #1
 Symfony\Component\VarDumper\Tests\Caster\DateCasterTest::testCastDateTime with data set #2
@@ -17095,13 +17744,18 @@ Symfony\Component\VarExporter\Tests\InstantiatorTest::testFailingInstantiation w
 Symfony\Component\VarExporter\Tests\InstantiatorTest::testInstantiate
 Symfony\Component\VarExporter\Tests\InstantiatorTest::testNotFoundClass
 Symfony\Component\VarExporter\Tests\InstantiatorTest::testPhpReferences
+Symfony\Component\VarExporter\Tests\LazyProxyTraitTest::testAbstractPropertyHooks
+Symfony\Component\VarExporter\Tests\LazyProxyTraitTest::testAsymmetricVisibility
 Symfony\Component\VarExporter\Tests\LazyProxyTraitTest::testClone
 Symfony\Component\VarExporter\Tests\LazyProxyTraitTest::testConcretePropertyHooks
 Symfony\Component\VarExporter\Tests\LazyProxyTraitTest::testDestruct
 Symfony\Component\VarExporter\Tests\LazyProxyTraitTest::testDynamicProperty
 Symfony\Component\VarExporter\Tests\LazyProxyTraitTest::testFinalPublicClass
+Symfony\Component\VarExporter\Tests\LazyProxyTraitTest::testFluent
 Symfony\Component\VarExporter\Tests\LazyProxyTraitTest::testGetter
+Symfony\Component\VarExporter\Tests\LazyProxyTraitTest::testIndirectModification
 Symfony\Component\VarExporter\Tests\LazyProxyTraitTest::testInitialize
+Symfony\Component\VarExporter\Tests\LazyProxyTraitTest::testInternalClass
 Symfony\Component\VarExporter\Tests\LazyProxyTraitTest::testNormalization
 Symfony\Component\VarExporter\Tests\LazyProxyTraitTest::testOverwritePropClass
 Symfony\Component\VarExporter\Tests\LazyProxyTraitTest::testReadOnlyClass
@@ -17109,7 +17763,102 @@ Symfony\Component\VarExporter\Tests\LazyProxyTraitTest::testReinitReadonlyLazyPr
 Symfony\Component\VarExporter\Tests\LazyProxyTraitTest::testReinitRegularLazyProxy
 Symfony\Component\VarExporter\Tests\LazyProxyTraitTest::testStringMagicGet
 Symfony\Component\VarExporter\Tests\LazyProxyTraitTest::testUnserialize
+Symfony\Component\VarExporter\Tests\LazyProxyTraitTest::testVariadicArguments
+Symfony\Component\VarExporter\Tests\LazyProxyTraitTest::testVariadicArgumentsWithOptionalParameters
 Symfony\Component\VarExporter\Tests\LazyProxyTraitTest::testWakeup
+Symfony\Component\VarExporter\Tests\LazyProxyTraitTest::testWither
+Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testAccessingUninializedPropertyWithLazyGhost
+Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testAccessingUninializedPropertyWithoutLazyGhost
+Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testAsymmetricVisibility
+Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testClone
+Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testFullInitialization
+Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testGetPublic
+Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testIndirectModification
+Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testIssetPublic
+Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testLazyClass
+Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testMagicClass with data set #0
+Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testMagicClass with data set #1
+Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testNormalization
+Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testPropertyHooks
+Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testPropertyHooksWithDefaultValue
+Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testReadOnlyClass
+Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testReinitLazyGhost
+Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testResetLazyGhost
+Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testSerialize
+Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testSetPrivate
+Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testSetPublic
+Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testSetStdClassProperty
+Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testUnsetPublic
+Symfony\Component\VarExporter\Tests\ProxyHelperTest::testAttributes
+Symfony\Component\VarExporter\Tests\ProxyHelperTest::testExportSignature with data set #0
+Symfony\Component\VarExporter\Tests\ProxyHelperTest::testExportSignature with data set #1
+Symfony\Component\VarExporter\Tests\ProxyHelperTest::testExportSignature with data set #2
+Symfony\Component\VarExporter\Tests\ProxyHelperTest::testExportSignature with data set #3
+Symfony\Component\VarExporter\Tests\ProxyHelperTest::testExportSignature with data set #4
+Symfony\Component\VarExporter\Tests\ProxyHelperTest::testExportSignature with data set #5
+Symfony\Component\VarExporter\Tests\ProxyHelperTest::testExportSignature with data set #6
+Symfony\Component\VarExporter\Tests\ProxyHelperTest::testExportSignature with data set #7
+Symfony\Component\VarExporter\Tests\ProxyHelperTest::testExportSignature with data set #8
+Symfony\Component\VarExporter\Tests\ProxyHelperTest::testExportSignature with data set #9
+Symfony\Component\VarExporter\Tests\ProxyHelperTest::testExportSignatureFQ
+Symfony\Component\VarExporter\Tests\ProxyHelperTest::testGenerateLazyProxy
+Symfony\Component\VarExporter\Tests\ProxyHelperTest::testGenerateLazyProxyForClassWithUnserializeMagicMethod with data set "not type hinted __unserialize method"
+Symfony\Component\VarExporter\Tests\ProxyHelperTest::testGenerateLazyProxyForClassWithUnserializeMagicMethod with data set "type hinted __unserialize method"
+Symfony\Component\VarExporter\Tests\ProxyHelperTest::testGenerateLazyProxyForInterfaces
+Symfony\Component\VarExporter\Tests\ProxyHelperTest::testGenerateLazyProxyWithArrayParameterDefaults
+Symfony\Component\VarExporter\Tests\ProxyHelperTest::testGenerateLazyProxyWithNewInParameterDefaults
+Symfony\Component\VarExporter\Tests\ProxyHelperTest::testGenerateLazyProxyWithStringParameterDefaults
+Symfony\Component\VarExporter\Tests\ProxyHelperTest::testNullStandaloneReturnType
+Symfony\Component\VarExporter\Tests\ProxyHelperTest::testPropertyHooks
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #0
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #1
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #10
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #11
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #12
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #13
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #14
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #15
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #16
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #17
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #18
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #19
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #2
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #20
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #21
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #22
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #23
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #24
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #25
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #26
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #27
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #28
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #29
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #3
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #30
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #31
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #32
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #33
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #34
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #35
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #4
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #5
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #6
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #7
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #8
+Symfony\Component\VarExporter\Tests\VarExporterTest::testExport with data set #9
+Symfony\Component\VarExporter\Tests\VarExporterTest::testFailingSerialization with data set #0
+Symfony\Component\VarExporter\Tests\VarExporterTest::testFailingSerialization with data set #1
+Symfony\Component\VarExporter\Tests\VarExporterTest::testFailingSerialization with data set #2
+Symfony\Component\VarExporter\Tests\VarExporterTest::testFailingSerialization with data set #3
+Symfony\Component\VarExporter\Tests\VarExporterTest::testFailingSerialization with data set #4
+Symfony\Component\VarExporter\Tests\VarExporterTest::testFailingSerialization with data set #5
+Symfony\Component\VarExporter\Tests\VarExporterTest::testFailingSerialization with data set #6
+Symfony\Component\VarExporter\Tests\VarExporterTest::testFailingSerialization with data set #7
+Symfony\Component\VarExporter\Tests\VarExporterTest::testFailingSerialization with data set #8
+Symfony\Component\VarExporter\Tests\VarExporterTest::testFailingSerialization with data set #9
+Symfony\Component\VarExporter\Tests\VarExporterTest::testPhpIncompleteClassesAreForbidden
+Symfony\Component\VarExporter\Tests\VarExporterTest::testSleepListingUninitializedTypedPropertyEmitsNoNotice
+Symfony\Component\VarExporter\Tests\VarExporterTest::testUnicodeDirectionality
 Symfony\Component\Yaml\Tests\Command\LintCommandTest::testComplete with data set "option"
 Symfony\Component\Yaml\Tests\Command\LintCommandTest::testConstantAsKey
 Symfony\Component\Yaml\Tests\Command\LintCommandTest::testCustomTags

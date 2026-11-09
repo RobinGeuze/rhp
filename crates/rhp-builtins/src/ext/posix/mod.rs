@@ -444,18 +444,72 @@ fn fn_strerror(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(s))
 }
 
+/// The posix constants (`POSIX_RLIMIT_*` for getrlimit, which rhp lacks,
+/// `POSIX_SC_*` / `POSIX_PC_*` for sysconf and pathconf).
+#[allow(clippy::unnecessary_cast)]
 pub fn constants() -> Vec<(&'static str, Value)> {
-    vec![
-        ("POSIX_F_OK", Value::Int(libc::F_OK as i64)),
-        ("POSIX_X_OK", Value::Int(libc::X_OK as i64)),
-        ("POSIX_W_OK", Value::Int(libc::W_OK as i64)),
-        ("POSIX_R_OK", Value::Int(libc::R_OK as i64)),
-        ("POSIX_S_IFREG", Value::Int(libc::S_IFREG as i64)),
-        ("POSIX_S_IFCHR", Value::Int(libc::S_IFCHR as i64)),
-        ("POSIX_S_IFBLK", Value::Int(libc::S_IFBLK as i64)),
-        ("POSIX_S_IFIFO", Value::Int(libc::S_IFIFO as i64)),
-        ("POSIX_S_IFSOCK", Value::Int(libc::S_IFSOCK as i64)),
-    ]
+    let mut v = vec![
+        ("POSIX_F_OK", libc::F_OK as i64),
+        ("POSIX_X_OK", libc::X_OK as i64),
+        ("POSIX_W_OK", libc::W_OK as i64),
+        ("POSIX_R_OK", libc::R_OK as i64),
+        ("POSIX_S_IFREG", libc::S_IFREG as i64),
+        ("POSIX_S_IFCHR", libc::S_IFCHR as i64),
+        ("POSIX_S_IFBLK", libc::S_IFBLK as i64),
+        ("POSIX_S_IFIFO", libc::S_IFIFO as i64),
+        ("POSIX_S_IFSOCK", libc::S_IFSOCK as i64),
+    ];
+    // The stub's order, with what the platform defines.
+    v.push(("POSIX_RLIMIT_AS", libc::RLIMIT_AS as i64));
+    v.push(("POSIX_RLIMIT_CORE", libc::RLIMIT_CORE as i64));
+    v.push(("POSIX_RLIMIT_CPU", libc::RLIMIT_CPU as i64));
+    v.push(("POSIX_RLIMIT_DATA", libc::RLIMIT_DATA as i64));
+    v.push(("POSIX_RLIMIT_FSIZE", libc::RLIMIT_FSIZE as i64));
+    #[cfg(target_os = "linux")]
+    v.push(("POSIX_RLIMIT_LOCKS", libc::RLIMIT_LOCKS as i64));
+    v.push(("POSIX_RLIMIT_MEMLOCK", libc::RLIMIT_MEMLOCK as i64));
+    #[cfg(target_os = "linux")]
+    v.push(("POSIX_RLIMIT_MSGQUEUE", libc::RLIMIT_MSGQUEUE as i64));
+    #[cfg(target_os = "linux")]
+    v.push(("POSIX_RLIMIT_NICE", libc::RLIMIT_NICE as i64));
+    v.push(("POSIX_RLIMIT_NOFILE", libc::RLIMIT_NOFILE as i64));
+    v.push(("POSIX_RLIMIT_NPROC", libc::RLIMIT_NPROC as i64));
+    v.push(("POSIX_RLIMIT_RSS", libc::RLIMIT_RSS as i64));
+    #[cfg(target_os = "linux")]
+    v.push(("POSIX_RLIMIT_RTPRIO", libc::RLIMIT_RTPRIO as i64));
+    #[cfg(target_os = "linux")]
+    v.push(("POSIX_RLIMIT_RTTIME", libc::RLIMIT_RTTIME as i64));
+    #[cfg(target_os = "linux")]
+    v.push(("POSIX_RLIMIT_SIGPENDING", libc::RLIMIT_SIGPENDING as i64));
+    v.push(("POSIX_RLIMIT_STACK", libc::RLIMIT_STACK as i64));
+    v.push(("POSIX_RLIMIT_INFINITY", libc::RLIM_INFINITY as i64));
+    v.push(("POSIX_SC_ARG_MAX", libc::_SC_ARG_MAX as i64));
+    v.push(("POSIX_SC_CHILD_MAX", libc::_SC_CHILD_MAX as i64));
+    v.push(("POSIX_SC_CLK_TCK", libc::_SC_CLK_TCK as i64));
+    v.push(("POSIX_SC_PAGESIZE", libc::_SC_PAGESIZE as i64));
+    v.push((
+        "POSIX_SC_NPROCESSORS_CONF",
+        libc::_SC_NPROCESSORS_CONF as i64,
+    ));
+    v.push((
+        "POSIX_SC_NPROCESSORS_ONLN",
+        libc::_SC_NPROCESSORS_ONLN as i64,
+    ));
+    v.push(("POSIX_PC_LINK_MAX", libc::_PC_LINK_MAX as i64));
+    v.push(("POSIX_PC_MAX_CANON", libc::_PC_MAX_CANON as i64));
+    v.push(("POSIX_PC_MAX_INPUT", libc::_PC_MAX_INPUT as i64));
+    v.push(("POSIX_PC_NAME_MAX", libc::_PC_NAME_MAX as i64));
+    v.push(("POSIX_PC_PATH_MAX", libc::_PC_PATH_MAX as i64));
+    v.push(("POSIX_PC_PIPE_BUF", libc::_PC_PIPE_BUF as i64));
+    v.push((
+        "POSIX_PC_CHOWN_RESTRICTED",
+        libc::_PC_CHOWN_RESTRICTED as i64,
+    ));
+    v.push(("POSIX_PC_NO_TRUNC", libc::_PC_NO_TRUNC as i64));
+    v.push(("POSIX_PC_ALLOC_SIZE_MIN", libc::_PC_ALLOC_SIZE_MIN as i64));
+    v.push(("POSIX_PC_SYMLINK_MAX", libc::_PC_SYMLINK_MAX as i64));
+    v.push(("POSIX_SC_OPEN_MAX", libc::_SC_OPEN_MAX as i64));
+    v.into_iter().map(|(n, i)| (n, Value::Int(i))).collect()
 }
 
 // ---------------------------------------------------------------------------

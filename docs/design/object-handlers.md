@@ -137,7 +137,10 @@ Notes:
   the ported handlers. DatePeriod and DOM (legacy and `Dom\`) declare their
   `@virtual` properties as property hooks that call them (get: the read
   handler, set: the write handler or the read-only error), and their
-  `unset_property` check refuses an unset; Reflection
+  `unset_property` check refuses an unset; a write fetch of one (`&$e->p`,
+  a by-ref argument, `$e->p[] = …`) works on a copy of the read value
+  without php's hooked-property Error, as php's NULL
+  `get_property_ptr_ptr` does; Reflection
   shows those properties as php's (virtual, no hooks) and traces leave the
   hook frames out. Two things make those stand-ins behave like php's
   handlers:

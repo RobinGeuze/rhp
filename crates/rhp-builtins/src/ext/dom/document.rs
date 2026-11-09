@@ -531,8 +531,7 @@ pub fn adopt_node(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Th
 
 pub fn normalize_document(cx: &mut Cx, this: &Value, _: &[Value]) -> Result<Value, Thrown> {
     let (_, docp) = this_doc(cx, this)?;
-    normalize_legacy(docp.cast());
-    Ok(Value::Null)
+    normalize_legacy(docp.cast())
 }
 
 /// dom_get_valid_file_path: a local path (file:// URLs included) made

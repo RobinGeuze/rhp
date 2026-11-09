@@ -465,8 +465,7 @@ pub fn update_document_after_clone(original: &DomObject, clone: &DomObject) {
 
 pub fn normalize(cx: &mut Cx, this: &Value, _: &[Value]) -> Result<Value, Thrown> {
     let (_, n) = get_obj(cx, this)?;
-    normalize_legacy(n);
-    Ok(Value::Null)
+    normalize_legacy(n)
 }
 
 pub fn is_supported(_: &mut Cx, _: &Value, args: &[Value]) -> Result<Value, Thrown> {
@@ -534,12 +533,12 @@ fn list_len(mut n: *const XmlNode) -> usize {
     c
 }
 
-fn ordered_equal(mut a: *const XmlNode, mut b: *const XmlNode) -> bool {
+fn ordered_equal(mut a: *const XmlNode, mut b: *const XmlNode, deep: &mut bool) -> bool {
     if list_len(a) != list_len(b) {
         return false;
     }
     while !a.is_null() {
-        if !nodes_equal(a, b) {
+        if !nodes_equal(a, b, deep) {
             return false;
         }
         unsafe {
@@ -550,7 +549,7 @@ fn ordered_equal(mut a: *const XmlNode, mut b: *const XmlNode) -> bool {
     true
 }
 
-fn unordered_equal(a: *const XmlNode, b: *const XmlNode) -> bool {
+fn unordered_equal(a: *const XmlNode, b: *const XmlNode, deep: &mut bool) -> bool {
     if list_len(a) != list_len(b) {
         return false;
     }
@@ -559,7 +558,7 @@ fn unordered_equal(a: *const XmlNode, b: *const XmlNode) -> bool {
         let mut found = false;
         let mut n2 = b;
         while !n2.is_null() && !found {
-            if nodes_equal(n1, n2) {
+            if nodes_equal(n1, n2, deep) {
                 found = true;
             }
             n2 = unsafe { (*n2).next };
@@ -605,7 +604,12 @@ fn unordered_equal_ns(a: *const sys::XmlNs, b: *const sys::XmlNs) -> bool {
 }
 
 /// php_dom_node_is_equal_node (legacy: namespace declarations count).
-fn nodes_equal(a: *const XmlNode, b: *const XmlNode) -> bool {
+/// Past the stack limit it gives false and sets `deep`.
+fn nodes_equal(a: *const XmlNode, b: *const XmlNode, deep: &mut bool) -> bool {
+    if crate::zend::call_stack::overflowed() {
+        *deep = true;
+        return false;
+    }
     unsafe {
         let t = (*a).type_;
         if t != (*b).type_ {
@@ -616,9 +620,9 @@ fn nodes_equal(a: *const XmlNode, b: *const XmlNode) -> bool {
                 str_eq((*a).name, (*b).name)
                     && str_eq(ns_prefix(a), ns_prefix(b))
                     && str_eq(ns_href(a), ns_href(b))
-                    && unordered_equal((*a).properties.cast(), (*b).properties.cast())
+                    && unordered_equal((*a).properties.cast(), (*b).properties.cast(), deep)
                     && unordered_equal_ns((*a).nsDef, (*b).nsDef)
-                    && ordered_equal((*a).children, (*b).children)
+                    && ordered_equal((*a).children, (*b).children, deep)
             }
             sys::XML_DTD_NODE => {
                 let (x, y) = (a as *const sys::XmlDtd, b as *const sys::XmlDtd);
@@ -645,7 +649,7 @@ fn nodes_equal(a: *const XmlNode, b: *const XmlNode) -> bool {
                 str_eq((*x).prefix, (*y).prefix) && str_eq((*x).href, (*y).href)
             }
             sys::XML_DOCUMENT_FRAG_NODE | sys::XML_HTML_DOCUMENT_NODE | sys::XML_DOCUMENT_NODE => {
-                ordered_equal((*a).children, (*b).children)
+                ordered_equal((*a).children, (*b).children, deep)
             }
             _ => false,
         }
@@ -662,7 +666,12 @@ pub fn is_equal_node(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value,
     if nodep == otherp {
         return Ok(Value::Bool(true));
     }
-    Ok(Value::Bool(nodes_equal(nodep, otherp)))
+    let mut deep = false;
+    let eq = nodes_equal(nodep, otherp, &mut deep);
+    if deep {
+        return Err(Thrown::error("Error", "Maximum call stack size reached."));
+    }
+    Ok(Value::Bool(eq))
 }
 
 pub fn lookup_prefix(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {

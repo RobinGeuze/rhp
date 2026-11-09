@@ -5,7 +5,7 @@
 
 use std::rc::Rc;
 
-use rhp_values::{conv, PhpArray, Value};
+use rhp_values::{conv, Value};
 
 use super::util::*;
 use super::{create_object, int, Cx, DomObject, Kind};
@@ -714,67 +714,175 @@ pub fn map_offset_exists(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Va
     }
 }
 
-/// One step of php_dom_iterator: the first item, or the one after `cur`
-/// (php_dom_iterator_move_forward), with its key.
-pub fn iterate(cx: &mut Cx, this: &Value, cur: &Value, index: i64) -> Result<Value, Thrown> {
-    let d = this_map(cx, this)?;
-    let Some(cell) = map_of(&d) else {
+/// php_dom_iterator_move_forward: the item after `cur` (the first one for
+/// null), or null.
+fn next_item(cx: &mut Cx, d: &Rc<DomObject>, cur: &Value, index: i64) -> Result<Value, Thrown> {
+    let Some(cell) = map_of(d) else {
         return Ok(Value::Null);
     };
     let handler = cell.borrow().handler;
-    let next = if matches!(cur, Value::Null) {
-        get_item(cx, &d, 0)?
-    } else {
-        let Some(ci) = super::intern_of(cur) else {
-            return Ok(Value::Null);
-        };
-        if ci.base.node.get().is_null() {
-            return Ok(Value::Null);
-        }
-        // php keeps the sibling walk for the legacy API only.
-        if !super::nscompat::follow_spec(ci.document())
-            && matches!(handler, Handler::Attributes | Handler::ChildNodes)
-        {
-            let n = ci.node();
-            let nn = if n.is_null() {
-                std::ptr::null_mut()
-            } else {
-                unsafe { (*n).next }
-            };
-            if nn.is_null() {
-                Value::Null
-            } else {
-                let base = cell.borrow().base.clone();
-                create_object(cx, nn, base.as_deref())?
-            }
-        } else {
-            get_item(cx, &d, index)?
-        }
+    if matches!(cur, Value::Null) {
+        return get_item(cx, d, 0);
+    }
+    let Some(ci) = super::intern_of(cur) else {
+        return Ok(Value::Null);
     };
-    if matches!(next, Value::Null) {
+    if ci.base.node.get().is_null() {
         return Ok(Value::Null);
     }
-    let key = if handler.nameless() {
-        Value::Int(index)
-    } else {
-        match super::intern_of(&next) {
-            Some(ni) if !ni.node().is_null() => {
-                let n = ni.node();
-                if unsafe { (*n).type_ } == sys::XML_ATTRIBUTE_NODE
-                    && super::nscompat::follow_spec(ni.document())
-                {
-                    Value::str(qualified_name(n))
-                } else {
-                    super::xs(unsafe { (*n).name })
-                }
-            }
-            _ => Value::Null,
+    // php keeps the sibling walk for the legacy API only.
+    if !super::nscompat::follow_spec(ci.document())
+        && matches!(handler, Handler::Attributes | Handler::ChildNodes)
+    {
+        let n = ci.node();
+        let nn = if n.is_null() {
+            std::ptr::null_mut()
+        } else {
+            unsafe { (*n).next }
+        };
+        if nn.is_null() {
+            return Ok(Value::Null);
         }
+        let base = cell.borrow().base.clone();
+        return create_object(cx, nn, base.as_deref());
+    }
+    get_item(cx, d, index)
+}
+
+/// php_dom_iterator_current_key
+fn item_key(d: &DomObject, cur: &Value, index: i64) -> Value {
+    let nameless = map_of(d).is_none_or(|m| m.borrow().handler.nameless());
+    if nameless {
+        return Value::Int(index);
+    }
+    match super::intern_of(cur) {
+        Some(ni) if !ni.node().is_null() => {
+            let n = ni.node();
+            if unsafe { (*n).type_ } == sys::XML_ATTRIBUTE_NODE
+                && super::nscompat::follow_spec(ni.document())
+            {
+                Value::str(qualified_name(n))
+            } else {
+                super::xs(unsafe { (*n).name })
+            }
+        }
+        _ => Value::Null,
+    }
+}
+
+/// php_dom_iterator: the list, its current item and index. It has no
+/// rewind function.
+struct ListIter {
+    list: Rc<DomObject>,
+    _obj: Value,
+    cur: Rc<std::cell::RefCell<Value>>,
+    index: std::cell::Cell<i64>,
+    /// getIterator()'s zend_object_iterator, which php registers as an
+    /// object too (it takes an object id while the iterator lives).
+    _iterator: Option<Value>,
+}
+
+fn iter_cx(host: &mut dyn crate::Host) -> Cx<'_> {
+    Cx {
+        host,
+        fname: String::new(),
+        quiet: false,
+        lazy_fname: false,
+    }
+}
+
+impl crate::zend::internal_iterator::IteratorFuncs for ListIter {
+    fn valid(&self, _: &mut dyn crate::Host) -> Result<bool, Thrown> {
+        Ok(!matches!(*self.cur.borrow(), Value::Null))
+    }
+    fn current(&self, _: &mut dyn crate::Host) -> Result<Option<Value>, Thrown> {
+        Ok(match &*self.cur.borrow() {
+            Value::Null => None,
+            v => Some(v.clone()),
+        })
+    }
+    fn key(&self, _: &mut dyn crate::Host) -> Result<Option<Value>, Thrown> {
+        Ok(Some(item_key(
+            &self.list,
+            &self.cur.borrow(),
+            self.index.get(),
+        )))
+    }
+    fn move_forward(&self, host: &mut dyn crate::Host) -> Result<(), Thrown> {
+        let cur = self.cur.borrow().clone();
+        if matches!(cur, Value::Null) {
+            return Ok(());
+        }
+        self.index.set(self.index.get() + 1);
+        *self.cur.borrow_mut() = Value::Null;
+        let next = next_item(&mut iter_cx(host), &self.list, &cur, self.index.get())?;
+        *self.cur.borrow_mut() = next;
+        Ok(())
+    }
+    fn rewind(&self, _: &mut dyn crate::Host) -> Result<(), Thrown> {
+        Ok(())
+    }
+    fn can_rewind(&self) -> bool {
+        false
+    }
+}
+
+/// php_dom_get_iterator: the class's `get_iterator` (foreach), starting
+/// at the first item.
+pub fn get_iterator(
+    host: &mut dyn crate::Host,
+    h: &rhp_values::ObjectHandle,
+    by_ref: bool,
+) -> Result<rhp_values::ObjectHandle, Thrown> {
+    new_iterator(host, h, by_ref, None)
+}
+
+fn new_iterator(
+    host: &mut dyn crate::Host,
+    h: &rhp_values::ObjectHandle,
+    by_ref: bool,
+    iterator: Option<Value>,
+) -> Result<rhp_values::ObjectHandle, Thrown> {
+    if by_ref {
+        return Err(Thrown::error(
+            "Error",
+            "An iterator cannot be used with foreach by reference",
+        ));
+    }
+    let v = Value::Object(h.clone());
+    let mut cx = iter_cx(host);
+    let d = this_map(&mut cx, &v)?;
+    // zend_iterator_init takes the iterator's object id before the first
+    // item is fetched.
+    let cur = Rc::new(std::cell::RefCell::new(Value::Null));
+    let it = crate::zend::internal_iterator::create(
+        cx.host,
+        Box::new(ListIter {
+            list: d.clone(),
+            _obj: v,
+            cur: cur.clone(),
+            index: std::cell::Cell::new(0),
+            _iterator: iterator,
+        }),
+    )?;
+    let first = next_item(&mut cx, &d, &Value::Null, 0)?;
+    *cur.borrow_mut() = first;
+    Ok(it)
+}
+
+/// getIterator() of the lists (zend_create_internal_iterator_zval): the
+/// class's iterator, wrapped in an InternalIterator.
+pub fn get_iterator_m(cx: &mut Cx, this: &Value, _: &[Value]) -> Result<Value, Thrown> {
+    let Value::Object(h) = this else {
+        return Ok(Value::Null);
     };
-    let mut pair = PhpArray::new();
-    pair.push(key);
-    pair.push(next);
-    Ok(Value::Array(pair))
+    let inner = get_iterator(cx.host, h, false)?;
+    Ok(Value::Object(new_iterator(
+        cx.host,
+        h,
+        false,
+        Some(Value::Object(inner)),
+    )?))
 }
 
 /// The `index`th node of a by-class-name collection (no object made).

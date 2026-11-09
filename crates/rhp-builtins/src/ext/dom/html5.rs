@@ -75,7 +75,8 @@ extern "C" {
     fn rhp_html5_encode_output(
         encoding: *const c_char,
         utf8: *const c_char,
-        len: usize,
+        ends: *const usize,
+        nends: usize,
         sink: Sink,
         ctx: *mut c_void,
     );
@@ -271,21 +272,45 @@ impl Drop for Parser {
     }
 }
 
+unsafe extern "C" fn sink_pieces(ctx: *mut c_void, buf: *const c_char, len: usize) {
+    let v = unsafe { &mut *(ctx as *mut Vec<Vec<u8>>) };
+    v.push(unsafe { std::slice::from_raw_parts(buf.cast::<u8>(), len) }.to_vec());
+}
+
+/// dom_common_save's output encoding: the serializer's UTF-8 in the
+/// document's encoding, as the pieces php hands to write_output (one or
+/// more per serializer write; some may be empty).
+pub fn encode_output_pieces(encoding: &[u8], utf8: &super::html5_serializer::Out) -> Vec<Vec<u8>> {
+    let mut out: Vec<Vec<u8>> = Vec::with_capacity(utf8.marks.len());
+    let enc = super::util::c(encoding);
+    unsafe {
+        rhp_html5_encode_output(
+            enc.as_ptr().cast(),
+            utf8.buf.as_ptr().cast(),
+            utf8.marks.as_ptr(),
+            utf8.marks.len(),
+            sink_pieces,
+            &mut out as *mut Vec<Vec<u8>> as *mut c_void,
+        )
+    };
+    out
+}
+
 unsafe extern "C" fn sink_vec(ctx: *mut c_void, buf: *const c_char, len: usize) {
     let v = unsafe { &mut *(ctx as *mut Vec<u8>) };
     v.extend_from_slice(unsafe { std::slice::from_raw_parts(buf.cast::<u8>(), len) });
 }
 
-/// dom_common_save's output encoding: the serializer's UTF-8 in the
-/// document's encoding.
-pub fn encode_output(encoding: &[u8], utf8: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(utf8.len());
+/// [`encode_output_pieces`], joined.
+pub fn encode_output(encoding: &[u8], utf8: &super::html5_serializer::Out) -> Vec<u8> {
+    let mut out = Vec::with_capacity(utf8.buf.len());
     let enc = super::util::c(encoding);
     unsafe {
         rhp_html5_encode_output(
             enc.as_ptr().cast(),
-            utf8.as_ptr().cast(),
-            utf8.len(),
+            utf8.buf.as_ptr().cast(),
+            utf8.marks.as_ptr(),
+            utf8.marks.len(),
             sink_vec,
             &mut out as *mut Vec<u8> as *mut c_void,
         )

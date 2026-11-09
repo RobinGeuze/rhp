@@ -366,6 +366,14 @@ pub enum Instr {
         arr: Reg,
         key: Reg,
     },
+    /// `$a[]` as the object of a property write (FETCH_DIM_W with no
+    /// dimension): an ArrayAccess object's offsetGet(null) for writing; a
+    /// variable holding an array, null or false gets a null element
+    /// appended; a string or other scalar is php's Error.
+    DimAppendW {
+        dst: Reg,
+        arr: Reg,
+    },
     /// An element on the way to an `unset($a[$k]->p)` (FETCH_DIM_UNSET):
     /// a missing key is silent, a string offset or a scalar container an
     /// Error.

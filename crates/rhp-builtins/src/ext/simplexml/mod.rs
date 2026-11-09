@@ -412,6 +412,24 @@ fn member_of(cx: &mut Cx, v: &Value) -> Result<Member, Thrown> {
     })
 }
 
+/// sxe_prop_dim_write's TypeError for a value it can't store as text
+/// (anything but a scalar, null or a SimpleXMLElement).
+fn complex_value_error(cx: &mut Cx, v: &Value, attribs: bool) -> Option<Thrown> {
+    match v {
+        Value::Int(_) | Value::Bool(_) | Value::Float(_) | Value::Null | Value::Str(_) => None,
+        Value::Object(_)
+            if cx.host.object_class_name(v).as_deref() == Some(b"SimpleXMLElement") =>
+        {
+            None
+        }
+        other => Some(Thrown::type_error(format!(
+            "It's not possible to assign a complex type to {}, {} given",
+            if attribs { "attributes" } else { "properties" },
+            zval_value_name(cx.host, other)
+        ))),
+    }
+}
+
 /// sxe_prop_dim_read: `member` is None for `$sxe[]`.
 fn prop_dim_read(
     cx: &mut Cx,
@@ -648,7 +666,18 @@ fn prop_dim_write(
         Some(Member::Long(l)) => Some(*l),
         _ => None,
     };
-    let mut node = get_node(sxe)?;
+    let mut node = match get_node(sxe) {
+        Ok(n) => n,
+        // GET_NODE throws and goes on: a complex value then throws on top.
+        Err(e) => {
+            return Err(
+                match value.and_then(|v| complex_value_error(cx, v, attribs)) {
+                    Some(t) => cx.host.chain_thrown(t, e),
+                    None => e,
+                },
+            )
+        }
+    };
     let mut mynode: *mut XmlNode;
     let mut attr: *mut XmlAttr = ptr::null_mut();
     let mut test = false;
@@ -686,23 +715,15 @@ fn prop_dim_write(
 
     let value_str: Option<Vec<u8>> = match value {
         None => None,
-        Some(v) => match v {
-            Value::Int(_) | Value::Bool(_) | Value::Float(_) | Value::Null | Value::Str(_) => {
-                Some(conv::to_string_bytes(v))
+        Some(v) => {
+            if let Some(t) = complex_value_error(cx, v, attribs) {
+                return Err(t);
             }
-            Value::Object(h)
-                if cx.host.object_class_name(v).as_deref() == Some(b"SimpleXMLElement") =>
-            {
-                Some(cast_string(cx, h)?)
+            match v {
+                Value::Object(h) => Some(cast_string(cx, h)?),
+                v => Some(conv::to_string_bytes(v)),
             }
-            other => {
-                return Err(Thrown::type_error(format!(
-                    "It's not possible to assign a complex type to {}, {} given",
-                    if attribs { "attributes" } else { "properties" },
-                    zval_value_name(cx.host, other)
-                )));
-            }
-        },
+        }
     };
     let vs = value_str.as_deref().map(cs);
     let vp = vs.as_ref().map_or(ptr::null(), |v| v.as_ptr());

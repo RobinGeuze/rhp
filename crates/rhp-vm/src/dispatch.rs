@@ -1367,6 +1367,10 @@ impl Vm {
                     };
                     self.reg_set(top, dst, r);
                 }
+                Instr::DimAppendW { dst, arr } => {
+                    let r = self.dim_append_w(top, arr)?;
+                    self.reg_set(top, dst, r);
+                }
                 Instr::DimFetchUnset { dst, arr, key } => {
                     let a = self.reg_get(top, arr);
                     let k = self.reg_r(top, key)?;
@@ -3432,10 +3436,16 @@ impl Vm {
                     self.gen_rewind(oid)?;
                     self.reg_set(top, arr_reg, Value::Object(obj));
                     self.reg_set(top, pos_reg, Value::Int(0));
+                } else if internal {
+                    // ce->get_iterator's iterator, which no PHP code can
+                    // reach: FE_FETCH runs its funcs directly. `pos_reg`
+                    // is the fetched-once flag.
+                    use builtins::zend::internal_iterator::{step, Step};
+                    step(self, &obj, Step::Rewind)?;
+                    self.reg_set(top, arr_reg, Value::Object(obj));
+                    self.reg_set(top, pos_reg, Value::Bool(false));
                 } else if self.class_implements(ocls, b"Iterator") {
-                    if !internal {
-                        self.fe_iter_handle(top, pos_reg, ocls);
-                    }
+                    self.fe_iter_handle(top, pos_reg, ocls);
                     self.call_iter_method(&obj, b"rewind")?;
                     self.reg_set(top, arr_reg, Value::Object(obj));
                     self.reg_set(top, pos_reg, Value::Int(0));
@@ -3567,6 +3577,10 @@ impl Vm {
                     None => self.stack[top].pc = end as usize,
                 }
                 return Ok(());
+            }
+            // A get_iterator iterator (see FeReset).
+            if let Value::Bool(fetched) = self.reg_get(top, pos_reg) {
+                return self.fe_fetch_internal(top, pos_reg, key_cv, val_cv, end, &h, fetched);
             }
             // User Iterator object: rewind()/valid()/current()/key()/next().
             if self.class_implements(h.borrow().class, b"Iterator") {
@@ -3780,6 +3794,37 @@ impl Vm {
                 self.stack[top].pc = end as usize;
             }
         }
+        Ok(())
+    }
+
+    /// `FeFetch` over a class's get_iterator iterator (see FeReset): its
+    /// funcs, with no InternalIterator method frames.
+    #[allow(clippy::too_many_arguments)]
+    fn fe_fetch_internal(
+        &mut self,
+        top: usize,
+        pos_reg: Reg,
+        key_cv: Reg,
+        val_cv: Reg,
+        end: Pc,
+        it: &ObjectHandle,
+        fetched: bool,
+    ) -> Result<(), Thrown> {
+        use builtins::zend::internal_iterator::{current, step, Step};
+        if fetched {
+            step(self, it, Step::Next)?;
+        }
+        if !conv::to_bool(&step(self, it, Step::Valid)?) {
+            self.stack[top].pc = end as usize;
+            return Ok(());
+        }
+        let v = current(self, it)?;
+        self.cv_assign(top, val_cv, v)?;
+        if key_cv != Reg::MAX {
+            let k = step(self, it, Step::Key)?;
+            self.cv_assign(top, key_cv, k)?;
+        }
+        self.reg_set(top, pos_reg, Value::Bool(true));
         Ok(())
     }
 

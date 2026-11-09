@@ -90,7 +90,7 @@ one. A class with a `create_object` and the default handlers registers
 | `cast_object` | `cast_object(host, obj, target)`: replaces php's default for every target, so hand the targets you do not convert to `host.std_cast_object(obj, target)` (`__toString()` for strings) | string conversion (`echo`, `.`, `(string)`), `(int)`/`(float)`/`intval`/`floatval` (`object_handlers::object_to_number`: a failure is php's "could not be converted" warning and 1), `(bool)`, `if`, `!`, `empty($o->p)`, `boolval`, `array_filter` (`object_handlers::is_true`), arithmetic operands and `array_sum`/`array_product` (`Number`), comparison with a scalar |
 | `dtor_obj` | `dtor_obj(host, obj)`, once, before `__destruct` | the engine's destructor pass |
 | `read_dimension`, `write_dimension`, `has_dimension`, `unset_dimension` | `dimension: Some(&DimensionHandlers { read, write, has, unset })`; `read` takes php's `BP_VAR_*` (`DimType`) and for `W`/`Rw` returns the stored slot as a `Value::Ref` | `$o[k]` reads, writes, `isset`/`empty`/`??`, `unset`, nested writes and `$o[k] =& $v` on that class, instead of its `ArrayAccess` methods (WeakMap), also when it has none (ResourceBundle, PDORow); `??` reads with `DimType::Is` |
-| `ce->get_iterator` | `get_iterator(host, obj, by_ref)`: an InternalIterator object over the class's `IteratorFuncs` (zend/internal_iterator.rs) | `foreach`, by value (through the iterator's methods) and by reference (`IteratorFuncs::current_ref`); `getIterator()` returns the same iterator (WeakMap, DatePeriod), or wraps it in a second InternalIterator as php's `zend_create_internal_iterator_zval` does (PDOStatement). A user subclass that overrides `getIterator()` gets `zend_user_it_get_new_iterator` instead (zend_implement_aggregate) |
+| `ce->get_iterator` | `get_iterator(host, obj, by_ref)`: an InternalIterator object over the class's `IteratorFuncs` (zend/internal_iterator.rs) | `foreach`, by value and by reference (`IteratorFuncs::current_ref`), calling the funcs directly (`internal_iterator::step`, no method frames); `getIterator()` returns the same iterator (WeakMap, DatePeriod), or wraps it in a second InternalIterator as php's `zend_create_internal_iterator_zval` does (PDOStatement, the DOM lists, Dom\TokenList). An iterator without a rewind function (`IteratorFuncs::can_rewind`, php's NULL `funcs->rewind`) can be rewound only before its first step. A user subclass that overrides `getIterator()` gets `zend_user_it_get_new_iterator` instead (zend_implement_aggregate) |
 | `get_method` (methods the class does not declare) | `get_method: &[(name, helper)]`: calling `name` on an object runs the class's hidden `__`-prefixed prelude method `helper`; a `__call` answers first, as zend_std_get_method's trampoline does | `$o->name()`, `method_exists($o, …)` (not on a class name), is_callable; a trace shows the frame as `name` (PDO's driver methods `sqliteCreateFunction`…) |
 | `write_property`, `unset_property` (the class's own part) | `write_property(host, obj, name)` / `unset_property(host, obj, name)`: a check run before the standard write or unset; an error stops it | every property write and unset on the class (PDOStatement's write-once `queryString`) |
 | `free_obj` | the payload's `Drop`; work that may call PHP goes in `free_obj_host(host, obj)`, run once right after `__destruct` (in its place without one) unless the destructor kept a reference | the object's storage being freed; the engine's destructor pass |
@@ -131,18 +131,22 @@ Notes:
   `has_property`…; writes and unsets only get the checks above),
   `get_constructor` (`Directory`; a prelude `__construct` that the stub
   lacks stands in for it, as for PDORow and CurlHandle refusing `new`, and
-  its frame is plumbing too), `get_gc`. DOM's, SimpleXML's, XMLReader's, DatePeriod's and ZipArchive's properties (and
+  its frame is plumbing too), `get_gc`. SimpleXML's, XMLReader's and ZipArchive's properties (and
   SimpleXML's dimensions) go through their prelude classes'
   `__get`/`__set`/`__isset`/`__unset` and ArrayAccess methods, which call
-  the ported handlers. DatePeriod declares its `@virtual` properties as
-  property hooks that call them (get: the read handler, set: the read-only
-  error), and its `unset_property` check refuses an unset; Reflection
+  the ported handlers. DatePeriod and DOM (legacy and `Dom\`) declare their
+  `@virtual` properties as property hooks that call them (get: the read
+  handler, set: the write handler or the read-only error), and their
+  `unset_property` check refuses an unset; a write fetch of one (`&$e->p`,
+  a by-ref argument, `$e->p[] = …`) works on a copy of the read value
+  without php's hooked-property Error, as php's NULL
+  `get_property_ptr_ptr` does; Reflection
   shows those properties as php's (virtual, no hooks) and traces leave the
   hook frames out. Two things make those stand-ins behave like php's
   handlers:
   - `host.magic_fetch()` says which fetch the running accessor serves:
     `Write` for a `__get`/`offsetGet` below a write (`$o->a->b = …`,
-    `$o->a[] = …`, `$o[k]->p = …`, `&$o->a`, `unset($o->a->b)`; php's
+    `$o->a[] = …`, `$o[k]->p = …`, `$o[]->p = …` (`DimAppendW`), `&$o->a`, `unset($o->a->b)`; php's
     `BP_VAR_W`/`BP_VAR_UNSET`, where SimpleXML's `get_property_ptr_ptr`
     creates a missing element), `Empty` for the `__isset` or
     `offsetExists` of `empty()` (`check_empty`), else `Read`. Only the
@@ -164,7 +168,7 @@ Notes:
     `offsetGet`…) replaces the stand-in, so it shadows every virtual
     property, read-only checks included.
   - `property_exists()` and Reflection's property lists differ from php:
-    they see no virtual properties of DOM, XMLReader and ZipArchive;
+    they see no virtual properties of XMLReader and ZipArchive;
     SimpleXML implements `ArrayAccess`; `ReflectionMethod('XMLReader',
     'open')` and `method_exists()` find no `open`/`XML`
     (tests/api/known-differences.txt lists every such row).

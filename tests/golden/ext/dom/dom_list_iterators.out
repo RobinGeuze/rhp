@@ -1,0 +1,22 @@
+0b 1c 
+<?xml version="1.0"?>
+<a x="1" y="2"><b/><d/><e/></a>
+x=1 y=2 
+int(7)
+int(0)
+string(1) "b"
+int(1)
+Iterator does not support rewinding
+bb bd be db dd de eb ed ee 
+An iterator cannot be used with foreach by reference
+0a 1b 2d 3e 
+0a 1b 2d 3e 
+eDom\Entity nDom\Notation xmlns:b=u a=1 b:c=2 0s 1u 0s 1#text 2u 
+0s18 1#text17 2u15 
+int(3)
+int(17)
+0b1d2e
+object(InternalIterator)#13 (0) {
+}
+0s13 1#text20 2u15 
+Iterator Iterator Iterator Iterator Iterator Iterator 

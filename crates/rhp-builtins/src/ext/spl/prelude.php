@@ -364,7 +364,8 @@ function spl_autoload(string $class, ?string $file_extensions = null): void {
 
 function iterator_to_array($iterator, $preserve_keys = true) {
     if (is_array($iterator)) { return $preserve_keys ? $iterator : array_values($iterator); }
-    if ($iterator instanceof IteratorAggregate) { $iterator = $iterator->getIterator(); }
+    // foreach takes an aggregate's iterator as spl_iterator_apply does
+    // (an internal class's get_iterator, else getIterator()).
     $arr = [];
     foreach ($iterator as $k => $v) {
         if ($preserve_keys) { $arr[$k] = $v; } else { $arr[] = $v; }
@@ -373,9 +374,8 @@ function iterator_to_array($iterator, $preserve_keys = true) {
 }
 
 function iterator_count($iterator) {
-    if ($iterator instanceof IteratorAggregate) { $iterator = $iterator->getIterator(); }
     $count = 0;
-    foreach ($iterator as $_) { $count++; }
+    foreach ($iterator as $_) { unset($_); $count++; }
     return $count;
 }
 

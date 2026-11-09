@@ -1304,8 +1304,10 @@ impl ProtoBuilder<'_> {
                             | Expression::Access(Access::StaticProperty(_))
                     ) && self.func_arg_root(p.value).is_some()
                     {
+                        // The temp moves into the window (as the function
+                        // path's PassArg), so it holds nothing after the call.
                         let r = self.compile_func_arg(p.value, t, i as u16)?;
-                        slots.push(Slot::Ref(r));
+                        slots.push(Slot::Pass(r));
                         continue;
                     }
                 }
@@ -1398,9 +1400,15 @@ impl ProtoBuilder<'_> {
         };
         // FETCH_DIM_FUNC_ARG reading: `[]` fails when the call runs.
         let saved = std::mem::replace(&mut self.func_arg_read, true);
-        let v = self.compile_expr(e);
+        let v = self.compile_expr(e)?;
         self.func_arg_read = saved;
-        self.emit(Instr::Mov { dst: t, src: v? });
+        // The fetched temporary is dead once sent: a fresh object it held
+        // goes back to the free list when the call returns, as in php.
+        if v as usize >= self.cv_map.len() {
+            self.emit(Instr::MovTake { dst: t, src: v });
+        } else {
+            self.emit(Instr::Mov { dst: t, src: v });
+        }
         let end = self.here();
         self.code[jend] = Instr::Jmp { target: end };
         Ok(t)

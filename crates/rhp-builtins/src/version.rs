@@ -222,6 +222,9 @@ pub const EXT_DOM: &str = "20031129";
 // ZipArchive::LIBZIP_VERSION from the linked libzip (crate::ext::zip),
 // ZLIB_VERSION from the linked zlib (zlib_version below),
 // MB_ONIGURUMA_VERSION from the linked oniguruma (crate::ext::mbstring).
+/// The vendored lexbor's LEXBOR_VERSION_STRING (rhp-csrc's
+/// ext/lexbor/lexbor/core/base.h), which phpinfo() shows.
+pub const LEXBOR_VERSION: &str = "2.7.0";
 
 /// `ZLIB_VERSION`: the zlib headers php was compiled against. rhp links the
 /// system zlib dynamically, as php does (docs/design/libraries.md), so this is

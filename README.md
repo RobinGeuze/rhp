@@ -56,7 +56,7 @@ passing, so the percentages are of all php-src tests.
 | ext/ctype | 38 | 49 | 77.6% | |
 | ext/curl | 157 | 180 | 87.2% | on libcurl |
 | ext/date | 690 | 705 | 97.9% | on timelib, compiled in (rhp-csrc) |
-| ext/dom | 870 | 901 | 96.6% | the `DOMDocument` API and the `Dom\` API on libxml2, HTML5 parsing and CSS selectors on lexbor (rhp-csrc) |
+| ext/dom | 882 | 901 | 97.9% | the `DOMDocument` API and the `Dom\` API on libxml2, HTML5 parsing and CSS selectors on lexbor (rhp-csrc) |
 | ext/exif | 106 | 106 | 100.0% | a port of exif.c, reading through the stream layer |
 | ext/fileinfo | 60 | 64 | 93.8% | php's bundled libmagic and magic database, compiled in (rhp-csrc); the 4 others skip |
 | ext/filter | 125 | 129 | 96.9% | all functions and filters; `uri_parser_class` knows only `parse_url` (no ext/uri) |
@@ -81,7 +81,7 @@ passing, so the percentages are of all php-src tests.
 | ext/readline | 16 | 28 | 57.1% | on libedit: the functions, history, the callback interface and the interactive shell (`php -a`) |
 | ext/reflection | 483 | 540 | 89.4% | |
 | ext/session | 250 | 269 | 92.9% | |
-| ext/simplexml | 158 | 165 | 95.8% | on libxml2 |
+| ext/simplexml | 162 | 165 | 98.2% | on libxml2 |
 | ext/sockets | 58 | 119 | 48.7% | the socket calls, `AddressInfo` and the constants; no `socket_sendmsg`/`socket_recvmsg`, no multicast options |
 | ext/sodium | 31 | 31 | 100.0% | on libsodium, linked statically |
 | ext/spl | 646 | 796 | 81.2% | |
@@ -94,7 +94,7 @@ passing, so the percentages are of all php-src tests.
 | ext/zlib | 133 | 161 | 82.6% | system zlib; no incremental deflate/inflate contexts |
 | other ext/ | 1 | 2,752 | 0.0% | the 1 passing is an ext/uri test that needs none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **17,034** | **22,219** | **76.7%** | |
+| **total** | **17,050** | **22,219** | **76.7%** | |
 
 Not implemented, so counted under other ext/: com_dotnet, dba, dl_test, enchant, ffi, ftp, imap, ldap, mysqli, odbc, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pgsql, shmop, skeleton, snmp, soap, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->

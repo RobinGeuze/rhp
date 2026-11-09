@@ -95,7 +95,7 @@ pub(crate) fn touch_ctx(host: &mut dyn Host, args: &[Value], idx: usize) {
 
 /// An http(s) or ftp(s) URL a built-in wrapper serves (no user wrapper
 /// replaced it).
-fn builtin_http(host: &dyn Host, path: &[u8]) -> bool {
+pub(crate) fn builtin_http(host: &dyn Host, path: &[u8]) -> bool {
     crate::ext::standard::http_fopen_wrapper::is_url_stream(path)
         && !(host.has_user_wrappers()
             && crate::main::streams::userspace::locate(host, path).is_some())

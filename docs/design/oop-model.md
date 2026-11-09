@@ -767,5 +767,7 @@ bind `$this` (instance) and set `Frame.{defining_class, called_class}` per §3.
 the end of the chain's outermost link (property, method, static member or
 dimension), whose result is set to null there (zend_short_circuiting_commit).
 SEND_FUNC_ARG for a runtime callee asks `MethodArgIsRef`, `StaticArgIsRef`,
-`FuncArgIsRef` or, for a callable value, `ValueArgIsRef`. `self`/`static`/`parent` as the `class`
+`FuncArgIsRef` or, for a callable value, `ValueArgIsRef`; the reference or
+value it fetched moves into the window (`PassArg`), so its temporary holds
+nothing once the call returns. `self`/`static`/`parent` as the `class`
 operand are resolved from the current frame, not interned names.

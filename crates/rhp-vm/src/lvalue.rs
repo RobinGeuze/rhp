@@ -1812,6 +1812,68 @@ impl Vm {
             || self.handlers_of(h).is_some_and(|t| t.dimension.is_some())
     }
 
+    /// [`Instr::DimAppendW`]: FETCH_DIM_W with no dimension, as the object
+    /// of a property write. Only a variable (a CV) keeps the element an
+    /// array or null gets; a fetched container is read.
+    pub(crate) fn dim_append_w(&mut self, top: usize, arr: Reg) -> Result<Value, Thrown> {
+        let a = self.reg_get(top, arr);
+        match &a {
+            Value::Object(h) if self.offset_object(h) => {
+                let cell = self.aa_fetch_w(h, &CursorStep::Append, Value::Null, DimFetch::W)?;
+                let v = cell.borrow().clone();
+                return Ok(v);
+            }
+            Value::Str(_) => {
+                return Err(Thrown::error(
+                    "Error",
+                    "[] operator not supported for strings",
+                ))
+            }
+            Value::Object(h) => {
+                let name = self.classes[h.borrow().class as usize].name.clone();
+                return Err(Thrown::error(
+                    "Error",
+                    format!(
+                        "Cannot use object of type {} as array",
+                        String::from_utf8_lossy(name.as_bytes())
+                    ),
+                ));
+            }
+            Value::Closure(_) => {
+                return Err(Thrown::error(
+                    "Error",
+                    "Cannot use object of type Closure as array",
+                ))
+            }
+            Value::Bool(false) => self.diag(builtins::E_DEPRECATED, FALSE_TO_ARRAY)?,
+            Value::Null | Value::Undef | Value::Array(_) => {}
+            _ => {
+                return Err(Thrown::error(
+                    "Error",
+                    "Cannot use a scalar value as an array",
+                ))
+            }
+        }
+        if arr >= self.stack[top].proto.num_cvs {
+            return Ok(Value::Null);
+        }
+        let append = |slot: &mut Value| -> Result<(), Thrown> {
+            if !matches!(slot, Value::Array(_)) {
+                *slot = Value::Array(PhpArray::new());
+            }
+            let Value::Array(a) = slot else {
+                unreachable!("made an array above")
+            };
+            *a.append_mut().ok_or_else(cannot_add_element)? = Value::Null;
+            Ok(())
+        };
+        match &mut self.stack[top].regs[arr as usize] {
+            Value::Ref(rc) => append(&mut rc.borrow_mut())?,
+            slot => append(slot)?,
+        }
+        Ok(Value::Null)
+    }
+
     /// `offsetGet($key)` on an ArrayAccess object.
     pub(crate) fn aa_offset_get(&mut self, h: &ObjectHandle, key: Value) -> Result<Value, Thrown> {
         if let Some(d) = self.handlers_of(h).and_then(|t| t.dimension) {

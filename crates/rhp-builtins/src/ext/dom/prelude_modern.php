@@ -111,7 +111,7 @@ namespace Dom {
         public function createCDATASection(string $data): \Dom\CDATASection { return __dom('Dom\Document::createCDATASection', $this, $data); }
         public function createComment(string $data): \Dom\Comment { return __dom('Dom\Document::createComment', $this, $data); }
         public function createProcessingInstruction(string $target, string $data): \Dom\ProcessingInstruction { return __dom('Dom\Document::createProcessingInstruction', $this, $target, $data); }
-        public function importNode(?\Dom\Node $node, bool $deep = false): \Dom\Node { return __dom('Dom\Document::importNode', $this, $node, $deep); }
+        public function importNode($node, bool $deep = false): \Dom\Node { return __dom('Dom\Document::importNode', $this, $node, $deep); }
         public function adoptNode(\Dom\Node $node): \Dom\Node { return __dom('Dom\Document::adoptNode', $this, $node); }
         public function createAttribute(string $localName): \Dom\Attr { return __dom('Dom\Document::createAttribute', $this, $localName); }
         public function createAttributeNS(?string $namespace, string $qualifiedName): \Dom\Attr { return __dom('Dom\Document::createAttributeNS', $this, $namespace, $qualifiedName); }
@@ -154,7 +154,7 @@ namespace Dom {
     class NodeList implements \IteratorAggregate, \Countable {
         public int $length { get => __dom_prop(0, $this, 'length'); set(mixed $value) { __dom_prop(1, $this, 'length', $value); } }
         public function count(): int { return __dom('Dom\NodeList::count', $this); }
-        public function getIterator(): \Iterator { $i = 0; $c = null; while (($p = __dom_iter($this, $c, $i)) !== null) { $c = $p[1]; yield $p[0] => $c; $i++; } }
+        public function getIterator(): \Iterator { return __dom('Dom\NodeList::getIterator', $this); }
         public function item(int $index): ?\Dom\Node { return __dom('Dom\NodeList::item', $this, $index); }
     }
     class NamedNodeMap implements \IteratorAggregate, \Countable {
@@ -163,7 +163,7 @@ namespace Dom {
         public function getNamedItem(string $qualifiedName): ?\Dom\Attr { return __dom('Dom\NamedNodeMap::getNamedItem', $this, $qualifiedName); }
         public function getNamedItemNS(?string $namespace, string $localName): ?\Dom\Attr { return __dom('Dom\NamedNodeMap::getNamedItemNS', $this, $namespace, $localName); }
         public function count(): int { return __dom('Dom\NamedNodeMap::count', $this); }
-        public function getIterator(): \Iterator { $i = 0; $c = null; while (($p = __dom_iter($this, $c, $i)) !== null) { $c = $p[1]; yield $p[0] => $c; $i++; } }
+        public function getIterator(): \Iterator { return __dom('Dom\NamedNodeMap::getIterator', $this); }
     }
     class DtdNamedNodeMap implements \IteratorAggregate, \Countable {
         public int $length { get => __dom_prop(0, $this, 'length'); set(mixed $value) { __dom_prop(1, $this, 'length', $value); } }
@@ -171,14 +171,14 @@ namespace Dom {
         public function getNamedItem(string $qualifiedName): \Dom\Entity|\Dom\Notation|null { return __dom('Dom\DtdNamedNodeMap::getNamedItem', $this, $qualifiedName); }
         public function getNamedItemNS(?string $namespace, string $localName): \Dom\Entity|\Dom\Notation|null { return __dom('Dom\DtdNamedNodeMap::getNamedItemNS', $this, $namespace, $localName); }
         public function count(): int { return __dom('Dom\DtdNamedNodeMap::count', $this); }
-        public function getIterator(): \Iterator { $i = 0; $c = null; while (($p = __dom_iter($this, $c, $i)) !== null) { $c = $p[1]; yield $p[0] => $c; $i++; } }
+        public function getIterator(): \Iterator { return __dom('Dom\DtdNamedNodeMap::getIterator', $this); }
     }
     class HTMLCollection implements \IteratorAggregate, \Countable {
         public int $length { get => __dom_prop(0, $this, 'length'); set(mixed $value) { __dom_prop(1, $this, 'length', $value); } }
         public function item(int $index): ?\Dom\Element { return __dom('Dom\HTMLCollection::item', $this, $index); }
         public function namedItem(string $key): ?\Dom\Element { return __dom('Dom\HTMLCollection::namedItem', $this, $key); }
         public function count(): int { return __dom('Dom\HTMLCollection::count', $this); }
-        public function getIterator(): \Iterator { $i = 0; $c = null; while (($p = __dom_iter($this, $c, $i)) !== null) { $c = $p[1]; yield $p[0] => $c; $i++; } }
+        public function getIterator(): \Iterator { return __dom('Dom\HTMLCollection::getIterator', $this); }
     }
     class CharacterData extends \Dom\Node implements \Dom\ChildNode {
         public ?\Dom\Element $previousElementSibling { get => __dom_prop(0, $this, 'previousElementSibling'); set(mixed $value) { __dom_prop(1, $this, 'previousElementSibling', $value); } }

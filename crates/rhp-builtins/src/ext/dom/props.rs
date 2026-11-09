@@ -790,10 +790,17 @@ pub fn debug_view(cx: &mut Cx, v: &Value) -> Result<PhpArray, Thrown> {
     let Some(base) = dom_base(cx, v, &st) else {
         return Ok(out);
     };
+    let mut thrown = Vec::new();
     for p in table(base).iter().copied() {
         let val = match (p.read)(cx, &st) {
             Ok(Some(val)) => val,
-            Ok(None) | Err(_) => continue,
+            Ok(None) => continue,
+            // The read handler's exception stays pending (EG(exception))
+            // while the dump goes on; later ones chain onto it.
+            Err(e) => {
+                thrown.push(e);
+                continue;
+            }
         };
         // The modern $children, $classList and $implementation live in a
         // property slot that php's read handler fills (later dumps list
@@ -817,6 +824,9 @@ pub fn debug_view(cx: &mut Cx, v: &Value) -> Result<PhpArray, Thrown> {
             rhp_values::ArrayKey::Str(PhpStr::from_bytes(p.name.as_bytes())),
             val,
         );
+    }
+    for e in thrown {
+        cx.host.set_pending_throw(e);
     }
     Ok(out)
 }
@@ -2095,12 +2105,12 @@ fn fragment_serialize(
     d: &DomObject,
     node: *mut XmlNode,
 ) -> Result<Option<Value>, Thrown> {
-    let private = super::modern::private(d).map(|p| &*p);
+    let private = unsafe { super::modern::private(d) }.map(|p| &*p);
     unsafe {
         if (*(*node).doc).type_ == sys::XML_HTML_DOCUMENT_NODE {
-            let mut out = Vec::new();
+            let mut out = super::html5_serializer::Out::default();
             super::html5_serializer::serialize(&mut out, private, node);
-            return some(Value::str(out));
+            return some(Value::str(out.buf));
         }
     }
     match super::xml_serializer::fragment_to_str(node, private)? {

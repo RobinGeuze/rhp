@@ -7,6 +7,20 @@
  * its Zend calls replaced by the rhp_dom_* callbacks (ext/dom/html5.rs),
  * then head.c's definitions before it and tail.c's API after it.
  */
+/* php's glue functions, linked under rhp_ names (the static archive
+ * must not export lexbor's or php's own symbol names). */
+#define lexbor_libxml2_bridge_convert_document rhp_lexbor_libxml2_bridge_convert_document
+#define lexbor_libxml2_bridge_convert_fragment rhp_lexbor_libxml2_bridge_convert_fragment
+#define lexbor_libxml2_bridge_copy_observations rhp_lexbor_libxml2_bridge_copy_observations
+#define lexbor_libxml2_bridge_parse_context_init rhp_lexbor_libxml2_bridge_parse_context_init
+#define lexbor_libxml2_bridge_parse_set_error_callbacks rhp_lexbor_libxml2_bridge_parse_set_error_callbacks
+#define lexbor_libxml2_bridge_report_errors rhp_lexbor_libxml2_bridge_report_errors
+#define lxb_selectors_clean rhp_lxb_selectors_clean
+#define lxb_selectors_destroy rhp_lxb_selectors_destroy
+#define lxb_selectors_find rhp_lxb_selectors_find
+#define lxb_selectors_find_reverse rhp_lxb_selectors_find_reverse
+#define lxb_selectors_init rhp_lxb_selectors_init
+#define lxb_selectors_match_node rhp_lxb_selectors_match_node
 /* vasprintf/asprintf on glibc */
 #define _GNU_SOURCE
 #include <stdarg.h>
@@ -4191,9 +4205,10 @@ static int rhp_html5_sink_write(void *ctx, const char *buf, size_t len)
 	return 0;
 }
 
-/* dom_common_save's encoding half: `utf8` (the serializer's output) in the
- * document's encoding, written to `sink`. */
-void rhp_html5_encode_output(const char *encoding, const char *utf8, size_t len, rhp_html5_sink sink, void *sink_ctx)
+/* dom_common_save's encoding half: `utf8` (the serializer's output, one
+ * write_string call ending at each of `ends`) in the document's encoding,
+ * written to `sink` one write_output at a time. */
+void rhp_html5_encode_output(const char *encoding, const char *utf8, const size_t *ends, size_t nends, rhp_html5_sink sink, void *sink_ctx)
 {
 	void *pair[2] = { (void *) sink, sink_ctx };
 	const lxb_encoding_data_t *decoding_data = lxb_encoding_data(LXB_ENCODING_UTF_8);
@@ -4224,10 +4239,14 @@ void rhp_html5_encode_output(const char *encoding, const char *utf8, size_t len,
 	output_ctx.output_data = pair;
 	output_ctx.write_output = rhp_html5_sink_write;
 
-	if (encoding_data->encoding == LXB_ENCODING_UTF_8) {
-		dom_saveHTML_write_string_len_utf8_output(&output_ctx, utf8, len);
-	} else {
-		dom_saveHTML_write_string_len(&output_ctx, utf8, len);
+	size_t start = 0;
+	for (size_t i = 0; i < nends; i++) {
+		if (encoding_data->encoding == LXB_ENCODING_UTF_8) {
+			dom_saveHTML_write_string_len_utf8_output(&output_ctx, utf8 + start, ends[i] - start);
+		} else {
+			dom_saveHTML_write_string_len(&output_ctx, utf8 + start, ends[i] - start);
+		}
+		start = ends[i];
 	}
 
 	(void) lxb_encoding_decode_finish(&decode);

@@ -4,6 +4,10 @@
 use std::ffi::c_int;
 use std::ptr;
 
+use rhp_values::Value;
+
+use crate::Thrown;
+
 use crate::ext::libxml::node::{self as lxn, RefObj};
 use crate::ext::libxml::sys::{self, XmlAttr, XmlDoc, XmlNode, XmlNs};
 
@@ -289,8 +293,27 @@ fn merge_adjacent_text_nodes(node: *mut XmlNode) {
     }
 }
 
-/// php_dom_normalize_legacy
-pub fn normalize_legacy(nodep: *mut XmlNode) {
+/// php_dom_normalize_legacy, with dom_normalize_check_stack_limit's
+/// Error once the stack limit is passed.
+pub fn normalize_legacy(nodep: *mut XmlNode) -> Result<Value, Thrown> {
+    let mut deep = false;
+    normalize_legacy_rec(nodep, &mut deep);
+    if deep {
+        return Err(Thrown::error(
+            "Error",
+            "Maximum call stack size reached. Infinite recursion?",
+        ));
+    }
+    Ok(Value::Null)
+}
+
+/// One level of php_dom_normalize_legacy: past the stack limit it returns
+/// at once and sets `deep` (the levels above carry on, as in php).
+fn normalize_legacy_rec(nodep: *mut XmlNode, deep: &mut bool) {
+    if crate::zend::call_stack::overflowed() {
+        *deep = true;
+        return;
+    }
     unsafe {
         let mut child = (*nodep).children;
         while !child.is_null() {
@@ -306,10 +329,10 @@ pub fn normalize_legacy(nodep: *mut XmlNode) {
                     }
                 }
                 sys::XML_ELEMENT_NODE => {
-                    normalize_legacy(child);
+                    normalize_legacy_rec(child, deep);
                     let mut attr = (*child).properties;
                     while !attr.is_null() {
-                        normalize_legacy(attr.cast());
+                        normalize_legacy_rec(attr.cast(), deep);
                         attr = (*attr).next;
                     }
                 }

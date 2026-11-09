@@ -39,6 +39,7 @@ Kinds:
 | `main/ini.rs` | `INI`, `INI_STARTUP` (ini overrides, `-d` values) | request | `ini::reset_state` |
 | `main/fopen_wrappers.rs` | `BASEDIR`, `ACTIVE` (open_basedir, its entries expanded after an ini_set) | request | `fopen_wrappers::reset_state` |
 | `main/ini.rs` | `STARTUP_DIAGS` | request | `ini::reset_state` |
+| `main/ini.rs` | `GENERATION` (bumped on every ini change; opcache's directive memo) | thread, only grows | — (bumped by `ini::reset_state`) |
 | `ext/opcache/mod.rs` | `ACCEL_LOG` (opcache's startup messages) | startup | emptied by `start_request` |
 | `main/streams/mod.rs` | `LAST_OS_ERR`, `WRAPPER_ERR` (the last failure's errno / wrapper message) | call | `streams::reset_state` |
 | `main/streams/plain_wrapper.rs` | `DIAGS`, `HAS_DIAGS` (warnings of host-less stream operations) | call | `plain_wrapper::reset_state` |
@@ -113,7 +114,7 @@ them. rhp resets them, so each request starts as a fresh php process does.
 | compiler `lib.rs` | `COMPILE_ERROR_DIAGS` (diagnostics raised before that error, taken right after) | call | — |
 | compiler `prelude.rs` | `PRELUDE_CACHE` (the compiled prelude) | thread | — |
 | vm `classes.rs` | `LINKED_PRELUDE`, `PRELUDE_LINKED_ONCE` | thread | — |
-| vm `link_cache.rs` | `CACHE` (linked user classes), `NEXT_STAMP`, `STATS` | thread, as php's inheritance cache | — |
+| vm `link_cache.rs` | `CACHE` (linked user classes), `NEXT_STAMP`, `STATS`, `STATE_KEYS` (the state digests' key) | thread, as php's inheritance cache | — |
 | vm `lvalue.rs` | `PATH_DIAGS` (warnings of a cursor walk) | call | `lvalue::reset_path_diags` via `lifecycle::reset_request_state` |
 | vm `opcache/mod.rs` | `CACHE` (the compiled-script cache) | thread, as opcache's shared memory | `opcache_reset()` |
 

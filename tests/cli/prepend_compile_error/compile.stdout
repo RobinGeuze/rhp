@@ -1,0 +1,6 @@
+prepend
+
+Fatal error: Cannot redeclare function strlen() in {DIR}/compile.php on line 3
+Stack trace:
+#0 {main}
+shutdown

@@ -1,0 +1,6 @@
+Non-default INI settings:
+html_errors: "1" -> "0"
+implicit_flush: "0" -> "1"
+max_execution_time: "30" -> "0"
+memory_limit: "128M" -> "1G"
+precision: "14" -> "5"

@@ -1,0 +1,8 @@
+Method [ <internal:Reflection, ctor> public method __construct ] {
+
+  - Parameters [2] {
+    Parameter #0 [ <required> object|string $objectOrMethod ]
+    Parameter #1 [ <optional> ?string $method = null ]
+  }
+}
+

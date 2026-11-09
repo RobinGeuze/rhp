@@ -1,0 +1,21 @@
+
+standard
+
+Dynamic Library Support => enabled
+Path to sendmail => /usr/sbin/sendmail -t -i
+
+Directive => Local Value => Master Value
+unserialize_max_depth => 4096 => 4096
+user_agent => no value => no value
+from => no value => no value
+default_socket_timeout => 60 => 60
+auto_detect_line_endings => Off => Off
+assert.active => On => On
+assert.bail => Off => Off
+assert.warning => On => On
+assert.callback => no value => no value
+assert.exception => On => On
+session.trans_sid_tags => a=href,area=href,frame=src,form= => a=href,area=href,frame=src,form=
+session.trans_sid_hosts => no value => no value
+url_rewriter.tags => form= => form=
+url_rewriter.hosts => no value => no value

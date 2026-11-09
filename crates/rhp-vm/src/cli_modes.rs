@@ -154,11 +154,20 @@ impl Vm {
                 self.sapi.exit_status = code;
                 bailed = self.fatal_since(&mark);
             }
-            Err(t) if t.is_catchable() => match self.top_level_throw(t) {
-                Ok(None) => {}
-                Ok(Some(code)) => self.sapi.exit_status = code,
-                Err(_) => self.sapi.exit_status = 255,
-            },
+            Err(t) if t.is_catchable() => {
+                match self.top_level_throw(t) {
+                    Ok(None) => {}
+                    Ok(Some(code)) => self.sapi.exit_status = code,
+                    Err(_) => self.sapi.exit_status = 255,
+                }
+                // The handler ran on the shutdown scope: the global scope
+                // goes back to being the finished {main} for the next line.
+                if !self.stack.is_empty() {
+                    self.stack.truncate(1);
+                    self.finished_main = self.stack.pop();
+                }
+                self.in_shutdown_scope = false;
+            }
             Err(_) => self.sapi.exit_status = 255,
         }
         if let Some(Thrown::Exit(code)) = self.pending_throw.take() {

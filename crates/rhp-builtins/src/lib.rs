@@ -50,6 +50,8 @@ pub use registry::{
     stream_wrappers, Builtin, NativeFn,
 };
 pub(crate) use registry::{register, register_helpers, Registry};
+/// php-cli's informational modes (`-m`, `--ri`, `--ini`, `--ini=diff`).
+pub use sapi::cli::{ext_info_text, ini_config_text, ini_diff_text, modules_text};
 
 pub use ext::pcntl::{dispatch as pcntl_dispatch, interrupt_pending as pcntl_interrupt_pending};
 /// pcntl's asynchronous signal delivery: the VM polls

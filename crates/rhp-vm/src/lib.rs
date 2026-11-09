@@ -15,6 +15,7 @@ mod autoload;
 mod callables;
 mod calls;
 mod classes;
+mod cli_modes;
 mod closures;
 mod compare;
 mod const_link;
@@ -65,6 +66,7 @@ use include::Includer;
 use lvalue::{CursorRoot, CursorSteps};
 use streams::StreamTable;
 
+pub use cli_modes::CliMode;
 pub use include::IncludeError;
 
 /// The virtual machine: call stack + global tables, running one request
@@ -395,8 +397,8 @@ pub struct Vm {
     main_ret: Option<Value>,
     // The next include runs as the request's next primary script.
     primary_next: bool,
-    // php -a: the readline shell runs instead of a script.
-    interactive: bool,
+    // php-cli: the shell, -R, --rf, ... run instead of a script.
+    cli_mode: Option<CliMode>,
     // The shutdown sequence's stack ({main} as an internal frame) is set up.
     in_shutdown_scope: bool,
     // Per-run extension state (`Host::module_state`), by module key.

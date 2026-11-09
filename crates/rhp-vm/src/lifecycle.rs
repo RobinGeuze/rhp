@@ -11,7 +11,7 @@ use rhp_values::{ObjectHandle, Thrown, Value, Visibility};
 
 use crate::lvalue::CursorRoot;
 use crate::streams::{StreamState, StreamTable};
-use crate::{deref, output, request, Frame, UnitFn, Vm};
+use crate::{deref, output, request, CliMode, Frame, UnitFn, Vm};
 
 /// The shutdown sequence's handler for an `exit` / uncaught throwable:
 /// `Some(code)` ends the current step with that exit status.
@@ -189,7 +189,7 @@ impl Vm {
             finished_main: None,
             main_ret: None,
             primary_next: false,
-            interactive: false,
+            cli_mode: None,
             in_shutdown_scope: false,
             module_states: HashMap::new(),
             sapi: request::SapiState::new(sapi),
@@ -490,7 +490,7 @@ impl Vm {
     /// php -a: after the (empty) main script, the readline shell reads and
     /// runs statements until its input ends.
     pub fn set_interactive(&mut self) {
-        self.interactive = true;
+        self.cli_mode = Some(CliMode::Shell);
     }
 
     /// Skip auto_prepend_file (`-r` code).
@@ -1024,10 +1024,9 @@ impl Vm {
             Ok(c) => c,
             Err(t) => self.uncaught_in_main(t)?,
         };
-        let status = if self.interactive {
-            builtins::readline_shell_run(self)
-        } else {
-            status
+        let status = match self.cli_mode.take() {
+            Some(mode) => self.run_cli_mode(mode)?,
+            None => status,
         };
         let status = self.primary_script_done(status)?;
         let status = self.shutdown_sequence(status, &mut |vm, t| vm.top_level_throw(t))?;
@@ -1090,7 +1089,20 @@ impl Vm {
     /// php_execute_script for another primary script of the request: in
     /// its directory, in the global scope of the one before.
     fn run_next_primary(&mut self, path: Vec<u8>) -> Result<(), Thrown> {
-        if let Some(slash) = path.iter().rposition(|&b| b == b'/') {
+        self.run_primary_file(path, true, false)
+    }
+
+    /// php_execute_script for a further primary script, in the global
+    /// scope of the one before: in its directory when `chdir`, after
+    /// auto_prepend_file when `prepend` (php-cli's -F, once per line).
+    pub(crate) fn run_primary_file(
+        &mut self,
+        path: Vec<u8>,
+        chdir: bool,
+        prepend: bool,
+    ) -> Result<(), Thrown> {
+        let slash = path.iter().rposition(|&b| b == b'/');
+        if let Some(slash) = slash.filter(|_| chdir) {
             let dir = if slash == 0 {
                 &path[..1]
             } else {
@@ -1104,9 +1116,19 @@ impl Vm {
         main.pc = main.proto.code.len();
         self.stack.push(main);
         let depth = self.stack.len();
-        self.primary_next = true;
-        let r = self.do_include(depth - 1, path, rhp_bytecode::IncludeKind::Require);
-        self.primary_next = false;
+        let prepend = builtins::ini_value(b"auto_prepend_file")
+            .flatten()
+            .filter(|p| prepend && !p.is_empty());
+        let r = match prepend {
+            Some(p) => self.run_auto_prepend(p),
+            None => Ok(()),
+        };
+        let r = r.and_then(|_| {
+            self.primary_next = true;
+            let r = self.do_include(depth - 1, path, rhp_bytecode::IncludeKind::Require);
+            self.primary_next = false;
+            r
+        });
         self.stack.truncate(depth);
         if let Some(main) = self.stack.pop() {
             self.finished_main = Some(main);

@@ -819,10 +819,20 @@ impl Vm {
     /// throwable reported as a warning, and a fatal error or `exit` only
     /// sets the exit status.
     pub(crate) fn shell_eval_code(&mut self, code: &[u8], name: &str) {
+        self.eval_string_ex(code, name, (builtins::E_WARNING, "Warning"));
+    }
+
+    /// zend_eval_stringl_ex(code, NULL, name, true) under zend_try: as
+    /// [`Vm::shell_eval_code`], an uncaught throwable reported at `level`
+    /// (`(type, label)`). At E_ERROR (php-cli's -B/-R/-E) it and a parse
+    /// error leave exit status 255. True: a fatal error bailed out.
+    pub(crate) fn eval_string_ex(&mut self, code: &[u8], name: &str, level: (i64, &str)) -> bool {
+        let fatal = level.0 == builtins::E_ERROR;
+        let mark = self.last_error.clone();
         let mut source = b"<?php ".to_vec();
         source.extend_from_slice(code);
         let Some(mut cb) = self.includer.take() else {
-            return;
+            return false;
         };
         let compiled = cb(name, &source);
         self.includer = Some(cb);
@@ -836,33 +846,58 @@ impl Vm {
             }) => {
                 self.emit_parse_diags(name.as_bytes(), &diags);
                 self.report_parse_error(class, &message, name, line);
-                return;
+                if fatal {
+                    self.sapi.exit_status = 255;
+                }
+                return false;
             }
             Err(e) => {
                 if let Thrown::Exit(code) = self.include_error(e, name, true) {
                     self.sapi.exit_status = code;
+                    return true;
                 }
-                return;
+                return false;
             }
         };
         self.emit_compile_diags(&prog);
         let r = self
             .install_file(b"", &prog)
             .and_then(|(main, unit)| self.run_as_primary(main, unit));
+        let mut bailed = false;
+        if r.is_err() && !self.stack.is_empty() {
+            // The global scope survives the unwound frames.
+            self.stack.truncate(1);
+            self.finished_main = self.stack.pop();
+        }
         match r {
             Ok(_) => {}
-            Err(Thrown::Exit(code)) => self.sapi.exit_status = code,
+            Err(Thrown::Exit(code)) => {
+                self.sapi.exit_status = code;
+                bailed = self.fatal_since(&mark);
+            }
             Err(t) => {
-                // The global scope survives the unwound frames.
-                if !self.stack.is_empty() {
-                    self.stack.truncate(1);
-                    self.finished_main = self.stack.pop();
+                self.report_uncaught_as(t, level.0, level.1);
+                if fatal {
+                    self.sapi.exit_status = 255;
                 }
-                self.report_uncaught_as(t, builtins::E_WARNING, "Warning");
             }
         }
         if let Some(Thrown::Exit(code)) = self.pending_throw.take() {
             self.sapi.exit_status = code;
+        }
+        bailed
+    }
+
+    /// Whether a fatal error other than `mark` is now the last error: an
+    /// `exit` that unwound was php's bailout.
+    pub(crate) fn fatal_since(&self, mark: &Option<(i64, Vec<u8>, Vec<u8>, i64)>) -> bool {
+        const FATAL: i64 = builtins::E_ERROR
+            | builtins::E_CORE_ERROR
+            | builtins::E_COMPILE_ERROR
+            | builtins::E_USER_ERROR;
+        match &self.last_error {
+            Some(e) if e.0 & FATAL != 0 => mark.as_ref() != Some(e),
+            _ => false,
         }
     }
 

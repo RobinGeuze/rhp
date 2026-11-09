@@ -1217,3 +1217,44 @@ pub(crate) fn quantity_error(v: &[u8]) -> Option<String> {
     }
     None
 }
+
+/// php's own defaults (main.c) for the directives php-cli's HARDCODED_INI
+/// sets: INI_TABLE holds php-cli's values for them.
+const MAIN_C_DEFAULTS: &[(&str, &str)] = &[
+    ("html_errors", "1"),
+    ("implicit_flush", "0"),
+    ("output_buffering", "0"),
+    ("max_execution_time", "30"),
+    ("max_input_time", "-1"),
+];
+
+/// `php --ini=diff`: (name, built-in default, current value) of each
+/// registered directive whose value is not its default, sorted by name
+/// with strcasecmp.
+pub(crate) fn non_default_entries() -> Vec<(&'static str, Option<Vec<u8>>, Option<Vec<u8>>)> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for e in INI_TABLE {
+        let Some(entry) = ini_entry(e.1.as_bytes()) else {
+            continue;
+        };
+        if !seen.insert(e.1) {
+            continue;
+        }
+        let value = ini_value(e.1.as_bytes()).flatten();
+        let def = match MAIN_C_DEFAULTS.iter().find(|(k, _)| *k == e.1) {
+            Some((_, v)) => Some(v.as_bytes().to_vec()),
+            None => entry.2.map(|s| s.as_bytes().to_vec()),
+        };
+        if def == value {
+            continue;
+        }
+        out.push((e.1, def, value));
+    }
+    out.sort_by(|a, b| {
+        a.0.to_ascii_lowercase()
+            .cmp(&b.0.to_ascii_lowercase())
+            .then_with(|| a.0.cmp(b.0))
+    });
+    out
+}

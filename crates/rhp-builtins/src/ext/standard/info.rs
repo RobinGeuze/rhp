@@ -684,6 +684,41 @@ fn print_module(o: &mut Info, e: &str) {
             ],
             &["zlib.output_compression"],
         );
+    } else if e == "standard" {
+        // PHP_MINFO_FUNCTION(basic), then the directives basic_functions
+        // and its submodules register, in php's order.
+        o.row(&["Dynamic Library Support", "enabled"]);
+        let sendmail = crate::main::ini::ini_value(b"sendmail_path")
+            .flatten()
+            .unwrap_or_default();
+        o.row(&["Path to sendmail", &String::from_utf8_lossy(&sendmail)]);
+        o.table_end();
+        print_ini(
+            o,
+            &[
+                "unserialize_max_depth",
+                "user_agent",
+                "from",
+                "default_socket_timeout",
+                "auto_detect_line_endings",
+                "assert.active",
+                "assert.bail",
+                "assert.warning",
+                "assert.callback",
+                "assert.exception",
+                "session.trans_sid_tags",
+                "session.trans_sid_hosts",
+                "url_rewriter.tags",
+                "url_rewriter.hosts",
+            ],
+            &[
+                "auto_detect_line_endings",
+                "assert.active",
+                "assert.bail",
+                "assert.warning",
+                "assert.exception",
+            ],
+        );
     } else {
         o.row(&[&format!("{e} support"), "enabled"]);
     }
@@ -1048,4 +1083,13 @@ pub fn register(m: &mut crate::Registry) {
             ("php_ini_loaded_file", fn_php_ini_loaded_file),
         ],
     );
+}
+
+/// `php --ri main`: display_ini_entries(NULL), the directives of module
+/// number 0 (Core's).
+pub(crate) fn core_ini_info() -> Vec<u8> {
+    let mut o = Info::for_sapi();
+    print_core_ini(&mut o);
+    o.table_end();
+    o.0
 }

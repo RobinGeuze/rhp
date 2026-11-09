@@ -137,7 +137,7 @@ impl Vm {
     }
 
     /// `$throwable->__toString()`, its result dereferenced.
-    fn call_to_string(&mut self, h: &ObjectHandle) -> Result<Value, Thrown> {
+    pub(crate) fn call_to_string(&mut self, h: &ObjectHandle) -> Result<Value, Thrown> {
         let cls = h.borrow().class;
         match self.lookup_method(cls, b"__tostring") {
             Some(m) => self

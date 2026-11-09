@@ -70,6 +70,14 @@ pub enum Script {
     Stdin,
     /// php -a: the readline shell reads statements from the terminal.
     Shell,
+    /// php-cli's other modes that run no script of their own (`-R`,
+    /// `--rf`, `-m`, ...); `file` is `-F`'s script (`$argv[0]`).
+    Mode {
+        /// What runs.
+        mode: rhp_vm::CliMode,
+        /// `-F`'s file.
+        file: Option<String>,
+    },
 }
 
 /// One request for [`run_request`].
@@ -437,6 +445,12 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
             Vec::new(),
             "Standard input code".to_string(),
         ),
+        Script::Mode { file, .. } => {
+            let name = file
+                .clone()
+                .unwrap_or_else(|| "Standard input code".to_string());
+            ("Standard input code".to_string(), Vec::new(), name)
+        }
         Script::Stdin => {
             let mut src = Vec::new();
             if let Err(e) = std::io::Read::read_to_end(&mut std::io::stdin(), &mut src) {
@@ -556,8 +570,13 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
     if let Script::Code(_) = req.script {
         vm.disable_auto_prepend();
     }
-    if let Script::Shell = req.script {
-        vm.set_interactive();
+    match req.script {
+        Script::Shell => vm.set_interactive(),
+        Script::Mode { mode, .. } => {
+            vm.disable_auto_prepend();
+            vm.set_cli_mode(mode);
+        }
+        _ => {}
     }
     install_includer(&mut vm);
     let code = match vm.run_main(&program) {

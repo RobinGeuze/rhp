@@ -550,3 +550,125 @@ fn an_embedding_sapi_gets_php_defaults() {
     );
     assert_eq!(body(&ev), "10301");
 }
+
+/// A streamed body (`RequestInfo::body_reader`) handing out a few bytes
+/// per read and logging each read among the SAPI events.
+struct Trickle {
+    data: Vec<u8>,
+    pos: usize,
+    events: Rc<RefCell<Vec<String>>>,
+}
+
+impl std::io::Read for Trickle {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = buf.len().min(7).min(self.data.len() - self.pos);
+        buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+        self.pos += n;
+        if n > 0 {
+            self.events.borrow_mut().push("read".to_string());
+        }
+        Ok(n)
+    }
+}
+
+/// `info` with its body streamed instead.
+fn streamed(rec: &Recorder, mut info: RequestInfo) -> RequestInfo {
+    info.body_reader = Some(Box::new(Trickle {
+        data: std::mem::take(&mut info.body),
+        pos: 0,
+        events: rec.events.clone(),
+    }));
+    info
+}
+
+fn post(content_type: &str, body: &[u8]) -> RequestInfo {
+    RequestInfo {
+        method: Some(b"POST".to_vec()),
+        content_type: Some(content_type.as_bytes().to_vec()),
+        content_length: Some(body.len() as i64),
+        body: body.to_vec(),
+        response_code: 200,
+        ..Default::default()
+    }
+}
+
+/// A streamed body reads as the in-memory one: urlencoded, multipart
+/// with an upload, and php://input.
+#[test]
+fn a_streamed_body_reads_like_a_buffered_one() {
+    let mut upload = b"--b\r\nContent-Disposition: form-data; name=\"f\"; filename=\"a.txt\"\r\nContent-Type: text/plain\r\n\r\n".to_vec();
+    upload.extend(std::iter::repeat_n(b'x', 20_000));
+    upload.extend_from_slice(
+        b"\r\n--b\r\nContent-Disposition: form-data; name=\"k\"\r\n\r\nv\r\n--b--\r\n",
+    );
+    let cases = [
+        (
+            post("application/x-www-form-urlencoded", b"a=1&b[]=2"),
+            "echo json_encode($_POST), file_get_contents('php://input');",
+        ),
+        (
+            post("multipart/form-data; boundary=b", &upload),
+            "echo $_POST['k'], ' ', $_FILES['f']['size'], ' ', filesize($_FILES['f']['tmp_name']), ' ', strlen(file_get_contents('php://input'));",
+        ),
+        (
+            post("text/plain", b"raw body"),
+            "echo file_get_contents('php://input'), '|', file_get_contents('php://input');",
+        ),
+    ];
+    for (info, code) in cases {
+        let buffered = RequestInfo {
+            body: info.body.clone(),
+            ..post(
+                std::str::from_utf8(info.content_type.as_deref().unwrap()).unwrap(),
+                &info.body,
+            )
+        };
+        let (want, _) = run(code, &[], buffered);
+        let rec = Recorder::default();
+        let info = streamed(&rec, info);
+        let (got, o) = run_with(rec, code, &[], info);
+        assert_eq!(o, Outcome::Exit(0));
+        let got: Vec<_> = got.into_iter().filter(|e| e != "read").collect();
+        assert_eq!(got, want);
+    }
+}
+
+/// With enable_post_data_reading off nothing is read until the script
+/// asks (php://input, request_parse_body()).
+#[test]
+fn a_streamed_body_is_read_when_the_script_asks() {
+    let rec = Recorder::default();
+    let info = streamed(&rec, post("application/x-www-form-urlencoded", b"a=1&b=2"));
+    let (ev, _) = run_with(
+        rec,
+        "echo 'before'; [$p] = request_parse_body(); echo json_encode($p);",
+        &[("enable_post_data_reading", "0")],
+        info,
+    );
+    assert_eq!(
+        ev,
+        [
+            "headers:200",
+            "body:before",
+            "read",
+            "body:{\"a\":\"1\",\"b\":\"2\"}"
+        ]
+    );
+}
+
+/// The GHSA-2cv3-554h-jpmh limits hold for a streamed body that is longer
+/// than its Content-Length.
+#[test]
+fn a_streamed_body_stops_at_post_max_size() {
+    let rec = Recorder::default();
+    let info = streamed(
+        &rec,
+        lying_post("application/x-www-form-urlencoded", big_form()),
+    );
+    let (ev, _) = run_with(rec, "var_dump(strlen($_POST['a']));", &LIMIT_INI, info);
+    assert!(
+        ev.contains(&"log:PHP Warning:  PHP Request Startup: Actual POST length does not match Content-Length, and exceeds 102400 bytes in Unknown on line 0".to_string()),
+        "{ev:?}"
+    );
+    assert_eq!(body(&ev), "int(114686)\n");
+}

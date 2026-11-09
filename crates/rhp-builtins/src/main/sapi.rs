@@ -353,8 +353,15 @@ pub struct RequestInfo {
     pub cookie: Option<Vec<u8>>,
     /// `CONTENT_TYPE` (empty when absent, as php's CGI SAPI leaves it).
     pub content_type: Option<Vec<u8>>,
-    /// The request body (`php://input`, `$_POST`), already read.
+    /// The request body (`php://input`, `$_POST`), already read; unused
+    /// when [`RequestInfo::body_reader`] is set.
     pub body: Vec<u8>,
+    /// A body read as the engine needs it, instead of `body` (php's
+    /// `sapi_module.read_post`): a server can start the request before the
+    /// body arrived, and multipart uploads go to their temporary files
+    /// without being held in memory. Set `content_length` from the
+    /// request's header (`None` counts as 0, as a chunked body).
+    pub body_reader: Option<Box<dyn std::io::Read>>,
     /// The declared `Content-Length` (`post_max_size` is checked against
     /// it); `None`: the body's length. A body longer than this (a chunked
     /// request: `Some(0)`) is read only until more than `post_max_size`
@@ -377,6 +384,19 @@ pub struct RequestInfo {
     pub response_code: i64,
     /// `SG(request_info).proto_num` (php's CGI SAPI leaves it at 1000).
     pub proto_num: i64,
+}
+
+impl RequestInfo {
+    /// The body's declared length (`SG(request_info).content_length`):
+    /// `content_length`, else the in-memory body's length (0 for a
+    /// streamed body).
+    pub fn declared_length(&self) -> i64 {
+        match (self.content_length, &self.body_reader) {
+            (Some(n), _) => n,
+            (None, Some(_)) => 0,
+            (None, None) => self.body.len() as i64,
+        }
+    }
 }
 
 thread_local! {

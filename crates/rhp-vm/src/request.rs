@@ -69,7 +69,10 @@ impl Vm {
     /// Hand the engine the request's input (server variables, query string,
     /// cookies, body …). Superglobals are built from it when the script
     /// starts.
-    pub fn set_request(&mut self, req: RequestInfo) {
+    pub fn set_request(&mut self, mut req: RequestInfo) {
+        if let Some(reader) = req.body_reader.take() {
+            self.sapi.body.set_stream(reader);
+        }
         let r = &mut self.sapi.response;
         if req.response_code != 0 {
             r.code = req.response_code;
@@ -260,7 +263,7 @@ impl Vm {
         {
             return;
         }
-        let len = req.content_length.unwrap_or(req.body.len() as i64);
+        let len = req.declared_length();
         let reading = self
             .ini_get(b"enable_post_data_reading")
             .unwrap_or_default();
@@ -646,17 +649,18 @@ impl Vm {
                     .sapi
                     .body
                     .buffered()
-                    .unwrap_or_else(|| self.sapi.body.remaining(&req.body).to_vec());
+                    .unwrap_or_else(|| self.sapi.body.read_rest(&req.body));
                 let (a, over) = sapi::post_form_vars(&data, max_vars);
                 self.input_vars_exceeded(over, max_vars);
                 post = a;
             }
             b"multipart/form-data" => {
                 let lim = rfc1867::Limits::new(self, &rfc1867::BodyOptions::default());
-                let len = req.content_length.unwrap_or(req.body.len() as i64);
+                let len = req.declared_length();
+                let read_before = self.sapi.body.read_bytes();
                 let mut out = rfc1867::parse(
-                    self.sapi.body.remaining(&req.body),
-                    self.sapi.body.read_bytes(),
+                    &mut self.sapi.body.reader(&req.body),
+                    read_before,
                     &rfc1867::content_type_dup(ct),
                     len,
                     &lim,

@@ -13,6 +13,20 @@ use crate::util::{dirname, is_superglobal, strip_dollar};
 /// null, negated numeric literals) to a `Value`. Errors on anything requiring
 /// runtime evaluation (named constants, class constants, arithmetic).
 pub(crate) fn fold_const(cx: &FileCtx, e: &Expression) -> Result<Value, Thrown> {
+    fold_const_with(cx, e, &|_| None)
+}
+
+/// [`fold_const`] with `leaf` folding the parts it knows (tried first on
+/// every subexpression).
+pub(crate) fn fold_const_with(
+    cx: &FileCtx,
+    e: &Expression,
+    leaf: &dyn Fn(&Expression) -> Option<Value>,
+) -> Result<Value, Thrown> {
+    if let Some(v) = leaf(e) {
+        return Ok(v);
+    }
+    let fold_const = |cx: &FileCtx, e: &Expression| fold_const_with(cx, e, leaf);
     let v = match e {
         Expression::Literal(l) => literal_value(l),
         // A heredoc / nowdoc / "..." without interpolation is a plain string.
@@ -35,8 +49,8 @@ pub(crate) fn fold_const(cx: &FileCtx, e: &Expression) -> Result<Value, Thrown> 
                 _ => return Err(non_const_err()),
             }
         }
-        Expression::Array(arr) => return fold_const_array(cx, arr.elements.iter()),
-        Expression::LegacyArray(arr) => return fold_const_array(cx, arr.elements.iter()),
+        Expression::Array(arr) => return fold_const_array(cx, arr.elements.iter(), leaf),
+        Expression::LegacyArray(arr) => return fold_const_array(cx, arr.elements.iter(), leaf),
         Expression::ConstantAccess(ca) => match identifier_name(&ca.name) {
             b"true" | b"TRUE" | b"True" => Value::Bool(true),
             b"false" | b"FALSE" | b"False" => Value::Bool(false),
@@ -112,7 +126,9 @@ pub(crate) fn fold_const(cx: &FileCtx, e: &Expression) -> Result<Value, Thrown> 
 fn fold_const_array<'a>(
     cx: &FileCtx,
     els: impl Iterator<Item = &'a ArrayElement<'a>>,
+    leaf: &dyn Fn(&Expression) -> Option<Value>,
 ) -> Result<Value, Thrown> {
+    let fold_const = |cx: &FileCtx, e: &Expression| fold_const_with(cx, e, leaf);
     let mut a = PhpArray::new();
     for el in els {
         match el {

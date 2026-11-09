@@ -337,6 +337,35 @@ impl AttrNames<'_, '_> {
     }
 }
 
+/// zend_try_ct_eval_class_const: the value of a constant the active class
+/// declared earlier, named `self::X` (outside a trait) or by the class's
+/// name.
+fn own_class_const(cx: &FileCtx, e: &Expression) -> Option<Value> {
+    use crate::parse::cst::ClassLikeConstantSelector as Sel;
+    let Expression::Access(Access::ClassConstant(c)) = crate::util::unparen(e) else {
+        return None;
+    };
+    let Sel::Identifier(id) = &c.constant else {
+        return None;
+    };
+    let scope = cx.class_scope.borrow().clone()?;
+    let own = match crate::util::unparen(c.class) {
+        Expression::Self_(_) => !scope.is_trait,
+        Expression::Identifier(cid) => {
+            let raw = identifier_raw(cid);
+            if raw.eq_ignore_ascii_case(b"self") {
+                !scope.is_trait
+            } else {
+                !AttrNames::special(raw)
+                    && cx.resolve_class_name(cid).eq_ignore_ascii_case(&scope.name)
+            }
+        }
+        _ => false,
+    };
+    own.then(|| scope.consts.borrow().get(id.value).cloned())
+        .flatten()
+}
+
 impl crate::ast_export::ConstExprNames for AttrNames<'_, '_> {
     fn fold(&self, e: &Expression) -> Option<Value> {
         use crate::parse::cst::{ClassLikeConstantSelector as Sel, MagicConstant};
@@ -376,6 +405,12 @@ impl crate::ast_export::ConstExprNames for AttrNames<'_, '_> {
             }
             Expression::ConstantAccess(ca) if self.subst => {
                 return crate::fold::ct_constant(self.cx, &ca.name);
+            }
+            // zend_try_ct_eval_class_const.
+            Expression::Access(Access::ClassConstant(_)) if self.subst => {
+                if let Some(v) = own_class_const(self.cx, e) {
+                    return Some(v);
+                }
             }
             Expression::MagicConstant(MagicConstant::Class(_)) => {
                 return match self.class_name {
@@ -689,6 +724,7 @@ pub(crate) fn compile_class(cx: &FileCtx, class: &Class) -> Result<ClassProto, T
         parent: parent.as_ref().map(|p| p.as_bytes().to_vec()),
         is_trait: false,
         is_anon: false,
+        consts: Default::default(),
     };
     let saved = cx.in_readonly_class.replace(flags.is_readonly);
     let m = cx.with_class_scope(scope, || compile_members(cx, &class.members, &name));
@@ -804,6 +840,7 @@ pub(crate) fn compile_anon_class(
         parent: parent.as_ref().map(|p| p.as_bytes().to_vec()),
         is_trait: false,
         is_anon: true,
+        consts: Default::default(),
     };
     let saved = cx.in_readonly_class.replace(flags.is_readonly);
     let m = cx.with_class_scope(scope, || compile_members(cx, &ac.members, &name));
@@ -900,6 +937,7 @@ pub(crate) fn compile_enum(
         parent: None,
         is_trait: false,
         is_anon: false,
+        consts: Default::default(),
     };
     let m = cx.with_class_scope(scope, || compile_members(cx, &en.members, &name))?;
     add_stringable(&mut interfaces, &m.methods, &name);
@@ -1187,6 +1225,21 @@ fn compile_member(
             )?;
             for item in c.items.iter() {
                 let value = const_init_or_thunk(cx, item.value, Some(class_name))?;
+                // What php's constants_table holds after compiling it: the
+                // value when zend_eval_const_expr folds it.
+                let known = match &value {
+                    ConstInitProto::Const(v) => Some(v.clone()),
+                    ConstInitProto::Thunk(_) => {
+                        crate::fold::fold_const_with(cx, item.value, &|e| own_class_const(cx, e))
+                            .ok()
+                    }
+                };
+                if let (Some(v), Some(scope)) = (known, cx.class_scope.borrow().as_ref()) {
+                    scope
+                        .consts
+                        .borrow_mut()
+                        .insert(item.name.value.to_vec(), v);
+                }
                 let value = match &compiled {
                     Some(t) => {
                         check_const_value(cx, &t.ty, value, class_name, item.name.value, cstart)
@@ -1523,6 +1576,7 @@ pub(crate) fn compile_trait(
         parent: None,
         is_trait: true,
         is_anon: false,
+        consts: Default::default(),
     };
     let m = cx.with_class_scope(scope, || compile_members(cx, &t.members, &name));
     cx.in_trait.set(saved);
@@ -1600,6 +1654,7 @@ pub(crate) fn compile_interface(
         parent: None,
         is_trait: false,
         is_anon: false,
+        consts: Default::default(),
     };
     let m = cx.with_class_scope(scope, || compile_members(cx, &iface.members, &name));
     cx.in_interface.set(saved);

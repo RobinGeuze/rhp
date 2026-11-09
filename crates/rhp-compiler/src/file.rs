@@ -117,6 +117,10 @@ pub(crate) struct ClassScope {
     pub(crate) parent: Option<Vec<u8>>,
     pub(crate) is_trait: bool,
     pub(crate) is_anon: bool,
+    /// The constants compiled so far with a value known at compile time
+    /// (php's active class's constants_table, which
+    /// zend_try_ct_eval_class_const substitutes).
+    pub(crate) consts: RefCell<HashMap<Vec<u8>, Value>>,
 }
 
 impl<'s> FileCtx<'s> {

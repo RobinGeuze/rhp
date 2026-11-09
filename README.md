@@ -48,14 +48,14 @@ passing, so the percentages are of all php-src tests.
 | tests | 854 | 895 | 95.4% | php-src's tests of the language, functions, classes and output |
 | sapi/cli | 88 | 117 | 75.2% | tests that spawn the php binary run rhp, the `-S` server tests included |
 | sapi/cgi | 16 | 24 | 66.7% | `rhp --cgi` against php-cgi |
-| ext/standard | 3,415 | 3,880 | 88.0% | user stream wrappers carry no filters |
+| ext/standard | 3,416 | 3,880 | 88.0% | user stream wrappers carry no filters |
 | ext/bcmath | 64 | 170 | 37.6% | the `bc*` functions; no `BcMath\Number` |
 | ext/bz2 | 16 | 27 | 59.3% | libbz2 1.0.8, linked statically |
 | ext/calendar | 48 | 54 | 88.9% | php-src's calendar conversions, compiled in (rhp-csrc); the 6 others skip (32-bit) |
 | ext/ctype | 38 | 49 | 77.6% | |
 | ext/curl | 157 | 180 | 87.2% | on libcurl |
 | ext/date | 690 | 705 | 97.9% | on timelib, compiled in (rhp-csrc) |
-| ext/dom | 870 | 901 | 96.6% | the `DOMDocument` API and the `Dom\` API on libxml2, HTML5 parsing and CSS selectors on lexbor (rhp-csrc) |
+| ext/dom | 879 | 901 | 97.6% | the `DOMDocument` API and the `Dom\` API on libxml2, HTML5 parsing and CSS selectors on lexbor (rhp-csrc) |
 | ext/fileinfo | 60 | 64 | 93.8% | php's bundled libmagic and magic database, compiled in (rhp-csrc); the 4 others skip |
 | ext/filter | 125 | 129 | 96.9% | all functions and filters; `uri_parser_class` knows only `parse_url` (no ext/uri) |
 | ext/gd | 278 | 336 | 82.7% | on libgd; php skips the others (bundled libgd, GD formats, 32-bit) |
@@ -92,7 +92,7 @@ passing, so the percentages are of all php-src tests.
 | ext/zlib | 133 | 161 | 82.6% | system zlib; no incremental deflate/inflate contexts |
 | other ext/ | 1 | 2,858 | 0.0% | the 1 passing is an ext/uri test that needs none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **16,823** | **22,219** | **75.7%** | |
+| **total** | **16,833** | **22,219** | **75.8%** | |
 
 Not implemented, so counted under other ext/: com_dotnet, dba, dl_test, enchant, exif, ffi, ftp, imap, ldap, mysqli, odbc, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pgsql, shmop, skeleton, snmp, soap, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->

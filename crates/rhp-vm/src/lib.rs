@@ -261,8 +261,9 @@ pub struct Vm {
     user_wrappers: Vec<(Vec<u8>, Rc<builtins::main::streams::userspace::UserWrapper>)>,
     // Filesystem path of the top-level script (for `Phar::mapPhar`).
     main_script_path: Option<Vec<u8>>,
-    /// Whether auto_prepend_file runs before the main script (not for
-    /// `-r` code, which php evaluates without php_execute_script).
+    /// Whether auto_prepend_file and auto_append_file run around the main
+    /// script (not for `-r` code, which php evaluates without
+    /// php_execute_script).
     auto_prepend: bool,
     /// Open stream resources (fopen family), one record per resource id.
     streams: StreamTable,

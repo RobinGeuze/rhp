@@ -495,7 +495,7 @@ impl Vm {
         self.interactive = true;
     }
 
-    /// Skip auto_prepend_file (`-r` code).
+    /// Skip auto_prepend_file and auto_append_file (`-r` code).
     pub fn disable_auto_prepend(&mut self) {
         self.auto_prepend = false;
     }
@@ -982,9 +982,10 @@ impl Vm {
     /// handler or is reported, then the shutdown functions run (a fatal or
     /// `exit` in one stops the rest), then every output buffer is flushed.
     /// Returns the exit status; `Err` only for an engine refusal.
-    /// auto_prepend_file, required with no script running: a file that
-    /// won't open is reported "in Unknown on line 0", and the failed
-    /// require is an E_ERROR (zend_throw_error outside execution).
+    /// auto_prepend_file or auto_append_file, required with no script
+    /// running: a file that won't open is reported "in Unknown on line 0",
+    /// and the failed require is an E_ERROR (zend_throw_error outside
+    /// execution).
     fn run_auto_prepend(&mut self, path: Vec<u8>) -> Result<(), Thrown> {
         let depth = self.stack.len();
         let path_str = String::from_utf8_lossy(&path).into_owned();
@@ -992,27 +993,33 @@ impl Vm {
         if !builtins::main::streams::is_data_url(&path)
             && self.resolve_include_file(depth - 1, &path_str).is_none()
         {
-            let errno = builtins::main::streams::last_errno().unwrap_or(2);
-            let reason = builtins::main::streams::strerror(errno);
-            let warning = format!("Unknown: Failed to open stream: {reason}");
-            self.raise_error_at(
-                builtins::E_WARNING,
-                warning.as_bytes(),
-                b"Unknown".to_vec(),
-                0,
-            );
-            let ip = builtins::Host::ini_get(self, b"include_path").unwrap_or_default();
-            let msg = format!(
-                "Failed opening required '{path_str}' (include_path='{}')",
-                String::from_utf8_lossy(&ip)
-            );
-            return Err(self.fatal_error_at(1, msg.as_bytes(), b"Unknown".to_vec(), 0));
+            return Err(self.auto_file_missing(&path_str));
         }
         let r = self.do_include(depth - 1, path, rhp_bytecode::IncludeKind::Require);
         if r.is_err() {
             self.stack.truncate(depth - 1);
         }
         r.map(|_| ())
+    }
+
+    /// An auto_prepend_file / auto_append_file that won't open: the stream
+    /// warning and the failed require, in Unknown on line 0.
+    fn auto_file_missing(&mut self, path: &str) -> Thrown {
+        let errno = builtins::main::streams::last_errno().unwrap_or(2);
+        let reason = builtins::main::streams::strerror(errno);
+        let warning = format!("Unknown: Failed to open stream: {reason}");
+        self.raise_error_at(
+            builtins::E_WARNING,
+            warning.as_bytes(),
+            b"Unknown".to_vec(),
+            0,
+        );
+        let ip = builtins::Host::ini_get(self, b"include_path").unwrap_or_default();
+        let msg = format!(
+            "Failed opening required '{path}' (include_path='{}')",
+            String::from_utf8_lossy(&ip)
+        );
+        self.fatal_error_at(1, msg.as_bytes(), b"Unknown".to_vec(), 0)
     }
 
     pub fn run_main(&mut self, prog: &Program) -> Result<i32, Thrown> {
@@ -1026,8 +1033,15 @@ impl Vm {
 
     fn run_main_located(&mut self, prog: &Program) -> Result<i32, Thrown> {
         let status = match self.run(prog) {
+            // The script returned (not `exit`): auto_append_file next.
+            Ok(c) if self.main_ret.is_some() => self.auto_append(c)?,
             Ok(c) => c,
-            Err(t) => self.uncaught_in_main(t)?,
+            Err(t) => match self.uncaught_in_main_handled(t)? {
+                // The exception handler took it: zend_execute_script
+                // succeeded, so the append file still runs.
+                None => self.auto_append(0)?,
+                Some(c) => c,
+            },
         };
         let status = if self.interactive {
             builtins::readline_shell_run(self)
@@ -1050,6 +1064,12 @@ impl Vm {
     /// A throwable that left the primary script: the exception handler or
     /// the fatal report, on the shutdown stack.
     fn uncaught_in_main(&mut self, t: Thrown) -> Result<i32, Thrown> {
+        Ok(self.uncaught_in_main_handled(t)?.unwrap_or(0))
+    }
+
+    /// [`Vm::uncaught_in_main`]; `None` when the exception handler took
+    /// the throwable.
+    fn uncaught_in_main_handled(&mut self, t: Thrown) -> Result<Option<i32>, Thrown> {
         self.enter_shutdown_scope();
         if t.is_catchable() {
             // The unwound frames' locals were destroyed on the way out
@@ -1058,7 +1078,64 @@ impl Vm {
             self.dtor_pending_checks = usize::MAX / 2;
             let _ = self.collect_released();
         }
-        Ok(self.top_level_throw(t)?.unwrap_or(0))
+        self.top_level_throw(t)
+    }
+
+    /// php_execute_script's auto_append_file, once the primary script
+    /// succeeded: required in the global scope, its return value unused.
+    /// Its own `exit` or uncaught throwable ends the script as one in the
+    /// primary script would.
+    fn auto_append(&mut self, status: i32) -> Result<i32, Thrown> {
+        let Some(path) = builtins::ini_value(b"auto_append_file")
+            .flatten()
+            .filter(|p| !p.is_empty() && self.auto_prepend)
+        else {
+            return Ok(status);
+        };
+        // {main} is back on the stack (as for the cli-server's next
+        // primary script), or the shutdown scope is after an exception
+        // the handler took.
+        let pushed = self.stack.is_empty();
+        if pushed {
+            let Some(mut main) = self.finished_main.take() else {
+                return Ok(status);
+            };
+            main.pc = main.proto.code.len();
+            self.stack.push(main);
+        }
+        let depth = self.stack.len();
+        let path_str = String::from_utf8_lossy(&path).into_owned();
+        builtins::main::streams::clear_errno();
+        let r = if !builtins::main::streams::is_data_url(&path)
+            && self.resolve_include_file(depth - 1, &path_str).is_none()
+        {
+            // Reported with no script running.
+            let stack = std::mem::take(&mut self.stack);
+            let t = self.auto_file_missing(&path_str);
+            self.stack = stack;
+            if pushed {
+                self.finished_main = self.stack.pop();
+            }
+            Err(t)
+        } else {
+            // Run as php runs it (zend_execute_script): its {main} in place
+            // of the finished one, in the global scope.
+            let main_ret = self.main_ret.take();
+            self.primary_next = true;
+            let r = self.do_include(depth - 1, path, rhp_bytecode::IncludeKind::Require);
+            self.primary_next = false;
+            self.main_ret = main_ret;
+            if pushed && self.stack.len() >= depth {
+                self.stack.truncate(depth);
+                self.finished_main = self.stack.pop();
+            }
+            r.map(|_| ())
+        };
+        match r {
+            Ok(()) => Ok(self.sapi.exit_status),
+            Err(Thrown::Exit(code)) => Ok(code),
+            Err(t) => self.uncaught_in_main(t),
+        }
     }
 
     /// php_execute_script returned: tell the SAPI ([`Sapi::script_done`]),

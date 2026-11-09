@@ -34,12 +34,16 @@
 #if UINTPTR_MAX > 0xffffffffu
 typedef int64_t zend_long;
 typedef uint64_t zend_ulong;
+# define ZEND_LONG_MAX INT64_MAX
+# define ZEND_LONG_MIN INT64_MIN
 # define ZEND_LONG_FMT "%" PRId64
 # define ZEND_ULONG_FMT "%" PRIu64
 # define ZEND_STRTOUL(s0, s1, base) strtoull((s0), (s1), (base))
 #else
 typedef int32_t zend_long;
 typedef uint32_t zend_ulong;
+# define ZEND_LONG_MAX INT32_MAX
+# define ZEND_LONG_MIN INT32_MIN
 # define ZEND_LONG_FMT "%" PRId32
 # define ZEND_ULONG_FMT "%" PRIu32
 # define ZEND_STRTOUL(s0, s1, base) strtoul((s0), (s1), (base))

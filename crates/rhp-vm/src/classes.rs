@@ -1543,10 +1543,17 @@ impl Vm {
          -> Result<(), String> {
             // Redeclaring an inherited public/protected property keeps its
             // root declaration as the prototype.
+            let mut fresh_slot = false;
             if let Some(inh) = prop_visible.get(&pe.name).and_then(|k| props.get(k)) {
+                // A virtual property has no slot: the redeclaration gets its
+                // own, after the inherited ones (do_inherit_property).
+                fresh_slot = inh.virt && !pe.virt;
                 inherit_prop(classes, &proto.name, inh, &mut pe)?;
             }
             let key = prop_storage_key(&proto.name, &pe.name, pe.visibility);
+            if fresh_slot {
+                props.shift_remove(&key);
+            }
             prop_visible.insert(pe.name.clone(), key.clone());
             if pe.visibility == Visibility::Private {
                 own_private.insert(pe.name.clone(), key.clone());
@@ -2319,12 +2326,29 @@ impl Vm {
         // A leading namespace separator is insignificant; otherwise match the
         // full (namespaced) name — class names resolve with no global fallback.
         let n = name.strip_prefix(b"\\").unwrap_or(name);
-        with_lc(n, |k| self.class_ids.get(k).copied()).ok_or_else(|| {
-            Thrown::error(
+        // Through the VM's cache of names held as bytes; a hit is checked
+        // against the class's name (a removed class's id may be reused).
+        let hash = crate::lookup_cache::fold_hash(n);
+        let named = |id: ClassId| {
+            self.classes
+                .get(id as usize)
+                .is_some_and(|c| c.name.as_bytes().eq_ignore_ascii_case(n))
+        };
+        if let Some(id) = self.class_bytes.get(hash).filter(|&id| named(id)) {
+            return Ok(id);
+        }
+        match with_lc(n, |k| self.class_ids.get(k).copied()) {
+            Some(id) => {
+                if named(id) {
+                    self.class_bytes.put(hash, id);
+                }
+                Ok(id)
+            }
+            None => Err(Thrown::error(
                 "Error",
                 format!("Class \"{}\" not found", String::from_utf8_lossy(n)),
-            )
-        })
+            )),
+        }
     }
 
     /// [`Vm::resolve_class_by_name`] for a name a proto holds, through the
@@ -2616,7 +2640,11 @@ impl Vm {
     }
 
     /// Run a deferred-initializer thunk in `class_id`'s scope.
-    fn run_init_thunk(&mut self, thunk: &UnitFn, class_id: ClassId) -> Result<Value, Thrown> {
+    pub(crate) fn run_init_thunk(
+        &mut self,
+        thunk: &UnitFn,
+        class_id: ClassId,
+    ) -> Result<Value, Thrown> {
         self.run_proto_sync(
             thunk.clone(),
             None,

@@ -1,0 +1,1 @@
+class SodiumException extends Exception {}

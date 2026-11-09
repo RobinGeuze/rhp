@@ -104,10 +104,11 @@ impl Sapi for CaptureSapi {
         true
     }
 
-    fn send_headers(&mut self, r: &Response) {
+    fn send_headers(&mut self, r: &Response) -> bool {
         let mut s = self.sink.borrow_mut();
         s.code = r.code;
         s.headers = r.headers.clone();
+        true
     }
 
     fn log_message(&mut self, msg: &[u8]) {

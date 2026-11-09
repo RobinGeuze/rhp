@@ -1328,7 +1328,7 @@ impl Vm {
     }
 
     /// Whether class `c` is a built-in class implemented in the PHP prelude.
-    fn is_prelude_class(&self, c: ClassId) -> bool {
+    pub(crate) fn is_prelude_class(&self, c: ClassId) -> bool {
         // Built-in classes come first; a prelude class declares methods
         // compiled from the prelude.
         (c as usize) < self.internal_classes

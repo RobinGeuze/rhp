@@ -11,15 +11,25 @@
 //! reference, see [`crate::ext::libxml::node`]); for a list its map
 //! ([`lists`]); for DOMXPath its context ([`xpath`]).
 //!
-//! The modern `Dom\` API (HTML5 via lexbor, CSS selectors) is not here.
+//! The modern `Dom\` API (prelude_modern.php) shares these handlers,
+//! branching where php's `php_dom_follow_spec_intern` does; its own parts
+//! are in [`modern`], [`collections`], [`nscompat`] (the namespace mapper),
+//! the serializers and [`html5`] (lexbor's HTML5 parser and selector
+//! engine, through the C glue in `html5c/`).
 
 mod chardata;
+mod collections;
 mod document;
 mod element;
+mod html5;
+mod html5_serializer;
 mod lists;
+mod modern;
 mod node;
+mod nscompat;
 mod props;
 mod util;
+mod xml_serializer;
 mod xpath;
 
 pub(crate) use document::valid_file_path;
@@ -59,6 +69,8 @@ pub(crate) enum Kind {
     XPath(RefCell<xpath::XPathState>),
     /// DOMImplementation.
     Plain,
+    /// Dom\TokenList.
+    TokenList(RefCell<collections::TokenListState>),
 }
 
 impl DomObject {
@@ -102,7 +114,7 @@ impl Drop for DomObject {
                 x.borrow_mut().free_context();
                 lxn::decrement_doc_ref(&self.base);
             }
-            Kind::Plain => {}
+            Kind::Plain | Kind::TokenList(_) => {}
         }
     }
 }
@@ -211,7 +223,7 @@ pub(crate) fn get_intern(cx: &mut Cx, v: &Value) -> Result<Rc<DomObject>, Thrown
     let ok = intern_of(v).filter(|d| match &d.kind {
         Kind::Node | Kind::NsNode(_) => !d.base.node.get().is_null(),
         Kind::XPath(x) => !x.borrow().ctx.is_null(),
-        Kind::Map(_) => true,
+        Kind::Map(_) | Kind::TokenList(_) => true,
         Kind::Plain => false,
     });
     ok.ok_or_else(|| Thrown::error("Error", format!("Couldn't fetch {}", class_of(cx.host, v))))
@@ -300,6 +312,34 @@ pub(crate) fn throw(cx: &mut Cx, code: i64, strict: bool) -> Result<Value, Throw
     throw_msg(cx, code, err_message(code), strict)
 }
 
+/// The modern class php gives a node (php_dom_create_object).
+fn modern_class_for(node: *mut XmlNode) -> Option<&'static str> {
+    let t = unsafe { (*node).type_ };
+    Some(match t {
+        sys::XML_DOCUMENT_NODE => "Dom\\XMLDocument",
+        sys::XML_HTML_DOCUMENT_NODE => "Dom\\HTMLDocument",
+        sys::XML_DTD_NODE | sys::XML_DOCUMENT_TYPE_NODE => "Dom\\DocumentType",
+        sys::XML_ELEMENT_NODE => {
+            if nscompat::ns_is_fast(node, &nscompat::HTML) {
+                "Dom\\HTMLElement"
+            } else {
+                "Dom\\Element"
+            }
+        }
+        sys::XML_ATTRIBUTE_NODE => "Dom\\Attr",
+        sys::XML_TEXT_NODE => "Dom\\Text",
+        sys::XML_COMMENT_NODE => "Dom\\Comment",
+        sys::XML_PI_NODE => "Dom\\ProcessingInstruction",
+        sys::XML_ENTITY_REF_NODE => "Dom\\EntityReference",
+        sys::XML_ENTITY_DECL | sys::XML_ELEMENT_DECL => "Dom\\Entity",
+        sys::XML_CDATA_SECTION_NODE => "Dom\\CDATASection",
+        sys::XML_DOCUMENT_FRAG_NODE => "Dom\\DocumentFragment",
+        sys::XML_NOTATION_NODE => "Dom\\Notation",
+        sys::XML_NAMESPACE_DECL => "DOMNameSpaceNode",
+        _ => return None,
+    })
+}
+
 /// The DOM class php gives a node of this type (php_dom_create_object).
 fn class_for_type(t: i32) -> Option<&'static str> {
     Some(match t {
@@ -344,7 +384,12 @@ pub(crate) fn create_object_in(
         }
     }
     let t = unsafe { (*node).type_ };
-    let Some(base) = class_for_type(t) else {
+    let base = if nscompat::follow_spec(document) {
+        modern_class_for(node)
+    } else {
+        class_for_type(t)
+    };
+    let Some(base) = base else {
         return Err(Thrown::error(
             "Error",
             format!("Unsupported node type: {t}"),
@@ -442,7 +487,7 @@ fn class_for_type_name(class: &[u8]) -> bool {
             | b"DOMNodeList"
             | b"DOMNamedNodeMap"
             | b"DOMImplementation"
-    )
+    ) || class.starts_with(b"Dom\\")
 }
 
 /// dom_get_doc_classmap
@@ -503,6 +548,9 @@ pub(crate) fn xs_opt(p: *const u8) -> Value {
 type Method = fn(&mut Cx, &Value, &[Value]) -> Result<Value, Thrown>;
 
 fn method(name: &[u8]) -> Option<Method> {
+    if let Some(m) = modern_method(name) {
+        return Some(m);
+    }
     use chardata as c;
     use document as d;
     use element as e;
@@ -645,6 +693,167 @@ fn method(name: &[u8]) -> Option<Method> {
     })
 }
 
+/// The `Dom\` methods: their own ([`modern`], [`collections`]) or the
+/// handler php shares with the legacy class.
+fn modern_method(name: &[u8]) -> Option<Method> {
+    if !name.starts_with(b"Dom\\") {
+        return None;
+    }
+    use chardata as c;
+    use collections as co;
+    use element as e;
+    use lists as l;
+    use modern as m;
+    use node as n;
+    use xpath as x;
+    let name = &name[4..];
+    Some(match name {
+        b"Attr::isId" => c::attr_is_id,
+        b"Attr::rename" | b"Element::rename" => m::rename,
+        b"CharacterData::after" | b"Element::after" | b"DocumentType::after" => e::after,
+        b"CharacterData::before" | b"Element::before" | b"DocumentType::before" => e::before,
+        b"CharacterData::remove" | b"Element::remove" | b"DocumentType::remove" => e::remove,
+        b"CharacterData::replaceWith" | b"Element::replaceWith" | b"DocumentType::replaceWith" => {
+            e::replace_with
+        }
+        b"CharacterData::appendData" => c::append_data,
+        b"CharacterData::deleteData" => c::delete_data,
+        b"CharacterData::insertData" => c::insert_data,
+        b"CharacterData::replaceData" => c::replace_data,
+        b"CharacterData::substringData" => c::substring_data,
+        b"Document::adoptNode" => m::doc_adopt_node,
+        b"Document::append" | b"DocumentFragment::append" | b"Element::append" => e::append,
+        b"Document::prepend" | b"DocumentFragment::prepend" | b"Element::prepend" => e::prepend,
+        b"Document::replaceChildren"
+        | b"DocumentFragment::replaceChildren"
+        | b"Element::replaceChildren" => e::replace_children,
+        b"Document::createAttribute" => m::doc_create_attribute,
+        b"Document::createAttributeNS" => m::doc_create_attribute_ns,
+        b"Document::createCDATASection" => m::doc_create_cdata_section,
+        b"Document::createComment" => document::create_comment,
+        b"Document::createDocumentFragment" => document::create_document_fragment,
+        b"Document::createElement" => m::doc_create_element,
+        b"Document::createElementNS" => m::doc_create_element_ns,
+        b"Document::createProcessingInstruction" => m::doc_create_processing_instruction,
+        b"Document::createTextNode" => document::create_text_node,
+        b"Document::getElementById" => document::get_element_by_id,
+        b"Document::getElementsByClassName" | b"Element::getElementsByClassName" => {
+            m::get_elements_by_class_name
+        }
+        b"Document::getElementsByTagName" | b"Element::getElementsByTagName" => {
+            m::get_elements_by_tag_name
+        }
+        b"Document::getElementsByTagNameNS" | b"Element::getElementsByTagNameNS" => {
+            m::get_elements_by_tag_name_ns
+        }
+        b"Document::importLegacyNode" | b"Document::importNode" => m::doc_import_node,
+        b"Document::registerNodeClass" => document::register_node_class,
+        b"Document::relaxNgValidate" => document::relaxng_validate,
+        b"Document::relaxNgValidateSource" => document::relaxng_validate_source,
+        b"Document::schemaValidate" => document::schema_validate,
+        b"Document::schemaValidateSource" => document::schema_validate_source,
+        b"DocumentFragment::appendXml" => c::fragment_append_xml,
+        b"Document::querySelector"
+        | b"DocumentFragment::querySelector"
+        | b"Element::querySelector" => m::query_selector,
+        b"Document::querySelectorAll"
+        | b"DocumentFragment::querySelectorAll"
+        | b"Element::querySelectorAll" => m::query_selector_all,
+        b"Element::closest" => m::closest,
+        b"Element::matches" => m::matches,
+        b"Element::insertAdjacentHTML" => m::insert_adjacent_html,
+        b"DtdNamedNodeMap::count" | b"NamedNodeMap::count" => l::map_count,
+        b"DtdNamedNodeMap::getNamedItem" | b"NamedNodeMap::getNamedItem" => l::map_get_named_item,
+        b"DtdNamedNodeMap::getNamedItemNS" | b"NamedNodeMap::getNamedItemNS" => {
+            l::map_get_named_item_ns
+        }
+        b"DtdNamedNodeMap::item" | b"NamedNodeMap::item" => l::map_item,
+        b"Element::getAttribute" => m::el_get_attribute,
+        b"Element::getAttributeNames" => m::el_get_attribute_names,
+        b"Element::getAttributeNode" => m::el_get_attribute_node,
+        b"Element::getAttributeNodeNS" => m::el_get_attribute_node_ns,
+        b"Element::getAttributeNS" => m::el_get_attribute_ns,
+        b"Element::getDescendantNamespaces" => m::el_get_descendant_namespaces,
+        b"Element::getInScopeNamespaces" => m::el_get_in_scope_namespaces,
+        b"Element::hasAttribute" => m::el_has_attribute,
+        b"Element::hasAttributeNS" => m::el_has_attribute_ns,
+        b"Element::hasAttributes" => n::has_attributes,
+        b"Element::insertAdjacentElement" => m::insert_adjacent_element,
+        b"Element::insertAdjacentText" => m::insert_adjacent_text,
+        b"Element::removeAttribute" => m::el_remove_attribute,
+        b"Element::removeAttributeNode" => m::el_remove_attribute_node,
+        b"Element::removeAttributeNS" => m::el_remove_attribute_ns,
+        b"Element::setAttribute" => m::el_set_attribute,
+        // php aliases setAttributeNode to setAttributeNodeNS.
+        b"Element::setAttributeNode" | b"Element::setAttributeNodeNS" => {
+            m::el_set_attribute_node_ns
+        }
+        b"Element::setAttributeNS" => m::el_set_attribute_ns,
+        b"Element::setIdAttribute" => e::set_id_attribute,
+        b"Element::setIdAttributeNode" => e::set_id_attribute_node,
+        b"Element::setIdAttributeNS" => e::set_id_attribute_ns,
+        b"Element::toggleAttribute" => m::el_toggle_attribute,
+        b"HTMLCollection::count" | b"NodeList::count" => l::nodelist_count,
+        b"HTMLCollection::item" | b"NodeList::item" => l::nodelist_item,
+        b"HTMLCollection::namedItem" => co::html_collection_named_item,
+        b"HTMLDocument::createEmpty" => m::html_create_empty,
+        b"HTMLDocument::createFromFile" => m::html_create_from_file,
+        b"HTMLDocument::createFromString" => m::html_create_from_string,
+        b"HTMLDocument::saveHtml" => m::save_html,
+        b"HTMLDocument::saveHtmlFile" => m::save_html_file,
+        b"HTMLDocument::saveXml" | b"XMLDocument::saveXml" => m::save_xml,
+        b"HTMLDocument::saveXmlFile" | b"XMLDocument::saveXmlFile" => m::save_xml_file,
+        b"Implementation::createDocument" => m::impl_create_document,
+        b"Implementation::createDocumentType" => m::impl_create_document_type,
+        b"Implementation::createHTMLDocument" => m::impl_create_html_document,
+        b"Node::__sleep" => n::sleep,
+        b"Node::__wakeup" => n::wakeup,
+        b"Node::appendChild" => m::append_child,
+        b"Node::C14N" => n::c14n,
+        b"Node::C14NFile" => n::c14n_file,
+        b"Node::cloneNode" => m::clone_node,
+        b"Node::compareDocumentPosition" => n::compare_document_position,
+        b"Node::contains" => n::contains,
+        b"Node::getLineNo" => n::get_line_no,
+        b"Node::getNodePath" => m::get_node_path,
+        b"Node::getRootNode" => n::get_root_node,
+        b"Node::hasChildNodes" => n::has_child_nodes,
+        b"Node::insertBefore" => m::insert_before,
+        b"Node::isDefaultNamespace" => m::is_default_namespace,
+        b"Node::isEqualNode" => n::is_equal_node,
+        b"Node::isSameNode" => n::is_same_node,
+        b"Node::lookupNamespaceURI" => m::lookup_namespace_uri,
+        b"Node::lookupPrefix" => m::lookup_prefix,
+        b"Node::normalize" => m::normalize,
+        b"Node::removeChild" => n::remove_child,
+        b"Node::replaceChild" => m::replace_child,
+        b"Text::splitText" => c::text_split,
+        b"TokenList::add" => co::tl_add,
+        b"TokenList::contains" => co::tl_contains,
+        b"TokenList::count" => co::tl_count,
+        b"TokenList::getIterator" => co::tl_get_iterator_m,
+        b"TokenList::item" => co::tl_item_m,
+        b"TokenList::remove" => co::tl_remove,
+        b"TokenList::replace" => co::tl_replace,
+        b"TokenList::supports" => co::tl_supports,
+        b"TokenList::toggle" => co::tl_toggle,
+        b"XMLDocument::createEmpty" => m::xml_create_empty,
+        b"XMLDocument::createEntityReference" => document::create_entity_reference,
+        b"XMLDocument::createFromFile" => m::xml_create_from_file,
+        b"XMLDocument::createFromString" => m::xml_create_from_string,
+        b"XMLDocument::validate" => document::validate,
+        b"XMLDocument::xinclude" => document::xinclude,
+        b"XPath::__construct" => x::construct,
+        b"XPath::evaluate" => x::evaluate,
+        b"XPath::query" => x::query,
+        b"XPath::quote" => x::quote,
+        b"XPath::registerNamespace" => x::register_namespace,
+        b"XPath::registerPhpFunctionNS" => x::register_php_function_ns,
+        b"XPath::registerPhpFunctions" => x::register_php_functions,
+        _ => return None,
+    })
+}
+
 /// `__dom("Class::method", $this, ...$args)`
 fn fn_dom(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let name = bytes(args, 0);
@@ -751,6 +960,42 @@ fn fn_dom_import_simplexml(host: &mut dyn Host, args: &[Value]) -> Result<Value,
     create_object_in(&mut cx, nodep, document)
 }
 
+/// Dom\\import_simplexml (dom_import_simplexml_common, modern)
+fn fn_dom_import_simplexml_modern(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let v = arg(args, 0);
+    let bad = || {
+        Thrown::type_error("Dom\\import_simplexml(): Argument #1 ($node) is not a valid node type")
+    };
+    let nodep = crate::ext::libxml::import_node(host, &v)?;
+    let document = node_object_document(&v);
+    let Some((nodep, _)) = nodep else {
+        return Err(bad());
+    };
+    let t = unsafe { (*nodep).type_ };
+    if document.is_null() || !(t == sys::XML_ELEMENT_NODE || t == sys::XML_ATTRIBUTE_NODE) {
+        return Err(bad());
+    }
+    unsafe {
+        let old = (*document).class_type;
+        if old != lxn::ClassType::Unset && old != lxn::ClassType::Modern {
+            return Err(Thrown::type_error(
+                "Dom\\import_simplexml(): Argument #1 ($node) must not be already imported as a DOMNode",
+            ));
+        }
+        if old != lxn::ClassType::Modern {
+            (*document).class_type = lxn::ClassType::Modern;
+            nscompat::convert_to_modern(document, (*nodep).doc);
+        }
+    }
+    let mut cx = Cx {
+        host,
+        fname: "Dom\\import_simplexml".into(),
+        quiet: false,
+        lazy_fname: false,
+    };
+    create_object_in(&mut cx, nodep, document)
+}
+
 // ---- object handlers ----
 
 /// dom_get_debug_info: the properties, then every DOM property's value
@@ -791,7 +1036,14 @@ fn clone_node_obj(
         quiet: false,
         lazy_fname: false,
     };
-    node::clone_object(&mut cx, &sv, &dv)
+    node::clone_object(&mut cx, &sv, &dv)?;
+    // dom_modern_element_clone_obj: the clone gets its own cached
+    // $children and $classList.
+    let mut d = dst.borrow_mut();
+    for name in ["children", "classList"] {
+        d.remove_prop(&rhp_values::PhpStr::from_bytes(name.as_bytes()));
+    }
+    Ok(())
 }
 
 /// dom_object_namespace_node_clone_obj
@@ -830,7 +1082,103 @@ static PLAIN_HANDLERS: ObjectHandlers = ObjectHandlers {
     ..ObjectHandlers::STD
 };
 
+/// "Cannot unset Class::$prop" for a declared DOM property (the prelude's
+/// hooks would say "hooked property").
+fn unset_property(host: &mut dyn Host, h: &ObjectHandle, name: &[u8]) -> Result<(), Thrown> {
+    let class = h.borrow().class;
+    if has_declared_property(host, class, name) {
+        return Err(Thrown::error(
+            "Error",
+            format!(
+                "Cannot unset {}::${}",
+                class_of(host, &Value::Object(h.clone())),
+                String::from_utf8_lossy(name)
+            ),
+        ));
+    }
+    Ok(())
+}
+
+static MODERN_NODE_HANDLERS: ObjectHandlers = ObjectHandlers {
+    get_properties_for: Some(get_properties_for),
+    clone_obj: CloneObj::Custom(clone_node_obj),
+    unset_property: Some(unset_property),
+    ..ObjectHandlers::STD
+};
+
+static MODERN_PLAIN_HANDLERS: ObjectHandlers = ObjectHandlers {
+    get_properties_for: Some(get_properties_for),
+    clone_obj: CloneObj::None,
+    unset_property: Some(unset_property),
+    ..ObjectHandlers::STD
+};
+
+static MODERN_LIST_HANDLERS: ObjectHandlers = ObjectHandlers {
+    get_properties_for: Some(get_properties_for),
+    clone_obj: CloneObj::None,
+    unset_property: Some(unset_property),
+    dimension: Some(&collections::LIST_DIMENSION),
+    ..ObjectHandlers::STD
+};
+
+static MODERN_MAP_HANDLERS: ObjectHandlers = ObjectHandlers {
+    get_properties_for: Some(get_properties_for),
+    clone_obj: CloneObj::None,
+    unset_property: Some(unset_property),
+    dimension: Some(&collections::MAP_DIMENSION),
+    ..ObjectHandlers::STD
+};
+
+static TOKEN_LIST_HANDLERS: ObjectHandlers = ObjectHandlers {
+    get_properties_for: Some(get_properties_for),
+    get_iterator: Some(collections::tl_get_iterator),
+    clone_obj: CloneObj::None,
+    unset_property: Some(unset_property),
+    dimension: Some(&collections::TOKEN_LIST_DIMENSION),
+    ..ObjectHandlers::STD
+};
+
 pub(crate) static CLASSES: &[ClassHandlers] = &[
+    ClassHandlers {
+        class: "Dom\\Node",
+        handlers: &MODERN_NODE_HANDLERS,
+        create_object: true,
+    },
+    ClassHandlers {
+        class: "Dom\\Implementation",
+        handlers: &MODERN_PLAIN_HANDLERS,
+        create_object: true,
+    },
+    ClassHandlers {
+        class: "Dom\\NodeList",
+        handlers: &MODERN_LIST_HANDLERS,
+        create_object: true,
+    },
+    ClassHandlers {
+        class: "Dom\\HTMLCollection",
+        handlers: &MODERN_LIST_HANDLERS,
+        create_object: true,
+    },
+    ClassHandlers {
+        class: "Dom\\NamedNodeMap",
+        handlers: &MODERN_MAP_HANDLERS,
+        create_object: true,
+    },
+    ClassHandlers {
+        class: "Dom\\DtdNamedNodeMap",
+        handlers: &MODERN_MAP_HANDLERS,
+        create_object: true,
+    },
+    ClassHandlers {
+        class: "Dom\\XPath",
+        handlers: &MAP_HANDLERS,
+        create_object: true,
+    },
+    ClassHandlers {
+        class: "Dom\\TokenList",
+        handlers: &TOKEN_LIST_HANDLERS,
+        create_object: true,
+    },
     ClassHandlers {
         class: "DOMNode",
         handlers: &NODE_HANDLERS,
@@ -864,7 +1212,17 @@ pub(crate) static CLASSES: &[ClassHandlers] = &[
 ];
 
 pub fn register(m: &mut crate::Registry) {
-    crate::register(m, &[("dom_import_simplexml", fn_dom_import_simplexml)]);
+    crate::register(
+        m,
+        &[
+            ("dom_import_simplexml", fn_dom_import_simplexml),
+            ("Dom\\import_simplexml", fn_dom_import_simplexml_modern),
+        ],
+    );
+    // The registry is keyed by lowercase name.
+    if let Some(b) = m.remove("Dom\\import_simplexml") {
+        m.insert("dom\\import_simplexml", b);
+    }
     crate::register_helpers(
         m,
         &[
@@ -923,10 +1281,44 @@ pub fn constants() -> Vec<(&'static str, Value)> {
         ("DOM_NAMESPACE_ERR", i(14)),
         ("DOM_INVALID_ACCESS_ERR", i(15)),
         ("DOM_VALIDATION_ERR", i(16)),
+        ("dom\\INDEX_SIZE_ERR", i(1)),
+        ("dom\\STRING_SIZE_ERR", i(2)),
+        ("dom\\HIERARCHY_REQUEST_ERR", i(3)),
+        ("dom\\WRONG_DOCUMENT_ERR", i(4)),
+        ("dom\\INVALID_CHARACTER_ERR", i(5)),
+        ("dom\\NO_DATA_ALLOWED_ERR", i(6)),
+        ("dom\\NO_MODIFICATION_ALLOWED_ERR", i(7)),
+        ("dom\\NOT_FOUND_ERR", i(8)),
+        ("dom\\NOT_SUPPORTED_ERR", i(9)),
+        ("dom\\INUSE_ATTRIBUTE_ERR", i(10)),
+        ("dom\\INVALID_STATE_ERR", i(11)),
+        ("dom\\SYNTAX_ERR", i(12)),
+        ("dom\\INVALID_MODIFICATION_ERR", i(13)),
+        ("dom\\NAMESPACE_ERR", i(14)),
+        ("dom\\VALIDATION_ERR", i(16)),
+        ("dom\\HTML_NO_DEFAULT_NS", i(modern::HTML_NO_DEFAULT_NS)),
     ]
 }
 
-pub const PRELUDE_PHP: &str = include_str!("prelude.php");
+/// php_new_dom_dump_node_to_str: the serializer behind a modern
+/// document's libxml handlers (SimpleXML's asXML uses it too).
+pub fn modern_dump_to_str(
+    document: *mut crate::ext::libxml::node::RefObj,
+    node: *mut crate::ext::libxml::sys::XmlNode,
+    options: std::ffi::c_int,
+    format: bool,
+    encoding: *const u8,
+) -> Result<Option<Vec<u8>>, Thrown> {
+    let p = nscompat::of(document).map(|p| &*p);
+    xml_serializer::dump_to_str(node, options, format, encoding, false, p)
+}
+
+pub const PRELUDE_PHP: &str = concat!(
+    "namespace {\n",
+    include_str!("prelude.php"),
+    "}\n",
+    include_str!("prelude_modern.php")
+);
 
 /// The `#[\Deprecated]` notice of a dom constant.
 pub fn constant_deprecation(name: &[u8]) -> Option<String> {

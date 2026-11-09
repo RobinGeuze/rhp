@@ -119,6 +119,13 @@ impl Host for Vm {
         self.error_handlers.pop();
     }
 
+    fn user_error_handler_mask(&self) -> i64 {
+        match self.error_handlers.last() {
+            Some((Value::Null | Value::Bool(false), _)) | None => 0,
+            Some((_, mask)) => *mask,
+        }
+    }
+
     fn assign_ref(&mut self, r: &rhp_values::PhpRef, v: Value) -> Result<(), Thrown> {
         let strict = self.caller_strict_types();
         self.assign_to_ref(r, v, strict).map(|_| ())
@@ -693,6 +700,18 @@ impl Host for Vm {
             .find(|&i| !self.is_internal_frame(i))
             .map(|i| self.stack[i].proto.debug.file.as_bytes().to_vec())
             .or_else(|| self.main_script_path.clone())
+    }
+
+    fn shell_eval(&mut self, code: &[u8], name: &str) {
+        self.shell_eval_code(code, name);
+    }
+
+    fn exit_status(&self) -> i32 {
+        self.sapi.exit_status
+    }
+
+    fn set_exit_status(&mut self, status: i32) {
+        self.sapi.exit_status = status;
     }
 
     fn global_var(&mut self, name: &[u8]) -> Option<Value> {
@@ -2092,6 +2111,13 @@ impl Host for Vm {
         if let (Some(d), false) = (deprecated, silent) {
             self.class_const_deprecation(decl, name, &d)?;
         }
+        // A built-in class's `#[\Deprecated]` constant, as the opcode raises.
+        if !silent && self.is_internal_class(decl) {
+            let dname = self.classes[decl as usize].name.as_bytes();
+            if let Some(msg) = builtins::class_constant_deprecation(dname, name) {
+                self.diag(builtins::E_DEPRECATED, &msg)?;
+            }
+        }
         if self.classes[cid as usize].enum_backing.is_some() {
             self.update_class_constants(cid)?;
         }
@@ -2778,8 +2804,18 @@ impl Host for Vm {
             vm.wrap_by_ref_args(&m.proto, &name, argv)
         };
         if m.is_static {
+            // ReflectionMethod passes the class it reflects (php's
+            // intern->ce) for a static method: the called scope.
+            let scope = match deref(obj) {
+                Value::Str(n) => self
+                    .resolve_class_by_name(n.as_bytes())
+                    .ok()
+                    .filter(|&c| c == cls || self.class(c).ancestors.contains(&cls))
+                    .unwrap_or(cls),
+                _ => cls,
+            };
             let args = place(self)?;
-            return self.call_sync(&m, None, cls, args);
+            return self.call_sync(&m, None, scope, args);
         }
         match deref(obj) {
             Value::Object(h) => {

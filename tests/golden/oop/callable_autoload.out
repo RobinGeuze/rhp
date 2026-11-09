@@ -1,0 +1,39 @@
+autoload A\G
+bool(false)
+autoload A\H
+bool(false)
+autoload A\F
+bool(true)
+reg ok
+autoload V
+v 1
+autoload R
+array(2) {
+  [0]=>
+  string(1) "R"
+  [1]=>
+  string(1) "m"
+}
+autoload M
+array(1) {
+  [0]=>
+  int(1)
+}
+autoload P
+string(4) "P::m"
+string(4) "Q::m"
+autoload S
+1,2,3
+autoload I
+2
+autoload Boom
+Exception: boom Boom
+autoload Boom
+TypeError: r(): Return value must be of type callable, array returned
+  previous Exception: boom Boom
+autoload Z
+TypeError: r(): Return value must be of type callable, string returned
+autoload Y
+TypeError: v(): Argument #2 must be of type callable, string given, called in callable_autoload.php on line 49
+autoload Gone
+TypeError: reg(): Argument #2 ($f) must be of type callable, array given, called in callable_autoload.php on line 51

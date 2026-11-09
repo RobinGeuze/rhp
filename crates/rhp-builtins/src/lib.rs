@@ -33,6 +33,10 @@ pub use diag::{
     open_failed, warn, warn_arg,
 };
 pub use ext::pcre;
+/// php -a's shell (readline_cli.c) and php-cli's write hook into it.
+pub use ext::readline::cli::{
+    shell_output as readline_shell_output, shell_run as readline_shell_run,
+};
 pub use ext::standard::http_fopen_wrapper;
 pub use host::{
     host_compare, host_loose_eq, Host, MagicFetch, ObCall, ScopeVar, StreamKind, StreamMeta,
@@ -40,9 +44,10 @@ pub use host::{
 };
 pub use main::streams::{StatInfo, StreamWrapper, WrapperReg};
 pub use registry::{
-    class_constant_deprecation, constant_deprecation, constants, ct_constant, functions,
-    is_refused, lookup, lookup_lc, native_function, native_resource_dtor, object_freed, prelude,
-    registry, reset_request_state, sapi_function_module, stream_wrappers, Builtin, NativeFn,
+    before_failed_zpp, before_zpp, class_constant_deprecation, constant_deprecation, constants,
+    ct_constant, functions, is_refused, lookup, lookup_lc, native_function, native_resource_dtor,
+    object_freed, prelude, prelude_flags, registry, reset_request_state, sapi_function_module,
+    stream_wrappers, Builtin, NativeFn,
 };
 pub(crate) use registry::{register, register_helpers, Registry};
 

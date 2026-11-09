@@ -1,0 +1,181 @@
+HTTP/1.1 200 OK
+Host: 127.0.0.1
+Date: X
+Connection: close
+X-Powered-By: PHP/8.5.12
+Content-type: text/html; charset=UTF-8
+
+routed /hello?x=1 /hello
+
+-----
+HTTP/1.1 200 OK
+Host: 127.0.0.1
+Date: X
+Connection: close
+X-Powered-By: PHP/8.5.12
+Content-type: text/html; charset=UTF-8
+
+bool(true)
+int(1)
+string(3) "sub"
+string(10) "cli-server"
+string(5) "/more"
+string(15) "/sub/s.php/more"
+array(1) {
+  ["a"]=>
+  string(1) "b"
+}
+string(4) "1, 2"
+string(8) "HTTP/1.1"
+string(1) "1"
+
+-----
+HTTP/1.0 200 OK
+Date: X
+Connection: close
+Content-Type: text/css; charset=UTF-8
+Content-Length: 7
+
+body{}
+
+-----
+HTTP/1.1 404 Not Found
+Host: 127.0.0.1
+Date: X
+Connection: close
+X-Powered-By: PHP/8.5.12
+Content-Type: text/html; charset=UTF-8
+Content-Length: 609
+
+<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>404 Not Found</title><style>
+body { background-color: #fcfcfc; color: #333333; margin: 0; padding:0; }
+h1 { font-size: 1.5em; font-weight: normal; background-color: #9999cc; min-height:2em; line-height:2em; border-bottom: 1px inset black; margin: 0; }
+h1, p { padding-left: 10px; }
+code.url { background-color: #eeeeee; font-family:monospace; padding:0 2px;}
+</style>
+</head><body><h1>Not Found</h1><p>The requested resource <code class="url">/gone.txt</code> was not found on this server.</p></body></html>
+-----
+HTTP/1.1 304 Not Modified
+Host: 127.0.0.1
+Date: X
+Connection: close
+X-Powered-By: PHP/8.5.12
+
+
+-----
+HTTP/1.1 200 OK
+Host: 127.0.0.1
+Date: X
+Connection: close
+X-Powered-By: PHP/8.5.12
+Content-type: text/html; charset=UTF-8
+
+<br />
+<b>Parse error</b>:  syntax error, unexpected end of file, expecting &quot;,&quot; or &quot;;&quot; in <b>{DIR}/doc/sub/p.php</b> on line <b>2</b><br />
+
+-----
+HTTP/1.1 200 OK
+Host: 127.0.0.1
+Date: X
+Connection: close
+X-Powered-By: PHP/8.5.12
+Content-type: text/html; charset=UTF-8
+
+<br />
+<b>Fatal error</b>:  Uncaught Error: Call to undefined function undefined_function() in {DIR}/doc/sub/f.php:1
+Stack trace:
+#0 {main}
+  thrown in <b>{DIR}/doc/sub/f.php</b> on line <b>1</b><br />
+
+-----
+HTTP/1.1 200 OK
+Host: 127.0.0.1
+Date: X
+Connection: close
+X-Powered-By: PHP/8.5.12
+Content-type: text/html; charset=UTF-8
+
+eh.inc
+handled: w(): Optional parameter $a declared before required parameter $b is implicitly treated as a required parameter
+w ran
+
+-----
+HTTP/1.1 400 Bad Request
+Host: 127.0.0.1
+Date: X
+Connection: close
+X-Powered-By: PHP/8.5.12
+Content-Type: text/html; charset=UTF-8
+Content-Length: 592
+
+<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>400 Bad Request</title><style>
+body { background-color: #fcfcfc; color: #333333; margin: 0; padding:0; }
+h1 { font-size: 1.5em; font-weight: normal; background-color: #9999cc; min-height:2em; line-height:2em; border-bottom: 1px inset black; margin: 0; }
+h1, p { padding-left: 10px; }
+code.url { background-color: #eeeeee; font-family:monospace; padding:0 2px;}
+</style>
+</head><body><h1>Bad Request</h1><p>Your browser sent a request that this server could not understand.</p></body></html>
+-----
+HTTP/1.1 501 Not Implemented
+Host: 127.0.0.1
+Date: X
+Connection: close
+X-Powered-By: PHP/8.5.12
+Content-Type: text/html; charset=UTF-8
+Content-Length: 563
+
+<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>501 Not Implemented</title><style>
+body { background-color: #fcfcfc; color: #333333; margin: 0; padding:0; }
+h1 { font-size: 1.5em; font-weight: normal; background-color: #9999cc; min-height:2em; line-height:2em; border-bottom: 1px inset black; margin: 0; }
+h1, p { padding-left: 10px; }
+code.url { background-color: #eeeeee; font-family:monospace; padding:0 2px;}
+</style>
+</head><body><h1>Not Implemented</h1><p>Request method not supported.</p></body></html>
+-----
+
+-----
+[T] PHP 8.5.12 Development Server (http://127.0.0.1:P) started
+[T] 127.0.0.1:P Accepted
+[T] shutdown ran
+[T] 127.0.0.1:P Closing
+[T] 127.0.0.1:P Accepted
+[T] 127.0.0.1:P [200]: GET /sub/s.php/more?a=b
+[T] shutdown ran
+[T] 127.0.0.1:P Closing
+[T] 127.0.0.1:P Accepted
+[T] shutdown ran
+[T] 127.0.0.1:P [200]: GET /a.css
+[T] 127.0.0.1:P Closing
+[T] 127.0.0.1:P Accepted
+[T] shutdown ran
+[T] 127.0.0.1:P [404]: GET /gone.txt - E
+[T] 127.0.0.1:P Closing
+[T] 127.0.0.1:P Accepted
+[T] 127.0.0.1:P [304]: GET /sub/n.php
+[T] shutdown ran
+[T] 127.0.0.1:P Closing
+[T] 127.0.0.1:P Accepted
+[T] 127.0.0.1:P [200]: GET /sub/p.php - syntax error, unexpected end of file, expecting "," or ";" in {DIR}/doc/sub/p.php on line 2
+[T] shutdown ran
+[T] 127.0.0.1:P Closing
+[T] 127.0.0.1:P Accepted
+[T] 127.0.0.1:P [200]: GET /sub/f.php - Uncaught Error: Call to undefined function undefined_function() in {DIR}/doc/sub/f.php:1
+Stack trace:
+#0 {main}
+  thrown in {DIR}/doc/sub/f.php on line 1
+[T] shutdown ran
+[T] 127.0.0.1:P Closing
+[T] 127.0.0.1:P Accepted
+[T] 127.0.0.1:P [200]: GET /sub/w.php
+[T] shutdown ran
+[T] 127.0.0.1:P Closing
+[T] 127.0.0.1:P Accepted
+[T] shutdown ran
+[T] 127.0.0.1:P [400]: GET /sub/s.php%00.txt - E
+[T] 127.0.0.1:P Closing
+[T] 127.0.0.1:P Accepted
+[T] 127.0.0.1:P [501]: NOTIMPLEMENTED / - E
+[T] 127.0.0.1:P Closing
+[T] 127.0.0.1:P Accepted
+[T] 127.0.0.1:P Invalid request (Malformed HTTP request)
+[T] 127.0.0.1:P Closing

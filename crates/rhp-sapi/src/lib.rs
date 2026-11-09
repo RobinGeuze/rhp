@@ -29,6 +29,7 @@ use rhp_vm::Vm;
 mod capture;
 pub mod cgi;
 pub mod cli;
+mod cli_server;
 mod getopt;
 
 pub use capture::{CaptureSapi, Captured};
@@ -67,6 +68,8 @@ pub enum Script {
     Code(String),
     /// No script file and no `-r`: the script is read from standard input.
     Stdin,
+    /// php -a: the readline shell reads statements from the terminal.
+    Shell,
 }
 
 /// One request for [`run_request`].
@@ -176,6 +179,8 @@ impl Sapi for CliSapi {
     fn ub_write(&mut self, data: &[u8]) -> bool {
         // What went through Rust's stdout (the STDOUT stream) goes first.
         let _ = std::io::stdout().flush();
+        // php -a's hooks: the last byte, the prompt code's or pager's copy.
+        rhp_builtins::readline_shell_output(data);
         write_fd(1, data)
     }
 
@@ -236,6 +241,7 @@ static BUILTINS: rhp_compiler::Builtins = rhp_compiler::Builtins {
     constant: rhp_builtins::ct_constant,
     cwd: rhp_builtins::zend::virtual_cwd::getcwd,
     assertions: rhp_builtins::zend::assertions,
+    prelude_flags: rhp_builtins::prelude_flags,
 };
 
 /// Parse and compile the source `src` of `file` as rhp runs a file: php's
@@ -418,13 +424,19 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
                     }
                 }
             };
-            // php reports the resolved real path in __FILE__ / __DIR__.
-            let file = std::fs::canonicalize(path)
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| path.clone());
+            // php reports the resolved real path in __FILE__ / __DIR__
+            // (tsrm_realpath, through the realpath cache).
+            let file = rhp_builtins::zend::virtual_cwd::realpath(path.as_bytes())
+                .map(|p| String::from_utf8_lossy(&p).into_owned())
+                .unwrap_or_else(|| path.clone());
             (file, source, path.clone())
         }
         Script::Source { path, bytes } => (path.clone(), bytes.clone(), path.clone()),
+        Script::Shell => (
+            "Standard input code".to_string(),
+            Vec::new(),
+            "Standard input code".to_string(),
+        ),
         Script::Stdin => {
             let mut src = Vec::new();
             if let Err(e) = std::io::Read::read_to_end(&mut std::io::stdin(), &mut src) {
@@ -500,6 +512,7 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
             // line 0: php raised it outside any file
             let at = if line == 0 { "[no active file]" } else { &file };
             vm.report_parse_error(class, &message, at, line);
+            let _ = vm.notify_script_done();
             vm.finish_request();
             return Outcome::Exit(255);
         }
@@ -509,17 +522,20 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
             diags,
         }) => {
             vm.compile_failed(&message, file.as_bytes(), line, &diags, false);
+            let _ = vm.notify_script_done();
             vm.finish_request();
             return Outcome::Exit(255);
         }
         Err(IncludeError::HardLimit { line }) => {
             let t = vm.compile_hard_limit(Some((file.as_bytes(), line)));
             let code = fatal(&mut vm, t);
+            let _ = vm.notify_script_done();
             vm.finish_request();
             return Outcome::Exit(code);
         }
         Err(IncludeError::Thrown(t)) => {
             let code = fatal(&mut vm, t);
+            let _ = vm.notify_script_done();
             vm.finish_request();
             return Outcome::Exit(code);
         }
@@ -539,6 +555,9 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
     vm.set_argv(argv);
     if let Script::Code(_) = req.script {
         vm.disable_auto_prepend();
+    }
+    if let Script::Shell = req.script {
+        vm.set_interactive();
     }
     install_includer(&mut vm);
     let code = match vm.run_main(&program) {
@@ -969,6 +988,98 @@ fn ini_constant(name: &str) -> Option<String> {
     m.get(name).map(|v| String::from_utf8_lossy(v).into_owned())
 }
 
+/// PHP_BINARY: this engine's own executable (composer re-invokes it for
+/// `@php` scripts).
+pub(crate) fn php_binary() -> Option<Vec<u8>> {
+    std::env::current_exe().ok().map(|exe| {
+        std::fs::canonicalize(&exe)
+            .unwrap_or(exe)
+            .to_string_lossy()
+            .into_owned()
+            .into_bytes()
+    })
+}
+
+/// php-cli's `-l` for one file (`None`: standard input): php_lint_script
+/// compiles it as an include, in a request of its own, and prints the
+/// verdict. Returns the exit status: 255 when it does not compile.
+pub fn run_lint(path: Option<String>, ini: Vec<(String, String)>, ini_files: IniFiles) -> i32 {
+    let (name, source) = match &path {
+        Some(p) => match std::fs::read(p) {
+            Ok(b) => (p.clone(), b),
+            Err(_) => {
+                eprintln!("Could not open input file: {p}");
+                return 1;
+            }
+        },
+        None => {
+            let mut src = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut std::io::stdin(), &mut src);
+            ("Standard input code".to_string(), src)
+        }
+    };
+    let sapi: Box<dyn Sapi> = Box::new(CliSapi);
+    let entries = sapi.ini_entries();
+    let mut vm = Vm::new(sapi);
+    load_ini_files(&mut vm, &ini_files);
+    for (k, v) in entries {
+        vm.set_ini(k.as_bytes(), v.as_bytes());
+    }
+    for (k, v) in &ini {
+        vm.set_ini(k.as_bytes(), v.as_bytes());
+    }
+    vm.start_request();
+    if vm.startup_failed() {
+        vm.finish_request();
+        return 1;
+    }
+    let ok = match compile_file(&name, &source, Mode::Include) {
+        Ok(prog) => {
+            vm.emit_compile_diags(&prog);
+            true
+        }
+        Err(IncludeError::Parse {
+            class,
+            message,
+            line,
+            diags,
+        }) => {
+            vm.emit_parse_diags(name.as_bytes(), &diags);
+            vm.report_parse_error(class, &message, &name, line);
+            false
+        }
+        Err(IncludeError::Compile {
+            message,
+            line,
+            diags,
+        }) => {
+            vm.compile_failed(&message, name.as_bytes(), line, &diags, false);
+            false
+        }
+        Err(IncludeError::HardLimit { line }) => {
+            let t = vm.compile_hard_limit(Some((name.as_bytes(), line)));
+            fatal(&mut vm, t);
+            false
+        }
+        Err(IncludeError::Thrown(t)) => {
+            fatal(&mut vm, t);
+            false
+        }
+    };
+    let verdict = if ok {
+        format!("No syntax errors detected in {name}\n")
+    } else {
+        format!("Errors parsing {name}\n")
+    };
+    vm.write_output(verdict.as_bytes());
+    vm.finish_request();
+    if ok {
+        0
+    } else {
+        255
+    }
+}
+
 /// The CLI front end's run: `rhp [options] script.php args...` semantics.
 pub fn run_cli(
     script: Script,
@@ -976,15 +1087,7 @@ pub fn run_cli(
     args: Vec<Vec<u8>>,
     ini_files: IniFiles,
 ) -> i32 {
-    // PHP_BINARY is this engine's own executable (composer re-invokes it for
-    // `@php` scripts).
-    let php_binary = std::env::current_exe().ok().map(|exe| {
-        std::fs::canonicalize(&exe)
-            .unwrap_or(exe)
-            .to_string_lossy()
-            .into_owned()
-            .into_bytes()
-    });
+    let php_binary = php_binary();
     let req = Request {
         script,
         ini,

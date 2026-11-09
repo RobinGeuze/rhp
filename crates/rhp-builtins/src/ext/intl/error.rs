@@ -14,16 +14,16 @@ use crate::{Host, Thrown};
 #[derive(Default)]
 pub(crate) struct IntlError {
     pub(crate) code: UErrorCode,
-    pub(crate) msg: Option<String>,
+    pub(crate) msg: Option<Vec<u8>>,
 }
 
 impl IntlError {
     /// `intl_error_get_message`.
-    pub(crate) fn message(&self) -> String {
+    pub(crate) fn message(&self) -> Vec<u8> {
         let name = u_error_name(self.code);
         match &self.msg {
-            Some(m) => format!("{m}: {name}"),
-            None => name,
+            Some(m) => [m.as_slice(), b": ", name.as_bytes()].concat(),
+            None => name.into_bytes(),
         }
     }
 
@@ -55,7 +55,7 @@ pub(crate) fn error_code() -> UErrorCode {
 }
 
 /// `intl_error_get_message(NULL)`.
-pub(crate) fn error_message() -> String {
+pub(crate) fn error_message() -> Vec<u8> {
     ERR.with(|e| e.borrow().message())
 }
 
@@ -96,17 +96,43 @@ fn use_exceptions() -> bool {
 /// php's `intl.error_level` diagnostic and thrown as an IntlException when
 /// `intl.use_exceptions` is on. The exception is held for when the
 /// builtin returns, as php's is; a user error handler's is returned.
-pub(crate) fn set_custom_msg(host: &mut dyn Host, fname: &str, msg: &str) -> Result<(), Thrown> {
-    let prefixed = format!("{fname}(): {msg}");
+pub(crate) fn set_custom_msg(
+    host: &mut dyn Host,
+    fname: &str,
+    msg: impl AsRef<[u8]>,
+) -> Result<(), Thrown> {
+    let prefixed = prefix(fname, msg.as_ref());
     let level = error_level();
     if level != 0 {
-        host.emit_diagnostic(level, prefixed.as_bytes())?;
+        host.emit_diagnostic(level, &prefixed)?;
     }
     if use_exceptions() {
-        host.set_pending_throw(Thrown::error("IntlException", prefixed.clone()));
+        let t = intl_exception(host, &prefixed)?;
+        host.set_pending_throw(t);
     }
     ERR.with(|e| e.borrow_mut().msg = Some(prefixed));
     Ok(())
+}
+
+fn prefix(fname: &str, msg: &[u8]) -> Vec<u8> {
+    [fname.as_bytes(), b"(): ", msg].concat()
+}
+
+/// An IntlException with message `msg`, which may be any bytes (a
+/// formatter's argument echoed back).
+fn intl_exception(host: &mut dyn Host, msg: &[u8]) -> Result<Thrown, Thrown> {
+    if let Ok(m) = std::str::from_utf8(msg) {
+        return Ok(Thrown::error("IntlException", m));
+    }
+    match host.reflect_new_instance(
+        b"IntlException",
+        vec![rhp_values::Value::str(msg.to_vec())],
+        true,
+    ) {
+        Ok(rhp_values::Value::Object(h)) => Ok(Thrown::Object(h)),
+        Ok(_) => Ok(Thrown::error("IntlException", String::from_utf8_lossy(msg))),
+        Err(t) => Err(t),
+    }
 }
 
 /// `intl_error_set(NULL, code, msg)`.
@@ -114,7 +140,7 @@ pub(crate) fn set(
     host: &mut dyn Host,
     fname: &str,
     code: UErrorCode,
-    msg: &str,
+    msg: impl AsRef<[u8]>,
 ) -> Result<(), Thrown> {
     error_set_code(code);
     set_custom_msg(host, fname, msg)
@@ -126,9 +152,9 @@ pub(crate) fn errors_set_custom_msg(
     host: &mut dyn Host,
     err: &RefCell<IntlError>,
     fname: &str,
-    msg: &str,
+    msg: impl AsRef<[u8]>,
 ) -> Result<(), Thrown> {
-    err.borrow_mut().msg = Some(format!("{fname}(): {msg}"));
+    err.borrow_mut().msg = Some(prefix(fname, msg.as_ref()));
     set_custom_msg(host, fname, msg)
 }
 
@@ -145,7 +171,7 @@ pub(crate) fn check_status(
     host: &mut dyn Host,
     err: &RefCell<IntlError>,
     fname: &str,
-    msg: &str,
+    msg: impl AsRef<[u8]>,
 ) -> Result<bool, Thrown> {
     let code = err.borrow().code;
     error_set_code(code);
@@ -161,7 +187,7 @@ pub(crate) fn check_global(
     host: &mut dyn Host,
     status: UErrorCode,
     fname: &str,
-    msg: &str,
+    msg: impl AsRef<[u8]>,
 ) -> Result<bool, Thrown> {
     error_set_code(status);
     if sys::failure(status) {
@@ -184,7 +210,7 @@ pub(crate) fn errors_set(
     err: &RefCell<IntlError>,
     fname: &str,
     code: UErrorCode,
-    msg: &str,
+    msg: impl AsRef<[u8]>,
 ) -> Result<(), Thrown> {
     errors_set_code(err, code);
     errors_set_custom_msg(host, err, fname, msg)

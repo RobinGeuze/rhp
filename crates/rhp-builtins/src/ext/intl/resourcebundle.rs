@@ -273,7 +273,7 @@ fn fetch(
             host,
             &rb.err,
             f,
-            &format!("Cannot load resource element {what}"),
+            format!("Cannot load resource element {what}"),
         )?;
         return Ok(Value::Null);
     }
@@ -465,7 +465,7 @@ pub(super) fn fn_helper(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     let rb = common::state_of::<RbObj>(&this).expect("an object");
     match call.name {
         "getErrorCode" => return Ok(Value::Int(rb.err.borrow().code as i64)),
-        "getErrorMessage" => return Ok(Value::str(rb.err.borrow().message().into_bytes())),
+        "getErrorMessage" => return Ok(Value::str(rb.err.borrow().message())),
         "getIterator" => {
             let h = object_handlers::object_of(&this).expect("an object");
             return Ok(Value::Object(get_iterator(host, &h, false)?));

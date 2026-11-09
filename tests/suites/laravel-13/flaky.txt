@@ -1,0 +1,2 @@
+# Tests whose outcome under php differs between runs; every comparison leaves them out.
+# Regenerate with `suites.py compare --ref A --ref B --ref C --write-flaky`.

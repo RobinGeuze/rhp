@@ -576,6 +576,15 @@ unsafe extern "C" {
     pub fn xmlSaveDoc(ctxt: *mut xmlSaveCtxt, doc: *mut XmlDoc) -> c_long;
     pub fn xmlDocDumpMemory(doc: *mut XmlDoc, mem: *mut *mut xmlChar, size: *mut c_int);
     pub fn xmlSaveClose(ctxt: *mut xmlSaveCtxt) -> c_int;
+    pub fn xmlSaveTree(ctxt: *mut xmlSaveCtxt, node: *mut XmlNode) -> c_long;
+    pub fn xmlSaveFlush(ctxt: *mut xmlSaveCtxt) -> c_int;
+    pub fn xmlOutputBufferWrite(out: *mut xmlOutputBuffer, len: c_int, buf: *const c_char)
+        -> c_int;
+    pub fn xmlOutputBufferWriteString(out: *mut xmlOutputBuffer, s: *const c_char) -> c_int;
+    pub fn xmlGetUTF8Char(utf: *const xmlChar, len: *mut c_int) -> c_int;
+    pub fn htmlNewDocNoDtD(uri: *const xmlChar, external_id: *const xmlChar) -> *mut XmlDoc;
+    pub fn xmlDictCreate() -> *mut xmlDict;
+    pub fn xmlPathToURI(path: *const xmlChar) -> *mut xmlChar;
     pub fn xmlSaveFormatFileEnc(
         filename: *const c_char,
         doc: *mut XmlDoc,

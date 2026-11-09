@@ -65,7 +65,7 @@ pub(super) fn fn_helper(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             format(host, &call, &f, &lf)
         }
         "getErrorCode" => Ok(Value::Int(lf.err.borrow().code as i64)),
-        "getErrorMessage" => Ok(Value::str(lf.err.borrow().message().into_bytes())),
+        "getErrorMessage" => Ok(Value::str(lf.err.borrow().message())),
         other => unreachable!("IntlListFormatter::{other}"),
     }
 }

@@ -65,10 +65,32 @@ ext/fileinfo/libmagic/
   compiled from libmagic's Magdir; php_libmagic.c and php_libmagic.h are
   php's own (PHP License).
 
+ext/calendar/
+  Scott E. Lee's serial day number conversions (THIRD-PARTY-NOTICES section
+  37): Copyright 1993-1995, Scott E. Lee, all rights reserved. Permission
+  granted to use, copy, modify, distribute and sell so long as the above
+  copyright and this permission statement are retained in all copies.
+  THERE IS NO WARRANTY - USE AT YOUR OWN RISK.
+
 ext/standard/libavifinfo/
   BSD-2-Clause (ext/standard/libavifinfo/LICENSE), with the Alliance for
   Open Media Patent License 1.0 (PATENTS). Copyright (c) 2021, Alliance for
   Open Media. The AVIF parser php's getimagesize() uses.
+
+sapi/cli/php_http_parser.c, sapi/cli/php_http_parser.h
+  MIT. Copyright 2009,2010 Ryan Dahl <ry@tinyclouds.org>; modified by
+  Moriyoshi Koizumi for php-src (PHP License). The built-in web server's
+  request parser (rhp -S). The full licence is in each file's header and in
+  THIRD-PARTY-NOTICES section 35.
+
+sapi/cli/mime_type_map.h
+  States the PHP License 3.01: php's generated extension to mime type table.
+ext/lexbor/lexbor/
+  Apache-2.0 (ext/lexbor/LICENSE, ext/lexbor/NOTICE). Lexbor: Copyright
+  2018-2020 Alexander Borisov, with php's patches (ext/lexbor/patches in
+  php-src). ext/dom's HTML5 parser, encodings and CSS selector parser; the
+  url, punycode and unicode modules (ext/uri's) are not vendored.
+  ext/lexbor/config.m4 (PHP License) lists the sources build.rs compiles.
 
 
 vendor/argon2

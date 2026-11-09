@@ -1,0 +1,16 @@
+bool(false)
+int(0)
+bool(true)
+bool(false)
+array(3) {
+  [0]=>
+  int(3)
+  [1]=>
+  int(2)
+  [2]=>
+  int(1)
+}
+bool(true)
+bool(true)
+bool(false)
+bool(true)

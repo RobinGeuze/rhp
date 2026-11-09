@@ -35,8 +35,9 @@ impl Sapi for Recorder {
         true
     }
 
-    fn send_headers(&mut self, r: &Response) {
+    fn send_headers(&mut self, r: &Response) -> bool {
         self.events.borrow_mut().push(format!("headers:{}", r.code));
+        true
     }
 
     fn write_stderr(&mut self, data: &[u8]) {

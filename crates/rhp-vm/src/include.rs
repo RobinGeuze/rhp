@@ -66,7 +66,7 @@ impl Vm {
     /// The diagnostics php's compiler raised for a file just loaded: once
     /// per compile, or on every load from opcache with
     /// `opcache.record_warnings`.
-    pub(crate) fn emit_compile_diags(&mut self, prog: &Program) {
+    pub fn emit_compile_diags(&mut self, prog: &Program) {
         if prog.compile_diags.is_empty()
             || (prog.compile_diags_reported.replace(true)
                 && !ini_bool(&self.ini_get(b"opcache.record_warnings").unwrap_or_default()))
@@ -224,6 +224,13 @@ impl Vm {
             (64, "Fatal error")
         };
         self.display_error(ty, label, message.as_bytes(), file.as_bytes(), line as i64);
+        // php_error_cb records it (error_get_last(), the cli-server's log).
+        self.last_error = Some((
+            ty,
+            message.as_bytes().to_vec(),
+            file.as_bytes().to_vec(),
+            line as i64,
+        ));
     }
 
     pub(crate) fn do_include(
@@ -232,12 +239,16 @@ impl Vm {
         raw_path: Vec<u8>,
         kind: IncludeKind,
     ) -> Result<Value, Thrown> {
+        // Taken first: user code that runs while the file loads (a stream
+        // wrapper, an error handler for a compile warning, an autoloader)
+        // may include files of its own.
+        let primary = std::mem::take(&mut self.primary_next);
         let path_str = String::from_utf8_lossy(&raw_path).into_owned();
         builtins::main::streams::clear_errno();
         // php looks a script up in opcache by the name it was asked for
-        // before opening anything: a cached absolute path needs no open, and
-        // no realpath while its revalidate window lasts; a file that is gone
-        // may still be served.
+        // before opening anything ([`Vm::opcache_lookup_name`]): a cached
+        // script needs no open, and no realpath or stat while its revalidate
+        // window lasts; a file that is gone may still be served.
         // data: URLs (php's rfc2397 wrapper, a URL wrapper): only with
         // allow_url_fopen and allow_url_include.
         let mut reason_override = None;
@@ -315,8 +326,8 @@ impl Vm {
                     }
                 }
             }
-        } else if self.opcache_fast_hit(&raw_path) {
-            Some((raw_path.clone(), IncludeSource::Cached))
+        } else if let Some(real) = self.opcache_lookup_name(top, &raw_path) {
+            Some((real, IncludeSource::Cached))
         } else {
             self.resolve_include_file(top, &path_str).or_else(|| {
                 self.opcache_cached_name(&raw_path)
@@ -397,6 +408,7 @@ impl Vm {
             && (self.included_files.contains(&realpath)
                 || self.main_included_path().as_ref() == Some(&realpath))
         {
+            self.opcache_note_once(&raw_path, &realpath);
             return Ok(Value::Bool(true));
         }
         self.included_files.insert(realpath.clone());
@@ -421,7 +433,11 @@ impl Vm {
             return Err(t);
         }
         let (main, unit) = self.install_file(&realpath, &prog)?;
-        let ret = self.run_included(main, unit, top, kind.name())?;
+        let ret = if primary {
+            self.run_as_primary(main, unit)?
+        } else {
+            self.run_included(main, unit, top, kind.name())?
+        };
         // A file with no `return` yields int(1).
         Ok(match ret {
             Value::Null => Value::Int(1),
@@ -558,17 +574,13 @@ impl Vm {
 
     /// Resolve an include path to `(key, source)`: for a schemed URL
     /// (`phar://`, …) the wrapper's contents; otherwise the real path of
-    /// the first candidate that opens as a file, in php_resolve_path's
-    /// order: an absolute or `./` / `../` path as is (relative to the
-    /// request's working directory), else each include_path entry, then
-    /// the including file's directory; failing those, the plain open of
-    /// the name relative to the working directory.
+    /// the first candidate ([`Vm::include_candidates`]) that opens as a
+    /// file, resolved through the realpath cache.
     pub(crate) fn resolve_include_file(
         &self,
         top: usize,
         path: &str,
     ) -> Option<(Vec<u8>, IncludeSource)> {
-        use std::path::{Path, PathBuf};
         // Schemed URLs: no candidate search — the wrapper owns resolution. The
         // returned key (→ `__FILE__`/`__DIR__`/`_once`) is the normalized URL.
         let (scheme, _) = builtins::main::streams::split_scheme(path.as_bytes());
@@ -579,8 +591,34 @@ impl Vm {
             let key = w.canonical(url).unwrap_or_else(|| normalize_url(url));
             return Some((key, IncludeSource::Bytes(src)));
         }
+        for cand in self.include_candidates(top, path) {
+            use std::os::unix::ffi::OsStrExt;
+            // tsrm_realpath, through the realpath cache.
+            let Some(real) = builtins::zend::virtual_cwd::realpath(cand.as_os_str().as_bytes())
+            else {
+                continue;
+            };
+            let real_path = std::ffi::OsStr::from_bytes(&real);
+            let Ok(f) = std::fs::File::open(real_path) else {
+                continue;
+            };
+            if f.metadata().is_ok_and(|m| m.is_dir()) {
+                continue;
+            }
+            return Some((real, IncludeSource::File(f)));
+        }
+        None
+    }
+
+    /// The paths an include of `path` (no scheme) tries, in
+    /// php_resolve_path's order: an absolute or `./` / `../` path as is
+    /// (relative to the request's working directory), else each
+    /// include_path entry, then the including file's directory, then the
+    /// name relative to the working directory.
+    fn include_candidates(&self, top: usize, path: &str) -> Vec<std::path::PathBuf> {
+        use std::path::Path;
         let p = Path::new(path);
-        let mut candidates: Vec<PathBuf> = Vec::new();
+        let mut candidates = Vec::new();
         let include_path = self.ini_get(b"include_path").unwrap_or_default();
         let dotted = path.starts_with("./") || path.starts_with("../");
         if p.is_absolute() || dotted || include_path.is_empty() {
@@ -600,24 +638,17 @@ impl Vm {
             }
             candidates.push(p.to_path_buf());
         }
-        for cand in candidates {
-            use std::os::unix::ffi::OsStrExt;
-            let cand = builtins::zend::virtual_cwd::os_path(cand.as_os_str().as_bytes());
-            let Ok(canon) = std::fs::canonicalize(&cand) else {
-                continue;
-            };
-            let Ok(f) = std::fs::File::open(&canon) else {
-                continue;
-            };
-            if f.metadata().is_ok_and(|m| m.is_dir()) {
-                continue;
-            }
-            return Some((
-                canon.to_string_lossy().into_owned().into_bytes(),
-                IncludeSource::File(f),
-            ));
-        }
-        None
+        candidates
+    }
+
+    /// php_resolve_path for a local path (zend_resolve_path without
+    /// opcache): the real path of the first candidate that exists.
+    pub(crate) fn resolve_include_path(&self, top: usize, path: &[u8]) -> Option<Vec<u8>> {
+        use std::os::unix::ffi::OsStrExt;
+        let path = String::from_utf8_lossy(path);
+        self.include_candidates(top, &path)
+            .iter()
+            .find_map(|c| builtins::zend::virtual_cwd::realpath(c.as_os_str().as_bytes()))
     }
 
     /// [`Vm::install_included`] for a file: recorded while preloading, and
@@ -780,6 +811,71 @@ impl Vm {
             self.include_statics.retain(|k, _| k.0 < base);
         }
         ret
+    }
+
+    /// php -a's `zend_eval_stringl(code, NULL, name)` under `zend_try`:
+    /// the code compiled as `name` and run in the global scope as a
+    /// top-level script. A compile error is displayed, an uncaught
+    /// throwable reported as a warning, and a fatal error or `exit` only
+    /// sets the exit status.
+    pub(crate) fn shell_eval_code(&mut self, code: &[u8], name: &str) {
+        let mut source = b"<?php ".to_vec();
+        source.extend_from_slice(code);
+        let Some(mut cb) = self.includer.take() else {
+            return;
+        };
+        let compiled = cb(name, &source);
+        self.includer = Some(cb);
+        let prog = match compiled {
+            Ok(p) => Rc::new(p),
+            Err(IncludeError::Parse {
+                class,
+                message,
+                line,
+                diags,
+            }) => {
+                self.emit_parse_diags(name.as_bytes(), &diags);
+                self.report_parse_error(class, &message, name, line);
+                return;
+            }
+            Err(e) => {
+                if let Thrown::Exit(code) = self.include_error(e, name, true) {
+                    self.sapi.exit_status = code;
+                }
+                return;
+            }
+        };
+        self.emit_compile_diags(&prog);
+        let r = self
+            .install_file(b"", &prog)
+            .and_then(|(main, unit)| self.run_as_primary(main, unit));
+        match r {
+            Ok(_) => {}
+            Err(Thrown::Exit(code)) => self.sapi.exit_status = code,
+            Err(t) => {
+                // The global scope survives the unwound frames.
+                if !self.stack.is_empty() {
+                    self.stack.truncate(1);
+                    self.finished_main = self.stack.pop();
+                }
+                self.report_uncaught_as(t, builtins::E_WARNING, "Warning");
+            }
+        }
+        if let Some(Thrown::Exit(code)) = self.pending_throw.take() {
+            self.sapi.exit_status = code;
+        }
+    }
+
+    /// A loaded file run as the request's next primary script: its `{main}`
+    /// replaces the finished one at the bottom of the stack, in the global
+    /// scope.
+    fn run_as_primary(&mut self, main: Rc<FunctionProto>, unit: UnitId) -> Result<Value, Thrown> {
+        let mut frame = Frame::new(main, unit, 0);
+        self.bind_superglobals(&mut frame);
+        self.bind_global_scope(&mut frame);
+        self.stack.clear();
+        self.stack.push(frame);
+        self.run_loop()
     }
 
     /// An include/eval frame that is finishing shares its caller's variables

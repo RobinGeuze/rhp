@@ -12,7 +12,7 @@ use rhp_values::Value;
 use super::element::set_constructed_node;
 use super::util::*;
 use super::{
-    arg, bytes, create_object, get_obj, int, intern_of, throw, Cx, INDEX_SIZE_ERR,
+    arg, bytes, create_object, get_obj, int, intern_of, throw, Cx, DomObject, INDEX_SIZE_ERR,
     INVALID_CHARACTER_ERR, INVALID_STATE_ERR, NAMESPACE_ERR, NO_MODIFICATION_ALLOWED_ERR,
     WRONG_DOCUMENT_ERR,
 };
@@ -36,9 +36,14 @@ fn utf8_len(s: *const u8) -> i64 {
     unsafe { sys::xmlUTF8Strlen(s) as i64 }
 }
 
-/// dom_convert_number_unsigned (legacy: a negative number is an error).
-fn unsigned(cx: &mut Cx, strict: bool, input: i64) -> Result<Option<u32>, Thrown> {
+/// dom_convert_number_unsigned: a negative number is an error for the
+/// legacy API and wraps (as a C unsigned int) for the modern one.
+fn unsigned(cx: &mut Cx, intern: &DomObject, input: i64) -> Result<Option<u32>, Thrown> {
+    let strict = intern.strict();
     if input < 0 {
+        if super::modern::is_modern(intern) {
+            return Ok(Some(input as u32));
+        }
         throw(cx, INDEX_SIZE_ERR, strict)?;
         return Ok(None);
     }
@@ -59,10 +64,10 @@ pub fn substring_data(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value
         throw(cx, INDEX_SIZE_ERR, strict)?;
         return Ok(Value::Bool(false));
     }
-    let Some(offset) = unsigned(cx, strict, offset_in)? else {
+    let Some(offset) = unsigned(cx, &intern, offset_in)? else {
         return Ok(Value::Bool(false));
     };
-    let Some(mut count) = unsigned(cx, strict, count_in)? else {
+    let Some(mut count) = unsigned(cx, &intern, count_in)? else {
         return Ok(Value::Bool(false));
     };
     if offset as i64 > length {
@@ -96,7 +101,7 @@ pub fn insert_data(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, T
         throw(cx, INDEX_SIZE_ERR, strict)?;
         return Ok(Value::Bool(false));
     }
-    let Some(offset) = unsigned(cx, strict, offset_in)? else {
+    let Some(offset) = unsigned(cx, &intern, offset_in)? else {
         return Ok(Value::Bool(false));
     };
     if offset as i64 > length {
@@ -126,7 +131,7 @@ pub fn delete_data(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, T
         throw(cx, INDEX_SIZE_ERR, strict)?;
         return Ok(Value::Bool(false));
     }
-    let Some(mut count) = unsigned(cx, strict, count_in)? else {
+    let Some(mut count) = unsigned(cx, &intern, count_in)? else {
         return Ok(Value::Bool(false));
     };
     unsafe {
@@ -158,7 +163,7 @@ pub fn replace_data(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, 
         throw(cx, INDEX_SIZE_ERR, strict)?;
         return Ok(Value::Bool(false));
     }
-    let Some(mut count) = unsigned(cx, strict, count_in)? else {
+    let Some(mut count) = unsigned(cx, &intern, count_in)? else {
         return Ok(Value::Bool(false));
     };
     let cd = c(&data);
@@ -217,6 +222,9 @@ pub fn text_split(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Th
     let cur = content_or_empty(node);
     let length = utf8_len(cur);
     if offset > INT_MAX || offset > length {
+        if super::modern::is_modern(&intern) {
+            throw(cx, INDEX_SIZE_ERR, true)?;
+        }
         return Ok(Value::Bool(false));
     }
     let nnode;

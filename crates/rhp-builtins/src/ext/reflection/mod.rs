@@ -39,7 +39,8 @@ fn fn_set_prop(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
 }
 
 /// `__reflect_invoke($object, $class, $method, $args)`: ReflectionMethod::
-/// invoke(), which ignores visibility.
+/// invoke(), which ignores visibility. For a static method `$object` is the
+/// reflected class's name (the called scope) or null.
 fn fn_invoke(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let obj = deref(&args[0]);
     let class = str_arg(args, 1);

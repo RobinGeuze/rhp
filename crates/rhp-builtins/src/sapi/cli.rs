@@ -22,7 +22,10 @@ const FUNCTIONS: &[(&str, NativeFn)] = &[
     ("cli_get_process_title", fn_cli_get_process_title),
 ];
 
-fn fn_cli_set_process_title(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+pub(crate) fn fn_cli_set_process_title(
+    host: &mut dyn Host,
+    args: &[Value],
+) -> Result<Value, Thrown> {
     let t = str_param(host, args, 0, "cli_set_process_title", "title")?;
     TITLE.with(|c| *c.borrow_mut() = Some(t));
     Ok(Value::Bool(true))
@@ -36,7 +39,7 @@ fn reset_state() {
     TITLE.with(|c| *c.borrow_mut() = None);
 }
 
-fn fn_cli_get_process_title(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+pub(crate) fn fn_cli_get_process_title(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(
         TITLE.with(|c| c.borrow().clone()).unwrap_or_default(),
     ))

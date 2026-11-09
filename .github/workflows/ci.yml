@@ -331,6 +331,7 @@ jobs:
       - run: target/release/rhp-difftest gen parser --php-dist "$PHP_DIST" --check
       - run: target/release/rhp-difftest gen curl-consts --php-src php-src --check
       - run: target/release/rhp-difftest gen zip-consts --php-src php-src --check
+      - run: target/release/rhp-difftest gen sockets-consts --php-src php-src --check
       # Recounts tests/phpt/totals.txt from every .phpt file (cargo test
       # checks README.md's table against the committed one, without php-src).
       - name: README test table and php-src test totals are current

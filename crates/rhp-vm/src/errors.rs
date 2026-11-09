@@ -832,11 +832,36 @@ impl Vm {
         out
     }
 
+    /// ext/sodium keeps argument values out of traces: a `SodiumException`'s
+    /// (its create_object handler) and a parameter error's from a sodium
+    /// function (sodium_remove_param_values_from_backtrace after zpp). The
+    /// builtins raise nothing else, so any Throwable created while one is
+    /// the innermost call counts.
+    fn sodium_hides_args(&self, obj: &ObjectHandle) -> bool {
+        if self
+            .native_calls
+            .last()
+            .is_some_and(|n| n.name.starts_with("sodium_") && n.caller + 1 == self.stack.len())
+        {
+            return true;
+        }
+        let class = obj.borrow().class;
+        self.class(class).ancestors.iter().any(|&c| {
+            self.class(c)
+                .name
+                .as_bytes()
+                .eq_ignore_ascii_case(b"SodiumException")
+        })
+    }
+
     /// Stamp a freshly created Throwable with php's creation-site `file`,
     /// `line` and `trace` (zend_default_exception_new).
     pub(crate) fn init_throwable(&mut self, obj: &ObjectHandle) {
         let (file, line) = self.throw_site();
-        let trace = self.build_trace();
+        let mut trace = self.build_trace();
+        if self.sodium_hides_args(obj) {
+            hide_trace_args(&mut trace);
+        }
         let (kf, kl, kt) = (
             self.declared_prop_key(obj, b"file"),
             self.declared_prop_key(obj, b"line"),
@@ -1331,11 +1356,7 @@ impl Vm {
                 }
                 if let Some(cls) = self.thrown_class_id(&thrown) {
                     for arm in &region.catches {
-                        if arm
-                            .classes
-                            .iter()
-                            .any(|cn| self.class_matches(cls, cn.as_bytes()))
-                        {
+                        if arm.classes.iter().any(|cn| self.class_matches(cls, cn)) {
                             let obj = self.thrown_to_object(&thrown)?;
                             // php assigns the catch variable like `$e = ...`:
                             // through a reference it holds (a global's cell).
@@ -1557,8 +1578,8 @@ impl Vm {
         }
     }
 
-    fn class_matches(&self, cls: ClassId, catch_name: &[u8]) -> bool {
-        match self.resolve_class_by_name(catch_name) {
+    fn class_matches(&self, cls: ClassId, catch_name: &rhp_values::PhpStr) -> bool {
+        match self.resolve_class_by_str(catch_name) {
             Ok(target) => self.class(cls).ancestors.contains(&target),
             Err(_) => false,
         }
@@ -1701,5 +1722,19 @@ pub(crate) fn frame_line(f: &Frame) -> u32 {
         0
     } else {
         lines[idx - 1].1
+    }
+}
+
+/// sodium_remove_param_values_from_backtrace: every frame's `args` emptied.
+fn hide_trace_args(trace: &mut PhpArray) {
+    let key = ArrayKey::Str(rhp_values::PhpStr::from("args"));
+    let n = trace.len();
+    for i in 0..n {
+        let Some((k, _)) = trace.nth(i) else { break };
+        if let Some(Value::Array(frame)) = trace.get_mut(&k) {
+            if let Some(a) = frame.get_mut(&key) {
+                *a = Value::Array(PhpArray::new());
+            }
+        }
     }
 }

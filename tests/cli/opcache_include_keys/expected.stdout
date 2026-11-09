@@ -1,0 +1,12 @@
+string(3) "lib"
+string(3) "lib"
+string(3) "lib"
+string(3) "lib"
+string(3) "lib"
+bool(true)
+same file: scripts 2 keys 5 hits 4 misses 2
+string(1) "a"
+string(1) "a"
+string(1) "b"
+string(2) "b2"
+swapped: scripts 4 keys 8 hits 5 misses 5

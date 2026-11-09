@@ -224,6 +224,28 @@ pub(crate) fn ctx_error(ctx: *mut c_void, msg: &[u8]) {
     internal_error_handler(PHP_LIBXML_CTX_ERROR, ctx, msg, line, col);
 }
 
+/// php_libxml_pretend_ctx_error_ex: an error at `line`/`column` of
+/// `file` (ext/dom's HTML5 parser); an internal-errors record names the
+/// file.
+pub(crate) fn pretend_ctx_error(file: &[u8], line: c_int, column: c_int, msg: &[u8]) {
+    internal_error_handler(
+        PHP_LIBXML_CTX_ERROR,
+        std::ptr::null_mut(),
+        msg,
+        line,
+        column,
+    );
+    STATE.with(|s| {
+        if let Some(l) = s.borrow_mut().error_list.as_mut() {
+            if let Some(last) = l.last_mut() {
+                if last.file.is_none() {
+                    last.file = Some(file.to_vec());
+                }
+            }
+        }
+    });
+}
+
 /// php_libxml_internal_error_handler_ex: collect pieces up to a trailing
 /// newline, then record the message (internal errors on) or raise it.
 fn internal_error_handler(kind: c_int, ctx: *mut c_void, buf: &[u8], line: c_int, column: c_int) {

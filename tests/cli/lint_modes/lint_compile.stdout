@@ -1,0 +1,5 @@
+
+Fatal error: The (unset) cast is no longer supported in removed.inc on line 2
+Stack trace:
+#0 {main}
+Errors parsing removed.inc

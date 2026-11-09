@@ -510,7 +510,17 @@ set `ProtoFlags::DEPRECATED` / `NODISCARD`; `bind_frame` tests the two bits
 once per call and, only when one is set, raises the deprecation and the
 unused-result warning before the frame is entered
 (`rhp-vm/src/attributes.rs`, zend_execute.c's zend_deprecated_function /
-zend_nodiscard_function). "Unused" is php's zend_do_free rule: the compiler
+zend_nodiscard_function). The same test covers `BEFORE_ZPP`: php's body of such a prelude function
+runs code before zend_parse_parameters (intl's entry points reset the
+global intl error first), so `bind_frame` calls `rhp_builtins::before_zpp`
+before it binds and checks the arguments. `ZPP_CALLABLE` makes a prelude
+function's `callable` parameter check raise the callable's deprecations,
+as php's Z_PARAM_FUNC does; other prelude functions check it silently and
+leave them to the builtin they hand it to. The compiler sets both on
+prelude protos from `Builtins::prelude_flags` (rhp-builtins answers from
+the stub signatures), so the prelude's text carries no markers. A native
+intl function whose zpp fails gets the reset from `before_failed_zpp`.
+"Unused" is php's zend_do_free rule: the compiler
 records in `FunctionProto::discard_calls` the pcs of calls compiled last in
 a freed expression (an expression statement, a `for` list entry), and the
 VM looks the caller's pc up there. The message suffix comes from building the
@@ -533,6 +543,12 @@ zend_compile_const_expr leaves them, constants never substituted, as
 zend_compile_params turns substitution off). `ReflectionParameter::
 __toString()` prints that text (`new \ArrayObject()`, `\N\I::X`) and a
 folded default as its value (format_default_value).
+A property default keeps the same text in `DeclMeta::default_text` when
+php keeps it as a constant AST (builtin constants are substituted there,
+as zend_compile_prop_decl does): `ReflectionProperty::__toString()` prints
+it while the class's constants are not yet updated (always, for a static),
+and `getDefaultValue()` runs a pending initializer alone
+(`__reflect('prop_default')`).
 ```
 CallBuiltin { dst, bid, base, argc }              arity-check vs Builtin; dst = (builtin.func)(self, &regs[base..+argc]) ?
 CallUser    { dst, fnidx, base, argc, cache }     push frame for functions[fnidx]; bind params; dst = return value
@@ -582,7 +598,13 @@ the unpack that is an element / property (SEND_FUNC_ARG), or a variable a
 later argument may change (SEND_VAR_EX), asks the callee (`*ArgIsRef`) as it
 is sent and goes into the array as a reference or a value; any other
 variable goes in as a reference that a by-value parameter dereferences.
-The fixed-arity register-window path is the fast path.
+The fixed-arity register-window path is the fast path. There too, a
+variable sent to a callee only the run time knows, and assigned or
+incremented by a later argument (`$o->m($p, $p = new X)`, or inside one
+that can write it: `[$p] = ..`, `g($p)`), asks the callee
+as it is sent (SEND_VAR_EX), so a by-value parameter gets the value from
+before the assignment. An anonymous class's constructor arguments are sent
+like a named class's.
 
 **Exceptions (phase 3+/5)** — see §3.4–3.5. `try` *entry* needs no opcode (the
 `exception_table` describes protected ranges); only these are explicit:
@@ -623,14 +645,17 @@ lookups by name have the caches below.)
 
 **Lookup caches** (`rhp-vm/src/lookup_cache.rs`) stand in for php's
 run-time cache slots (CACHE_ADDR / CACHE_PTR) without writing the shared
-protos. Each linked `ClassEntry` has a small direct-mapped table for
+protos. Each linked `ClassEntry` has a small table for
 property lookups, keyed by the name's hash (`PhpStr` keeps it) and the
 calling scope, one for static properties and one for method lookups by
 name; the VM has one for class names. An entry holds only an index (the
 property slot, the static or method table entry, the class id) and a
 hit is confirmed against the name the class's own table stores, so
 nothing in it can outlive what it names and memory_get_usage() does not
-see it (the tables are allocated uncounted).
+see it (the tables are allocated uncounted). The tables are two-way (a
+key whose slot is taken goes to the neighbouring slot), so a property
+read from inside and outside its class in one loop can't evict itself on
+every pass when the two keys share a slot.
 Property entries name a scope class, so they are flushed when a class
 whose linking failed is removed and its id is reused; class-name entries
 check the class's name on every hit. `resolve_prop_at` and

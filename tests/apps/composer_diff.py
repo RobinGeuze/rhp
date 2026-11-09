@@ -127,12 +127,16 @@ SUITES = {
 
 # Differences with a known cause in rhp, by (suite, step name); a step name
 # of None covers the whole suite. Remove an entry once it prints FIXED.
-SOCKETS = "counts the ext-sockets suggestion: rhp does not report sockets loaded"
-KNOWN = {
-    ("basic", "composer install"): SOCKETS,
-    ("stream", "composer install --no-cache"): SOCKETS,
-    ("ziparchive", "composer install --no-cache"): SOCKETS,
-}
+SUGGESTS = ("Linux only: rhp counts 2 more of monolog's suggestions than php "
+            "(11 vs 9); both engines report curl, mbstring, openssl and sockets, "
+            "and macOS matches. Cause not found yet")
+KNOWN = {}
+if sys.platform.startswith("linux"):
+    KNOWN = {
+        ("basic", "composer install"): SUGGESTS,
+        ("stream", "composer install --no-cache"): SUGGESTS,
+        ("ziparchive", "composer install --no-cache"): SUGGESTS,
+    }
 
 COMPOSER_JSON = {
     "name": "rhp/composer-test",

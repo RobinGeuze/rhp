@@ -453,9 +453,11 @@ impl Vm {
         scope: Option<Option<ClassId>>,
     ) -> Result<PhpArray, Thrown> {
         let cls = h.borrow().class;
-        let entries: Vec<(PhpStr, PropEntry)> = self.classes[cls as usize]
-            .props
-            .iter()
+        let props = &self.classes[cls as usize].props;
+        let entries: Vec<(PhpStr, PropEntry)> = self
+            .hooked_order(cls)
+            .into_iter()
+            .filter_map(|i| props.get_index(i))
             .map(|(k, pe)| (k.clone(), pe.clone()))
             .collect();
         let mut out = PhpArray::new();
@@ -521,6 +523,50 @@ impl Vm {
     }
 }
 
+impl Vm {
+    /// Whether foreach takes the hooked iterator: php's ce->get_iterator,
+    /// set for a class with hooked properties and inherited by its children
+    /// (a child that implements an abstract hooked property keeps it).
+    pub(crate) fn iterates_hooked(&self, cls: ClassId) -> bool {
+        let mut c = Some(cls);
+        while let Some(id) = c {
+            let e = &self.classes[id as usize];
+            if e.hooked {
+                return true;
+            }
+            c = e.parent;
+        }
+        false
+    }
+
+    /// The order zho_build_properties_ex walks `cls`'s properties in, as
+    /// indexes into `props`: the root class's first, then each child's new
+    /// ones. It differs from the slot order only where a redeclaration of an
+    /// inherited virtual property took a new slot at the end.
+    fn hooked_order(&self, cls: ClassId) -> Vec<usize> {
+        let props = &self.classes[cls as usize].props;
+        let Some(p) = self.classes[cls as usize].parent else {
+            return (0..props.len()).collect();
+        };
+        let mut seen = vec![false; props.len()];
+        let mut out = Vec::with_capacity(props.len());
+        let pprops = &self.classes[p as usize].props;
+        for pi in self.hooked_order(p) {
+            let Some((k, _)) = pprops.get_index(pi) else {
+                continue;
+            };
+            if let Some(i) = props.get_index_of(k) {
+                if !seen[i] {
+                    seen[i] = true;
+                    out.push(i);
+                }
+            }
+        }
+        out.extend((0..props.len()).filter(|&i| !seen[i]));
+        out
+    }
+}
+
 /// One step of a foreach over a hooked object (zend_hooked_object_get_iterator).
 enum IterStep {
     /// A plain slot, by storage key.
@@ -545,15 +591,23 @@ impl Vm {
             e.push(Value::Int(decl));
             plan.push(Value::Array(e));
         };
-        for (key, pe) in &entry.props {
+        for (key, pe) in self
+            .hooked_order(cls)
+            .into_iter()
+            .filter_map(|i| entry.props.get_index(i))
+        {
             if self.internal_slot(cls, key) {
                 continue;
             }
             let Some(shown) = classes::slot_accessible(&self.classes, cls, scope, key) else {
                 continue;
             };
-            if pe.hooks.is_some() {
+            if pe.hooks.is_some() && !self.is_prelude_class(pe.declaring_class) {
                 add(shown, pe.name.clone(), pe.declaring_class as i64);
+            } else if pe.hooks.is_some() && pe.virt {
+                // A prelude class's hooks stand for an internal class's
+                // property handlers, which foreach does not see.
+                continue;
             } else {
                 add(shown, key.clone(), -1);
             }

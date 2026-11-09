@@ -222,7 +222,7 @@ fn dispatch(
     let f = fname;
     match name {
         "getErrorCode" => return Ok(Value::Int(co.err.borrow().code as i64)),
-        "getErrorMessage" => return Ok(Value::str(co.err.borrow().message().into_bytes())),
+        "getErrorMessage" => return Ok(Value::str(co.err.borrow().message())),
         _ => {}
     }
     fetch(&co);

@@ -158,6 +158,7 @@ pub struct Vm {
     class_ids: rustc_hash::FxHashMap<Vec<u8>, ClassId>, // lowercase name -> id
     /// What class names in protos resolved to (`lookup_cache`).
     class_names: lookup_cache::ClassNameCache,
+    class_bytes: lookup_cache::ClassBytesCache,
     // The global symbol table (php's EG(symbol_table)), in insertion order:
     // one shared cell per global variable. {main}'s CVs, top-level included
     // files, `global $x` and `$GLOBALS[...]` all alias these cells.
@@ -390,6 +391,12 @@ pub struct Vm {
     // The {main} frame once the script finished (returned, exited or threw):
     // kept so shutdown functions and destructors still see the globals.
     finished_main: Option<Frame>,
+    // The primary script's return value, for the SAPI's `script_done`.
+    main_ret: Option<Value>,
+    // The next include runs as the request's next primary script.
+    primary_next: bool,
+    // php -a: the readline shell runs instead of a script.
+    interactive: bool,
     // The shutdown sequence's stack ({main} as an internal frame) is set up.
     in_shutdown_scope: bool,
     // Per-run extension state (`Host::module_state`), by module key.

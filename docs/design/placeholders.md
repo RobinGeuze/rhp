@@ -389,8 +389,9 @@ The original notes:
   rhp keeps no stat cache, so a php script that observes a *stale* cached
   stat (e.g. `filesize` after an external change without `clearstatcache`)
   sees fresh data under rhp. Known, deliberate gap. php's realpath cache is
-  kept (per request, `virtual_cwd::realpath_cache`): `realpath()` and the
-  path expansion of opens go through it, and `clearstatcache(true[, $path])`,
+  kept (per thread across requests, as php's ZTS build does,
+  `virtual_cwd::realpath_cache`): `realpath()`, include's path resolution
+  and the path expansion of opens go through it, and `clearstatcache(true[, $path])`,
   `unlink`, `rename` and `rmdir` clear it.
 
 ### 2.9 `touch` — RESOLVED
@@ -406,24 +407,24 @@ The original notes:
 
 ---
 
-### 2.11 `ext/sockets`: partial, not reported as loaded
+### 2.11 `ext/sockets`: reported; sendmsg and structured options missing
 
-- **Now:** `crates/rhp-builtins/src/ext/sockets/mod.rs` has `socket_import_stream`,
-  `socket_get_option`/`socket_set_option`, `socket_strerror`,
-  `socket_last_error`/`socket_clear_error`, the `Socket` class and the constants
-  (what react/socket uses beside stream sockets). `extension_loaded('sockets')` is
-  false (`registry/tests.rs` UNREPORTED_MODULES).
-- **Missing** (audited 2026-11-07 against `sockets.stub.php`): `socket_create`,
-  `_create_listen`, `_create_pair`, `_bind`, `_connect`, `_listen`, `_accept`,
-  `_read`/`_write`, `_recv`/`_recvfrom`/`_recvmsg`, `_send`/`_sendto`/`_sendmsg`,
-  `_select`, `_shutdown`, `_close`, `_set_block`/`_set_nonblock`,
-  `_getpeername`/`_getsockname`, `_export_stream`, `_atmark`, `_cmsg_space`, the
-  `socket_addrinfo_*` family and the Windows-only `socket_wsaprotocol_info_*`.
-- **Breaks:** code that checks `extension_loaded('sockets')` takes its no-sockets
-  path; Composer counts monolog's `ext-sockets` suggestion (12 suggestions where
-  php prints 11).
-- **Plan:** port the missing functions over the libc socket calls (php_sockets.h
-  semantics), then move `sockets` from UNREPORTED_MODULES to LOADED_EXTS.
+- **Now:** `crates/rhp-builtins/src/ext/sockets/` ports sockets.c and
+  sockaddr_conv.c: `Socket` and `AddressInfo`, socket_create/_listen/_pair,
+  bind, connect, listen, accept, read/write, recv/recvfrom, send/sendto,
+  select, shutdown, close, set_block/set_nonblock, getsockname/getpeername,
+  import/export_stream, atmark, the `socket_addrinfo_*` family, errors and
+  the int, linger and timeout options. The constants are the stub's
+  (`gen sockets-consts`), with the platform's values. `sockets` is reported
+  as loaded (ext/sockets: 58 of the 75 phpt that run on macOS).
+- **Missing:** socket_sendmsg, socket_recvmsg and socket_cmsg_space
+  (sendrecvmsg.c, conversions.c: not registered), the multicast options of
+  socket_set_option/socket_get_option (multicast.c: `MCAST_*`,
+  `IP_MULTICAST_*`, `IPV6_MULTICAST_*`), the other structured options
+  (`SO_BINDTODEVICE` string checks, `IPV6_PKTINFO`, `SO_ATTACH_*`), which
+  fall back to the int case, and the Windows-only `socket_wsaprotocol_info_*`.
+- **Plan:** port sendrecvmsg.c and conversions.c (the cmsg converters) and
+  multicast.c's option handlers.
 
 ## 3. Phar (`crates/rhp-builtins/src/ext/phar/mod.rs`)
 

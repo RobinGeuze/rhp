@@ -449,7 +449,7 @@ pub(super) fn fn_helper(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
     let dfo = common::state_of::<DateFmtObj>(&this).expect("an object");
     match call.name {
         "getErrorCode" => return Ok(Value::Int(dfo.err.borrow().code as i64)),
-        "getErrorMessage" => return Ok(Value::str(dfo.err.borrow().message().into_bytes())),
+        "getErrorMessage" => return Ok(Value::str(dfo.err.borrow().message())),
         _ => {}
     }
     let cal = if call.name == "setCalendar" {

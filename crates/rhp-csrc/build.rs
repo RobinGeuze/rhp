@@ -13,6 +13,9 @@ fn main() {
     let timelib = std::env::var_os("CARGO_FEATURE_TIMELIB").is_some();
     let avifinfo = std::env::var_os("CARGO_FEATURE_AVIFINFO").is_some();
     let fileinfo = std::env::var_os("CARGO_FEATURE_FILEINFO").is_some();
+    let cli_server = std::env::var_os("CARGO_FEATURE_CLI_SERVER").is_some();
+    let lexbor = std::env::var_os("CARGO_FEATURE_LEXBOR").is_some();
+    let calendar = std::env::var_os("CARGO_FEATURE_CALENDAR").is_some();
     println!("cargo:rerun-if-changed=build.rs");
 
     // The shim, for every crate that compiles php-src C (rhp-mbfl-sys reads
@@ -127,6 +130,78 @@ fn main() {
         b.file(dir.join("php_libmagic.c"))
             .file("glue/fileinfo.c")
             .compile("rhp_csrc_fileinfo");
+        rerun(&["glue", "vendor/php-src"]);
+    }
+
+    if cli_server {
+        // sapi/cli's HTTP request parser and mime type table, for rhp -S:
+        // plain C with no php headers (glue/cli_server stands in for
+        // php_config.h).
+        let dir = Path::new("vendor/php-src/sapi/cli");
+        let mut b = cc::Build::new();
+        b.include(dir)
+            .include("glue/cli_server")
+            .opt_level(2)
+            .warnings(false)
+            .flag("-fvisibility=hidden")
+            .flag("-include")
+            .flag(glue("prefix_cli_server.h"))
+            .file(dir.join("php_http_parser.c"))
+            .file("glue/cli_server.c")
+            .compile("rhp_csrc_cli_server");
+        rerun(&["glue", "vendor/php-src"]);
+    }
+
+    if lexbor {
+        // ext/lexbor/config.m4: lexbor's sources (not url, punycode and
+        // unicode, which only ext/uri uses) with -I ext/lexbor. rhp-builtins
+        // compiles ext/dom's lexbor glue against the same headers and
+        // prefix (DEP_RHP_CSRC_LEXBOR_INCLUDE, DEP_RHP_CSRC_LEXBOR_PREFIX).
+        let dir = Path::new("vendor/php-src/ext/lexbor");
+        let m4 = std::fs::read_to_string(dir.join("config.m4")).unwrap();
+        let mut b = cc::Build::new();
+        b.include(dir)
+            .include("shim")
+            .opt_level(2)
+            .warnings(false)
+            .define("LEXBOR_STATIC", None)
+            .flag("-fvisibility=hidden")
+            .flag("-include")
+            .flag(glue("prefix_lexbor.h"));
+        let mut n = 0;
+        for f in m4.split_whitespace() {
+            let Some(f) = f.strip_prefix("$LEXBOR_DIR/") else {
+                continue;
+            };
+            if f.ends_with(".c")
+                && !["url/", "punycode/", "unicode/"]
+                    .iter()
+                    .any(|m| f.starts_with(m))
+            {
+                b.file(dir.join("lexbor").join(f));
+                n += 1;
+            }
+        }
+        assert!(n > 100, "no lexbor sources found in config.m4");
+        b.file("glue/lexbor.c").compile("rhp_csrc_lexbor");
+        println!("cargo:lexbor_include={}", manifest.join(dir).display());
+        println!("cargo:lexbor_prefix={}", glue("prefix_lexbor.h").display());
+        rerun(&["glue", "vendor/php-src"]);
+    }
+
+    if calendar {
+        // ext/calendar's date conversions (sdncal.h), which need only
+        // zend_long from the shim; calendar.c, easter.c and cal_unix.c are
+        // ported to Rust (rhp-builtins ext/calendar).
+        let dir = Path::new("vendor/php-src/ext/calendar");
+        let mut b = php_cc();
+        b.include(dir)
+            .flag("-include")
+            .flag(glue("prefix_calendar.h"));
+        for f in ["dow.c", "french.c", "gregor.c", "jewish.c", "julian.c"] {
+            b.file(dir.join(f));
+        }
+        b.compile("rhp_csrc_calendar");
         rerun(&["glue", "vendor/php-src"]);
     }
 

@@ -441,3 +441,62 @@ fn phar_scripts_are_cached_like_files() {
         );
     });
 }
+
+#[test]
+fn another_name_is_served_by_its_key_without_a_stat() {
+    on_own_thread(|| {
+        let d = Dir::new("keys");
+        std::fs::create_dir_all(d.0.join("sub")).unwrap();
+        d.file("lib.php", "<?php return 'v1';", 500);
+        let main = d.file(
+            "main.php",
+            &format!(
+                "<?php echo include __DIR__ . '/sub/../lib.php', include 'lib.php', \"\\n\";{STATS}"
+            ),
+            500,
+        );
+        let ini = [("opcache.revalidate_freq", "2"), ("include_path", ".")];
+        assert_eq!(
+            request(&main, &ini, 1000),
+            "v1v1\nhits=1 misses=2 scripts=2\n"
+        );
+        // Both names are keys now: found without resolving or opening the
+        // file, and inside the revalidate window without a stat.
+        d.file("lib.php", "<?php return 'v2';", 600);
+        assert_eq!(
+            request(&main, &ini, 1001),
+            "v1v1\nhits=4 misses=2 scripts=2\n"
+        );
+        assert_eq!(
+            request(&main, &ini, 1003),
+            "v2v2\nhits=6 misses=3 scripts=2\n"
+        );
+    });
+}
+
+#[test]
+fn the_realpath_cache_lives_as_long_as_the_thread() {
+    on_own_thread(|| {
+        let d = Dir::new("realpath");
+        std::fs::create_dir_all(d.0.join("a")).unwrap();
+        std::fs::create_dir_all(d.0.join("b")).unwrap();
+        std::os::unix::fs::symlink(d.0.join("a"), d.0.join("cur")).unwrap();
+        let main = d.file(
+            "main.php",
+            "<?php echo basename(realpath(__DIR__ . '/cur')), ' ', \
+             count(array_filter(array_keys(realpath_cache_get()), \
+             fn($k) => str_ends_with($k, '/cur'))), \"\\n\";",
+            500,
+        );
+        assert_eq!(request(&main, &[], 1000), "a 1\n");
+        // php-fpm's workers keep the cache between requests: the swapped
+        // link still resolves to the old target until the TTL ends.
+        std::fs::remove_file(d.0.join("cur")).unwrap();
+        std::os::unix::fs::symlink(d.0.join("b"), d.0.join("cur")).unwrap();
+        assert_eq!(request(&main, &[], 1001), "a 1\n");
+        // Other settings: a cache of their own, empty.
+        let off = [("realpath_cache_size", "0")];
+        assert_eq!(request(&main, &off, 1002), "b 0\n");
+        assert_eq!(request(&main, &[], 1003), "b 1\n");
+    });
+}

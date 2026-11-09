@@ -1,0 +1,60 @@
+Property [ public S $status = S::U ]
+bool(true)
+enum(S::U)
+Property [ public ?S $n = NULL ]
+bool(true)
+NULL
+Property [ public static $st = self::C + 1 ]
+bool(true)
+int(4)
+Property [ public $arr = [self::C, S::U] ]
+bool(true)
+array(2) {
+  [0]=>
+  int(3)
+  [1]=>
+  enum(S::U)
+}
+Property [ private $q = 9223372036854775807 ]
+bool(true)
+int(9223372036854775807)
+Property [ public int $z = 16 ]
+bool(true)
+int(16)
+Property [ public $e = 30719 ]
+bool(true)
+int(30719)
+Property [ public $w = 1 ]
+bool(true)
+int(1)
+Property [ public $t = 'Dx' ]
+bool(true)
+string(2) "Dx"
+array(9) {
+  ["st"]=>
+  int(4)
+  ["status"]=>
+  enum(S::U)
+  ["n"]=>
+  NULL
+  ["arr"]=>
+  array(2) {
+    [0]=>
+    int(3)
+    [1]=>
+    enum(S::U)
+  }
+  ["q"]=>
+  int(9223372036854775807)
+  ["z"]=>
+  int(16)
+  ["e"]=>
+  int(30719)
+  ["w"]=>
+  int(1)
+  ["t"]=>
+  string(2) "Dx"
+}
+Property [ public S $status = S::U ]
+Property [ public static $st = self::C + 1 ]
+Undefined constant "UNDEF_CONST"

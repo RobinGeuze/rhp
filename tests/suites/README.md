@@ -79,8 +79,10 @@ Per suite: setup (the work dir is cached on the manifest and lock), a php
 run, an rhp run, then `compare --check-known`. It fails on regressions; the
 job summary lists the counts, the newly passing tests and the failure
 clusters, and the artifact has every log plus `passing.txt`, the list to
-commit. The lists started empty; commit them from the first green nightly
-(or a local run).
+commit. The first lists (2026-11-08) come from a local macOS run: two php
+runs (no test unstable) and one rhp run of app-wave3. A test that fails only
+on Linux shows up as a nightly regression; take it off the list with the
+reason in the commit.
 
 PR CI runs only the runner's own tests (`test_suites.py`).
 

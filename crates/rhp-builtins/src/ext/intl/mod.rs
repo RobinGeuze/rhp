@@ -165,6 +165,78 @@ fn class_const_decls(class: &str) -> String {
     out
 }
 
+/// The compiler's flags for prelude function `class::name` (or `name`):
+/// those of an intl stub function or method, see [`common::flags`].
+pub(crate) fn prelude_flags(class: Option<&[u8]>, name: &[u8]) -> rhp_bytecode::ProtoFlags {
+    use rhp_bytecode::signatures as sigs;
+    // Every prelude function and method asks: rule out the others with an
+    // exact-name search of intl's own (as the prelude declares them).
+    /// intl's class names and function names, sorted.
+    type Names = (Vec<&'static [u8]>, Vec<&'static [u8]>);
+    static NAMES: OnceLock<Names> = OnceLock::new();
+    let (classes, funcs) = NAMES.get_or_init(|| {
+        let mut c: Vec<&[u8]> = sigs::classes()
+            .iter()
+            .filter(|c| c.ext == "intl")
+            .map(|c| c.name.as_bytes())
+            .collect();
+        let mut f: Vec<&[u8]> = sigs::functions()
+            .iter()
+            .filter(|f| f.ext == "intl")
+            .map(|f| f.name.as_bytes())
+            .collect();
+        c.sort_unstable();
+        f.sort_unstable();
+        (c, f)
+    });
+    let none = rhp_bytecode::ProtoFlags::default();
+    match class {
+        None if funcs.binary_search(&name).is_ok() => match sigs::function(name) {
+            Some(f) => common::flags(f.name, f.params),
+            None => none,
+        },
+        Some(c) if classes.binary_search(&c).is_ok() => match sigs::method(c, name) {
+            Some(m) => common::flags(&format!("{}::{}", m.class, m.name), m.params),
+            None => none,
+        },
+        _ => none,
+    }
+}
+
+/// `intl_error_reset(NULL)` ahead of zend_parse_parameters, for the
+/// prelude functions with ProtoFlags::BEFORE_ZPP.
+pub(crate) fn before_zpp() {
+    error::error_reset();
+}
+
+/// [`before_zpp`] for intl's native functions: all but these reset the
+/// global error first (measured with php, as common.rs's KEEPS_ERROR).
+pub(crate) fn before_failed_zpp(name: &str) {
+    const KEEPS_ERROR: &[&str] = &[
+        "intl_error_name",
+        "intl_get_error_code",
+        "intl_get_error_message",
+        "intl_is_failure",
+        "locale_accept_from_http",
+        "locale_add_likely_subtags",
+        "locale_get_default",
+        "locale_is_right_to_left",
+        "locale_minimize_subtags",
+        "locale_set_default",
+    ];
+    if !name.starts_with("grapheme_") && !KEEPS_ERROR.contains(&name) {
+        error::error_reset();
+    }
+}
+
+/// The E_DEPRECATED a fetch of common.stub.php's one `#[\Deprecated]`
+/// global constant raises.
+pub(crate) fn constant_deprecation(name: &[u8]) -> Option<String> {
+    (name == b"U_MULTIPLE_DECIMAL_SEPERATORS").then(|| {
+        "Constant U_MULTIPLE_DECIMAL_SEPERATORS is deprecated since 8.3, use U_MULTIPLE_DECIMAL_SEPARATORS instead".into()
+    })
+}
+
 /// The E_DEPRECATED a fetch of a `#[\Deprecated]` intl class constant
 /// raises (NumberFormatter::TYPE_CURRENCY).
 pub(crate) fn class_constant_deprecation(class: &[u8], name: &[u8]) -> Option<String> {
@@ -213,7 +285,7 @@ fn fn_intl_get_error_code(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Th
 }
 
 fn fn_intl_get_error_message(_: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
-    Ok(Value::str(error::error_message().into_bytes()))
+    Ok(Value::str(error::error_message()))
 }
 
 fn fn_intl_is_failure(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -447,7 +519,7 @@ pub(crate) fn locale_too_long(
             host,
             fname,
             sys::U_ILLEGAL_ARGUMENT_ERROR,
-            &format!("Locale string too long, should be no longer than {max} characters"),
+            format!("Locale string too long, should be no longer than {max} characters"),
         )?;
         return Ok(true);
     }

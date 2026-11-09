@@ -121,12 +121,12 @@ class Exception implements Throwable {
         if (isset($this->message) && !is_string($this->message)) { unset($this->message); }
         if (isset($this->code) && !is_int($this->code)) { unset($this->code); }
     }
-    final public function getMessage() { return $this->message; }
+    final public function getMessage() { return (string) $this->message; }
     final public function getCode() { return $this->code; }
-    final public function getPrevious() { return $this->previous; }
-    final public function getFile() { return $this->file; }
-    final public function getLine() { return $this->line; }
+    final public function getFile() { return (string) $this->file; }
+    final public function getLine() { return (int) $this->line; }
     final public function getTrace() { return $this->trace; }
+    final public function getPrevious() { return $this->previous; }
     final public function getTraceAsString() { return __exception_trace_string($this->trace); }
     public function __toString() { return $this->string = __throwable_string($this); }
     // ErrorException's constructor sets the private `previous` (php writes
@@ -153,12 +153,12 @@ class Error implements Throwable {
         if (isset($this->message) && !is_string($this->message)) { unset($this->message); }
         if (isset($this->code) && !is_int($this->code)) { unset($this->code); }
     }
-    final public function getMessage() { return $this->message; }
+    final public function getMessage() { return (string) $this->message; }
     final public function getCode() { return $this->code; }
-    final public function getPrevious() { return $this->previous; }
-    final public function getFile() { return $this->file; }
-    final public function getLine() { return $this->line; }
+    final public function getFile() { return (string) $this->file; }
+    final public function getLine() { return (int) $this->line; }
     final public function getTrace() { return $this->trace; }
+    final public function getPrevious() { return $this->previous; }
     final public function getTraceAsString() { return __exception_trace_string($this->trace); }
     public function __toString() { return $this->string = __throwable_string($this); }
 }

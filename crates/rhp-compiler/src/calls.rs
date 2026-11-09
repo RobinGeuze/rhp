@@ -463,7 +463,8 @@ impl ProtoBuilder<'_> {
                     slots.push(ArgSlot::Pass(r));
                     continue;
                 }
-                let r = self.snapshot_arg(&fc.argument_list, i, p.value, r);
+                let r =
+                    self.snapshot_arg(later_arg_may_write_list(&fc.argument_list, i), p.value, r);
                 slots.push(ArgSlot::Value(r));
             }
         }
@@ -1244,6 +1245,21 @@ impl ProtoBuilder<'_> {
         over_approx: bool,
         target: Option<ArgRefTarget>,
     ) -> Result<(Reg, u16), Thrown> {
+        let v: Vec<Argument> = args
+            .map(|l| l.arguments.iter().cloned().collect())
+            .unwrap_or_default();
+        self.compile_arg_window_of(&v, ref_mask, over_approx, target)
+    }
+
+    /// [`compile_arg_window_t`] over a slice of arguments (an anonymous
+    /// class's list is a partial one).
+    pub(crate) fn compile_arg_window_of(
+        &mut self,
+        list: &[Argument],
+        ref_mask: &[bool],
+        over_approx: bool,
+        target: Option<ArgRefTarget>,
+    ) -> Result<(Reg, u16), Thrown> {
         enum Slot {
             Value(Reg),
             Ref(Reg),
@@ -1251,8 +1267,8 @@ impl ProtoBuilder<'_> {
         }
         let mut slots = Vec::new();
         let mut kinds = Vec::new();
-        if let Some(list) = args {
-            for (i, arg) in list.arguments.iter().enumerate() {
+        {
+            for (i, arg) in list.iter().enumerate() {
                 let p = match arg {
                     Argument::Positional(p) if p.ellipsis.is_none() => p,
                     Argument::Positional(_) => {
@@ -1266,7 +1282,16 @@ impl ProtoBuilder<'_> {
                     if (over_approx || ref_mask.get(i).copied().unwrap_or(false))
                         && !matches!(strip_dollar(d.name), b"GLOBALS" | b"this")
                     {
-                        slots.push(Slot::Ref(self.cv(strip_dollar(d.name))));
+                        let cv = self.cv(strip_dollar(d.name));
+                        // A later argument assigns the variable: SEND_VAR_EX
+                        // asks the callee now and copies a by-value one
+                        // before that runs (`f($p, $p = new X)`).
+                        if let (Some(t), true) = (target, later_arg_may_change(list, i, d.name)) {
+                            let r = self.send_var_ex_now(cv, t, i as u16);
+                            slots.push(Slot::Ref(r));
+                            continue;
+                        }
+                        slots.push(Slot::Ref(cv));
                         continue;
                     }
                 }
@@ -1294,7 +1319,7 @@ impl ProtoBuilder<'_> {
                     slots.push(Slot::Pass(r));
                     continue;
                 }
-                let r = self.snapshot_arg(list, i, p.value, r);
+                let r = self.snapshot_arg(later_arg_may_write(list, i), p.value, r);
                 slots.push(Slot::Value(r));
             }
         }
@@ -1317,6 +1342,27 @@ impl ProtoBuilder<'_> {
             }
         }
         Ok((base, argc))
+    }
+
+    /// A variable sent by SEND_VAR_EX at this point: a reference when the
+    /// callee's parameter `idx` is by reference, else a copy of its value.
+    fn send_var_ex_now(&mut self, cv: Reg, target: ArgRefTarget, idx: u16) -> Reg {
+        let flag = self.emit_arg_is_ref(target, idx);
+        let t = self.alloc_temp();
+        let jf = self.code.len();
+        self.emit(Instr::Nop); // JmpFalse flag -> by_value
+        self.emit(Instr::MakeRef { dst: t, cv });
+        let jend = self.code.len();
+        self.emit(Instr::Nop); // Jmp -> end
+        let by_value = self.here();
+        self.code[jf] = Instr::JmpFalse {
+            cond: flag,
+            target: by_value,
+        };
+        self.emit(Instr::Mov { dst: t, src: cv });
+        let end = self.here();
+        self.code[jend] = Instr::Jmp { target: end };
+        t
     }
 
     /// One SEND_FUNC_ARG argument: `$t = callee-param-is-ref ? &lvalue :
@@ -1497,16 +1543,8 @@ impl ProtoBuilder<'_> {
     /// after every argument ran. Snapshot it into a temp now when a later
     /// argument could change it (`f($m, g($m))` with a by-ref `g`): php
     /// evaluates arguments strictly left to right.
-    fn snapshot_arg(
-        &mut self,
-        list: &crate::parse::cst::ArgumentList,
-        i: usize,
-        expr: &Expression,
-        r: Reg,
-    ) -> Reg {
-        if !later_arg_may_write_list(list, i)
-            || !matches!(expr, Expression::Variable(Variable::Direct(_)))
-        {
+    fn snapshot_arg(&mut self, later_writes: bool, expr: &Expression, r: Reg) -> Reg {
+        if !later_writes || !matches!(expr, Expression::Variable(Variable::Direct(_))) {
             return r;
         }
         let t = self.alloc_temp();
@@ -2032,6 +2070,63 @@ fn args_assign_name(list: &crate::parse::cst::ArgumentList, name: &[u8]) -> bool
         matches!(e, Expression::Assignment(x)
             if matches!(x.lhs, Expression::Variable(Variable::Direct(d)) if d.name == name))
     })
+}
+
+/// Whether an argument after the `i`th assigns or increments the plain
+/// variable `name` (with its `$`) at its top level.
+fn later_arg_assigns(list: &[Argument], i: usize, name: &[u8]) -> bool {
+    use crate::parse::cst::{UnaryPostfixOperator as Post, UnaryPrefixOperator as Pre};
+    let is_var =
+        |e: &Expression| matches!(e, Expression::Variable(Variable::Direct(d)) if d.name == name);
+    list.iter()
+        .skip(i + 1)
+        .any(|a| match crate::util::unparen(arg_value(a)) {
+            Expression::Assignment(x) => is_var(x.lhs),
+            Expression::UnaryPostfix(u) => {
+                matches!(u.operator, Post::PostIncrement(_) | Post::PostDecrement(_))
+                    && is_var(u.operand)
+            }
+            Expression::UnaryPrefix(u) => {
+                matches!(u.operator, Pre::PreIncrement(_) | Pre::PreDecrement(_))
+                    && is_var(u.operand)
+            }
+            _ => false,
+        })
+}
+
+/// [`later_arg_assigns`], or a later argument that mentions `name` inside
+/// an expression that can write it (`[$p] = ..`, `$q = $p = 1`, `g($p)`
+/// with a by-ref `g`).
+fn later_arg_may_change(list: &[Argument], i: usize, name: &[u8]) -> bool {
+    use crate::parse::cst::{Node, UnaryPostfixOperator as Post, UnaryPrefixOperator as Pre};
+    fn scan(node: Node, name: &[u8], mentions: &mut bool, writes: &mut bool) {
+        match node {
+            Node::DirectVariable(d) if d.name == name => *mentions = true,
+            Node::Assignment(_) | Node::Call(_) | Node::Instantiation(_) => *writes = true,
+            Node::UnaryPrefix(u)
+                if matches!(u.operator, Pre::PreIncrement(_) | Pre::PreDecrement(_)) =>
+            {
+                *writes = true
+            }
+            Node::UnaryPostfix(u)
+                if matches!(u.operator, Post::PostIncrement(_) | Post::PostDecrement(_)) =>
+            {
+                *writes = true
+            }
+            _ => {}
+        }
+        node.visit_children(|ch| scan(ch, name, mentions, writes));
+    }
+    later_arg_assigns(list, i, name)
+        || list.iter().skip(i + 1).any(|a| {
+            let e = arg_value(a);
+            if !arg_may_write(a) {
+                return false;
+            }
+            let (mut m, mut w) = (false, false);
+            scan(Node::Expression(e), name, &mut m, &mut w);
+            m && w
+        })
 }
 
 /// The expression an argument passes.

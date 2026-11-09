@@ -1,0 +1,13 @@
+string(38) "<?xml version="1.0"?>
+<s><t>1</t></s>
+"
+string(8) "<t>1</t>"
+string(38) "<?xml version="1.0"?>
+<s><t>1</t></s>
+"
+string(68) "<?xml version="1.0" encoding="UTF-8"?>
+<r xmlns:a="urn:a"><a:q/></r>"
+string(68) "<?xml version="1.0" encoding="UTF-8"?>
+<r xmlns:a="urn:a"><a:q/></r>"
+string(22) "<a:q xmlns:a="urn:a"/>"
+Dom\Document::importNode(): Argument #1 ($node) must be of type Dom\Node, null given

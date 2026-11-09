@@ -56,7 +56,7 @@ num-integer = "0.1"
 
 # crypt() and password_*: php-src's crypt C and the argon2 reference C php
 # links, compiled from source and linked statically.
-rhp-csrc = { path = "../rhp-csrc", default-features = false, features = ["crypt", "argon2", "timelib", "avifinfo", "fileinfo"] }
+rhp-csrc = { path = "../rhp-csrc", default-features = false, features = ["crypt", "argon2", "timelib", "avifinfo", "fileinfo", "lexbor", "calendar"] }
 rhp-mbfl-sys = { path = "../rhp-mbfl-sys", optional = true }
 
 # zlib + phar per-file compression + ZipArchive: raw DEFLATE / zlib / gzip,

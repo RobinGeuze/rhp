@@ -3422,7 +3422,7 @@ impl Vm {
                     self.call_iter_method(&obj, b"rewind")?;
                     self.reg_set(top, arr_reg, Value::Object(obj));
                     self.reg_set(top, pos_reg, Value::Int(0));
-                } else if self.classes[ocls as usize].hooked {
+                } else if self.iterates_hooked(ocls) {
                     let obj = self.lazy_props_object(&obj)?;
                     self.fe_iter_handle(top, pos_reg, ocls);
                     let scope = self.stack[top].defining_class;
@@ -3738,8 +3738,8 @@ impl Vm {
                 // get_properties initializes a lazy object (a proxy iterates
                 // its instance, see FeFetchRef).
                 let h = self.lazy_props_object(&h)?;
-                if self.classes[h.borrow().class as usize].hooked {
-                    let cls = h.borrow().class;
+                let cls = h.borrow().class;
+                if self.iterates_hooked(cls) {
                     self.fe_iter_handle(top, pos_reg, cls);
                     let scope = self.stack[top].defining_class;
                     let st = self.hooked_iter_state(&h, scope);

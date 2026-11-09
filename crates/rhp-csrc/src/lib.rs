@@ -14,10 +14,16 @@
 pub mod argon2;
 #[cfg(feature = "avifinfo")]
 pub mod avifinfo;
+#[cfg(feature = "calendar")]
+pub mod calendar;
+#[cfg(feature = "cli_server")]
+pub mod cli_server;
 #[cfg(feature = "crypt")]
 pub mod crypt;
 #[cfg(feature = "fileinfo")]
 pub mod fileinfo;
+#[cfg(feature = "lexbor")]
+pub mod lexbor;
 #[cfg(feature = "timelib")]
 pub mod timelib;
 

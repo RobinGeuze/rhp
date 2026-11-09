@@ -414,7 +414,40 @@ fn asctime(t: i64) -> String {
 const LOG_INFO: i64 = 3;
 const LOG_DEBUG: i64 = 4;
 
+impl Cache {
+    /// zend_accel_add_key: `key` (a name the script at `path` was asked
+    /// for by) as another name of that cached script, while there is room.
+    fn add_key(&mut self, key: Option<&[u8]>, path: &[u8]) {
+        let Some(k) = key else {
+            return;
+        };
+        let room = ((self.scripts.len() + self.keys.len()) as i64)
+            < self.startup.as_ref().map_or(0, |s| s.max_entries);
+        if room && self.scripts.contains_key(path) && !self.keys.contains_key(k) {
+            self.keys.insert(k.to_vec(), path.to_vec());
+            let shown = String::from_utf8_lossy(k).into_owned();
+            self.log.push((LOG_INFO, format!("Added key '{shown}'")));
+        }
+    }
+}
+
 impl Vm {
+    /// persistent_zend_resolve_path's step for an `include_once` /
+    /// `require_once` that resolved `given` to the cached script at `path`:
+    /// php adds `given` as another key of it, included already or not.
+    pub(crate) fn opcache_note_once(&mut self, given: &[u8], path: &[u8]) {
+        if !self.opcache_on() || self.revalidate_path() {
+            return;
+        }
+        let key = self.persistent_key(given, path);
+        with_cache(|c| {
+            if c.scripts.get(path).is_some_and(|s| !s.corrupted) {
+                c.add_key(key.as_deref(), path);
+            }
+        });
+        self.flush_accel_log();
+    }
+
     /// Write the cache's pending `zend_accel_error` lines to opcache's log.
     fn flush_accel_log(&mut self) {
         let msgs = with_cache(|c| std::mem::take(&mut c.log));
@@ -424,6 +457,12 @@ impl Vm {
             }
         }
         rhp_values::mem::uncounted(|| drop(msgs));
+    }
+
+    /// opcache.revalidate_path: php then never looks a script up, or adds
+    /// it, under the name it was asked for; only its resolved path counts.
+    fn revalidate_path(&self) -> bool {
+        ini_flag(&self.ini(b"opcache.revalidate_path"))
     }
 
     fn ini(&self, name: &[u8]) -> Vec<u8> {
@@ -588,18 +627,12 @@ impl Vm {
             script.last_used = request_time;
             Some(script.program(kind).cloned())
         });
-        let key = self.persistent_key(given, path);
-        let add_key = |c: &mut Cache| {
-            if let Some(k) = &key {
-                let room = ((c.scripts.len() + c.keys.len()) as i64)
-                    < c.startup.as_ref().map_or(0, |s| s.max_entries);
-                if room && c.scripts.contains_key(path) && !c.keys.contains_key(k) {
-                    c.keys.insert(k.clone(), path.to_vec());
-                    let shown = String::from_utf8_lossy(k).into_owned();
-                    c.log.push((LOG_INFO, format!("Added key '{shown}'")));
-                }
-            }
+        let key = if self.revalidate_path() {
+            None
+        } else {
+            self.persistent_key(given, path)
         };
+        let add_key = |c: &mut Cache| c.add_key(key.as_deref(), path);
         match found {
             Some(Some(p)) => {
                 with_cache(add_key);
@@ -665,7 +698,8 @@ impl Vm {
         if given == path || given.is_empty() {
             return None;
         }
-        if given.starts_with(b"/") {
+        // opcache.use_cwd=0: a relative name is a key as it is.
+        if given.starts_with(b"/") || !ini_flag(&self.ini(b"opcache.use_cwd")) {
             return Some(given.to_vec());
         }
         let mut k = given.to_vec();
@@ -813,43 +847,73 @@ impl Vm {
     /// `zend_resolve_path`: the real path include would open, or None.
     fn opcache_resolve(&self, path: &[u8]) -> Option<Vec<u8>> {
         let top = self.stack.len().checked_sub(1)?;
-        let p = String::from_utf8_lossy(path).into_owned();
-        self.resolve_include_file(top, &p).map(|(rp, _)| rp)
+        self.resolve_include_path(top, path)
     }
 
-    /// An include of an absolute path that is a cached script, still valid:
-    /// php finds it by that name without opening it. Outside the revalidate
-    /// window php also resolves the path and discards the script when it
-    /// now names another file (a path component became a symlink); this
-    /// checks only the mtime. Other includes always resolve the path first,
-    /// as php does with `opcache.revalidate_path=1`.
-    pub(crate) fn opcache_fast_hit(&mut self, given: &[u8]) -> bool {
-        if !given.starts_with(b"/") || !self.opcache_on() {
-            return false;
+    /// persistent_compile_file's lookup by the name an include asked for
+    /// (php's default opcache.revalidate_path=0): the resolved path of a
+    /// cached script found under that name (an absolute path, or a
+    /// relative one qualified as accel_make_persistent_key does) and still
+    /// valid. php then neither opens nor resolves the file; within the
+    /// revalidate window it doesn't stat it either. Outside it, the name is
+    /// resolved again (through the realpath cache) and the script is
+    /// discarded when it now names another file (do_validate_timestamps);
+    /// a changed mtime goes the long way, which discards and recompiles.
+    pub(crate) fn opcache_lookup_name(&mut self, top: usize, given: &[u8]) -> Option<Vec<u8>> {
+        if given.is_empty()
+            || builtins::main::streams::split_scheme(given).0 != b"file"
+            || !self.opcache_on()
+            || self.revalidate_path()
+        {
+            return None;
         }
+        let key = self.persistent_key(given, b"");
+        let key = key.as_deref().unwrap_or(given);
+        let real = read_cache(|c| {
+            let real = if c.scripts.contains_key(key) {
+                key.to_vec()
+            } else {
+                c.keys.get(key)?.clone()
+            };
+            let s = c.scripts.get(&real)?;
+            (!s.corrupted && s.include.is_some()).then_some(real)
+        })?;
         let validate = ini_flag(&self.ini(b"opcache.validate_timestamps"));
+        if !validate {
+            return Some(real);
+        }
         let freq = self.ini_long(b"opcache.revalidate_freq");
         let request_time = self.opcache_request().request_time;
-        with_cache(|c| {
-            let Some(s) = c
-                .scripts
-                .get_mut(given)
-                .filter(|s| !s.corrupted && s.include.is_some())
-            else {
-                return false;
-            };
-            if validate && s.timestamp != 0 && !(freq != 0 && s.revalidate >= request_time) {
-                // A changed file goes the long way: discarded, recompiled.
-                if self
-                    .script_stat(given)
-                    .is_none_or(|(m, _)| m != s.timestamp)
-                {
-                    return false;
+        let (timestamp, revalidate) = read_cache(|c| {
+            let s = &c.scripts[&real];
+            (s.timestamp, s.revalidate)
+        });
+        if timestamp == 0 || (freq != 0 && revalidate >= request_time) {
+            return Some(real);
+        }
+        if self
+            .resolve_include_path(top, given)
+            .is_some_and(|r| r != real)
+        {
+            with_cache(|c| {
+                if let Some(s) = c.scripts.get_mut(&real) {
+                    s.corrupted = true;
+                    s.main = None;
+                    s.include = None;
+                    c.wasted += s.memory;
                 }
+            });
+            return None;
+        }
+        if self.script_stat(&real).is_none_or(|(m, _)| m != timestamp) {
+            return None;
+        }
+        with_cache(|c| {
+            if let Some(s) = c.scripts.get_mut(&real) {
                 s.revalidate = request_time + freq;
             }
-            true
-        })
+        });
+        Some(real)
     }
 
     /// Whether the cache has a script under the name `given` (resolving to

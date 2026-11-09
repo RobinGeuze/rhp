@@ -165,7 +165,7 @@ exposed to Rust via maintained `-sys` crates (or is trivially bindgen-able):
 | `intl`, parts of `mbstring` (casing, collation, normalization), `IntlDateFormatter` | **ICU** (`libicui18n`/`libicuuc`) | `icu`/`rust_icu_*` (bindgen over system ICU), or ICU4X (pure Rust, *different data*) |
 | `mb_ereg*` | **Oniguruma** (`libonig`) | `onig` crate |
 | `dom`, `simplexml`, `xml` | **libxml2** | `libxml`/bindgen |
-| `openssl`, `hash` (some), `sodium` | **OpenSSL**, **libsodium** | `openssl`/`openssl-sys`, `libsodium-sys` |
+| `openssl`, `hash` (some), `sodium` | **OpenSSL**, **libsodium** | `openssl`/`openssl-sys`; libsodium through rhp's own declarations (`ext/sodium/sys.rs`) |
 | `zlib`, `gzencode`, `gzip` streams | **zlib** | `libz-sys`/`flate2` (zlib backend) |
 | `bcmath` | **libmpdec** (mpdecimal) | bindgen (no mature crate) |
 | `gmp` | **GMP** | `rug`/`gmp-mpfr-sys` |

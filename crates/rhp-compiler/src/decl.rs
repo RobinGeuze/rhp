@@ -231,7 +231,11 @@ pub(crate) fn compile_attributes(
                             break;
                         }
                     }
-                    let names = AttrNames { cx, class_name };
+                    let names = AttrNames {
+                        cx,
+                        class_name,
+                        subst: false,
+                    };
                     for (n, e) in &items {
                         use crate::ast_export::ConstExprNames;
                         let show = match names.fold(e) {
@@ -313,6 +317,9 @@ pub(crate) fn compile_attributes(
 struct AttrNames<'c, 's> {
     cx: &'c FileCtx<'s>,
     class_name: Option<&'c PhpStr>,
+    /// Substitute builtin constants (zend_try_ct_eval_const), as php does
+    /// outside parameter defaults.
+    subst: bool,
 }
 
 impl AttrNames<'_, '_> {
@@ -366,6 +373,9 @@ impl crate::ast_export::ConstExprNames for AttrNames<'_, '_> {
                     Value::Null => self.fold(b.rhs),
                     v => Some(v),
                 };
+            }
+            Expression::ConstantAccess(ca) if self.subst => {
+                return crate::fold::ct_constant(self.cx, &ca.name);
             }
             Expression::MagicConstant(MagicConstant::Class(_)) => {
                 return match self.class_name {
@@ -497,6 +507,7 @@ pub(crate) fn decl_meta(
         start_line: cx.line_of(start),
         offset: start,
         end_line: cx.line_of(end.saturating_sub(1).max(start)),
+        default_text: None,
     })
 }
 
@@ -505,6 +516,22 @@ pub(crate) fn decl_meta(
 /// constant / class-constant reference, and the zend_ast_export text of a
 /// default php does not fold at compile time (zend_compile_params turns
 /// constant substitution off, so every constant stays a name).
+/// The zend_ast_export text of a property default php keeps as a
+/// constant AST (one not folded at compile time).
+fn prop_default_text(cx: &FileCtx, e: &Expression, class_name: &PhpStr) -> Option<PhpStr> {
+    let names = AttrNames {
+        cx,
+        class_name: Some(class_name),
+        subst: true,
+    };
+    if fold_const(cx, e).is_ok() || folds_whole(&names, e) {
+        return None;
+    }
+    Some(PhpStr::from_bytes(crate::ast_export::const_expr(
+        cx.src, e, &names,
+    )))
+}
+
 pub(crate) fn param_default_meta(
     cx: &FileCtx,
     p: &crate::parse::cst::FunctionLikeParameter,
@@ -546,7 +573,11 @@ pub(crate) fn param_default_meta(
     if fold_const(cx, e).is_ok() {
         return (None, cname, None);
     }
-    let names = AttrNames { cx, class_name };
+    let names = AttrNames {
+        cx,
+        class_name,
+        subst: false,
+    };
     let thunk = compile_const_thunk(cx, e, class_name).ok();
     // Built only from parts php evaluates at compile time (`[1, 2][0]`,
     // `true ? 1 : 2`): php keeps the value, which the thunk gives.
@@ -761,7 +792,7 @@ pub(crate) fn compile_anon_class(
     );
     let flags = ClassFlags {
         is_abstract: false,
-        is_final: true,
+        is_final: false,
         is_readonly: has_modifier(&ac.modifiers, |m| matches!(m, Modifier::Readonly(_))),
         allow_dynamic: has_allow_dynamic(&ac.attribute_lists),
         // zend_compile_class_decl: every anonymous class.
@@ -1173,6 +1204,7 @@ fn compile_member(
                         start_line: cx.line_of(cstart),
                         offset: item.name.span.start.offset,
                         end_line: cx.line_of(cend),
+                        default_text: None,
                     },
                     is_final,
                 });
@@ -1400,6 +1432,12 @@ fn compile_property_items(
             start_line: cx.line_of(pstart),
             offset: var.span.start.offset,
             end_line: cx.line_of(pend),
+            default_text: match (item, &default) {
+                (PropertyItem::Concrete(c), PropDefaultProto::Init(_)) => {
+                    prop_default_text(cx, c.value, class_name)
+                }
+                _ => None,
+            },
         };
         let pname = PhpStr::from_bytes(name_bytes);
         let (hooks, is_virtual) = match p.hooks {

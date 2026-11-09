@@ -25,7 +25,10 @@ const MODULE_FUNCTIONS: &[(&str, NativeFn)] = &[
     ("apache_response_headers", fn_apache_response_headers),
 ];
 
-fn fn_apache_request_headers(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+pub(crate) fn fn_apache_request_headers(
+    host: &mut dyn Host,
+    _args: &[Value],
+) -> Result<Value, Thrown> {
     let mut a = PhpArray::new();
     for (k, v) in host.request_headers() {
         a.insert(ArrayKey::from_bytes(&k), Value::str(v));
@@ -38,7 +41,10 @@ fn fn_apache_child_terminate(_: &mut dyn Host, _args: &[Value]) -> Result<Value,
     Ok(Value::Null)
 }
 
-fn fn_apache_response_headers(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
+pub(crate) fn fn_apache_response_headers(
+    host: &mut dyn Host,
+    _args: &[Value],
+) -> Result<Value, Thrown> {
     let mut a = PhpArray::new();
     if let Some(r) = host.response() {
         for h in &r.headers {

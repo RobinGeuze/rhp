@@ -1,9 +1,13 @@
 //! Zend/zend_virtual_cwd.c's realpath cache: what tsrm_realpath_r found
 //! for each absolute path it resolved, kept for realpath_cache_ttl
-//! seconds. php keeps it per process; rhp per request (php-cli's
-//! lifetime). It is visible to scripts: a removed symlink still resolves
-//! until clearstatcache(true) (or an unlink, rename or rmdir) drops it,
-//! and realpath_cache_get()/realpath_cache_size() show it.
+//! seconds. php keeps it per thread under ZTS (per process otherwise),
+//! across requests; so does rhp, for the requests a thread serves. It is
+//! visible to scripts: a removed symlink still resolves until
+//! clearstatcache(true) (or an unlink, rename or rmdir) drops it, and
+//! realpath_cache_get()/realpath_cache_size() show it.
+//!
+//! It is engine memory (php allocates it with malloc), so it is left out
+//! of the request's memory accounting.
 
 use std::cell::RefCell;
 
@@ -24,12 +28,17 @@ pub struct Entry {
 
 impl Entry {
     fn size(&self) -> i64 {
-        let mut n = BUCKET_SIZE + self.path.len() as i64 + 1;
-        if self.realpath != self.path {
-            n += self.realpath.len() as i64 + 1;
-        }
-        n
+        entry_size(&self.path, &self.realpath)
     }
+}
+
+/// The bytes php counts for an entry.
+fn entry_size(path: &[u8], realpath: &[u8]) -> i64 {
+    let mut n = BUCKET_SIZE + path.len() as i64 + 1;
+    if realpath != path {
+        n += realpath.len() as i64 + 1;
+    }
+    n
 }
 
 struct Cache {
@@ -42,6 +51,9 @@ struct Cache {
     /// open_basedir was set when the request started: php turns the
     /// cache off.
     disabled: bool,
+    /// The settings the entries were made under. php's are fixed for the
+    /// process; a request on this thread with others starts empty.
+    made_with: (i64, i64, bool),
 }
 
 impl Cache {
@@ -52,6 +64,7 @@ impl Cache {
             limit: 4096 * 1024,
             ttl: 120,
             disabled: false,
+            made_with: (4096 * 1024, 120, false),
         }
     }
 
@@ -59,8 +72,21 @@ impl Cache {
         self.limit != 0 && !self.disabled
     }
 
+    fn settings(&self) -> (i64, i64, bool) {
+        (self.limit, self.ttl, self.disabled)
+    }
+
+    /// Drop the entries made under other settings.
+    fn check_settings(&mut self) {
+        let now = self.settings();
+        if self.made_with != now {
+            self.clean();
+            self.made_with = now;
+        }
+    }
+
     fn clean(&mut self) {
-        self.buckets.clear();
+        rhp_values::mem::uncounted(|| self.buckets.clear());
         self.size = 0;
     }
 }
@@ -86,9 +112,16 @@ fn now() -> i64 {
         .map_or(0, |d| d.as_secs() as i64)
 }
 
-/// A new request: an empty cache with the default settings.
+/// A new request: the default settings (the startup ini sets them
+/// next); the entries stay.
 pub(crate) fn reset_state() {
-    CACHE.with(|c| *c.borrow_mut() = Cache::new());
+    CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        let fresh = Cache::new();
+        c.limit = fresh.limit;
+        c.ttl = fresh.ttl;
+        c.disabled = fresh.disabled;
+    });
 }
 
 /// The startup ini: realpath_cache_size, realpath_cache_ttl, and whether
@@ -116,6 +149,10 @@ pub(crate) fn find(path: &[u8]) -> Option<(Vec<u8>, bool)> {
         if !c.enabled() || c.buckets.is_empty() {
             return None;
         }
+        c.check_settings();
+        if c.buckets.is_empty() {
+            return None;
+        }
         let k = key(path);
         let n = (k % BUCKETS as u64) as usize;
         let t = now();
@@ -126,7 +163,9 @@ pub(crate) fn find(path: &[u8]) -> Option<(Vec<u8>, bool)> {
         let mut i = 0;
         while i < chain.len() {
             if ttl != 0 && chain[i].expires < t {
-                freed += chain.remove(i).size();
+                let e = chain.remove(i);
+                freed += e.size();
+                rhp_values::mem::uncounted(|| drop(e));
                 continue;
             }
             let e = &chain[i];
@@ -148,22 +187,26 @@ pub(crate) fn add(path: &[u8], realpath: &[u8], is_dir: bool) {
         if !c.enabled() {
             return;
         }
+        c.check_settings();
         let k = key(path);
-        let e = Entry {
-            key: k,
-            path: path.to_vec(),
-            realpath: realpath.to_vec(),
-            is_dir,
-            expires: now() + c.ttl,
-        };
-        let size = e.size();
+        let size = entry_size(path, realpath);
         if c.size + size > c.limit {
             return;
         }
-        if c.buckets.is_empty() {
-            c.buckets.resize_with(BUCKETS, Vec::new);
-        }
-        c.buckets[(k % BUCKETS as u64) as usize].insert(0, e);
+        let expires = now() + c.ttl;
+        rhp_values::mem::uncounted(|| {
+            let e = Entry {
+                key: k,
+                path: path.to_vec(),
+                realpath: realpath.to_vec(),
+                is_dir,
+                expires,
+            };
+            if c.buckets.is_empty() {
+                c.buckets.resize_with(BUCKETS, Vec::new);
+            }
+            c.buckets[(k % BUCKETS as u64) as usize].insert(0, e);
+        });
         c.size += size;
     });
 }
@@ -178,8 +221,9 @@ pub fn del(path: &[u8]) {
         let k = key(path);
         let chain = &mut c.buckets[(k % BUCKETS as u64) as usize];
         if let Some(i) = chain.iter().position(|e| e.key == k && e.path == path) {
-            let size = chain.remove(i).size();
-            c.size -= size;
+            let e = chain.remove(i);
+            c.size -= e.size();
+            rhp_values::mem::uncounted(|| drop(e));
         }
     });
 }
@@ -191,14 +235,19 @@ pub fn clean() {
 
 /// realpath_cache_size(): the bytes php counts for the entries.
 pub fn size() -> i64 {
-    CACHE.with(|c| c.borrow().size)
+    CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        c.check_settings();
+        c.size
+    })
 }
 
 /// The entries in php's order (bucket by bucket, each newest first), for
 /// realpath_cache_get().
 pub fn entries<R>(f: impl FnOnce(&mut dyn Iterator<Item = &Entry>) -> R) -> R {
     CACHE.with(|c| {
-        let c = c.borrow();
+        let mut c = c.borrow_mut();
+        c.check_settings();
         f(&mut c.buckets.iter().flatten())
     })
 }

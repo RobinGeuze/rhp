@@ -17,16 +17,16 @@ The crates are in `crates/`, the test tooling in `tools/`.
 - **rhp-compiler**: parses PHP 8.5 with [mago-syntax](https://github.com/carthage-software/mago) and compiles
   the AST to bytecode. Refuses what rhp does not support (property hooks, `|>`, ...) with the file and line.
 - **rhp-builtins**: the runtime library: php's functions, constants and classes and about 30 extensions, laid
-  out like php-src. Links PCRE2, OpenSSL, libcurl, libxml2, ICU, zlib, bzip2, libzip, GMP and iconv, and opens libgd on first use.
-- **rhp-csrc**: compiles C that rhp uses unmodified (php-src's crypt() code, timelib, libmagic with its
-  magic database, the Argon2 reference code) into static archives, with safe Rust wrappers and every C
+  out like php-src. Links PCRE2, OpenSSL, libcurl, libxml2, ICU, zlib, bzip2, libzip, GMP, libsodium, libintl and iconv, and opens libgd on first use.
+- **rhp-csrc**: compiles C that rhp uses unmodified (php-src's crypt() code, timelib, the calendar conversions, libmagic with its
+  magic database, the built-in web server's HTTP parser, lexbor, the Argon2 reference code) into static archives, with safe Rust wrappers and every C
   symbol renamed `rhp_*`.
 - **rhp-mbfl-sys**: php-src's libmbfl (LGPL-2.1) and php_unicode.c (PHP-3.01), vendored and linked
   statically in a crate of their own. mbstring runs on them, through rhp-builtins' default-on `mbstring-libmbfl` feature.
 - **rhp-vm**: runs the bytecode: calls, classes and objects, generators, exceptions, include and eval,
   streams. Also an opcache-style compiled-script cache (no optimizer or JIT) and a request's engine state.
 - **rhp-sapi**: the request layer: `run_request` runs one PHP request through a `Sapi` trait that
-  the embedding server implements. Contains the CLI SAPI and a php-cgi compatible CGI SAPI.
+  the embedding server implements. Contains the CLI SAPI, the built-in web server (`rhp -S`) and a php-cgi compatible CGI SAPI.
 - **rhp-cli**: the `rhp` binary: php's command line (a script, `-r`, `-d`, `-n`, `-f`, ...) on top
   of rhp-sapi. With `--cgi`, or when the binary is named `php-cgi`, it behaves as php-cgi.
 - **rhp-difftest** (`tools/`): differential tests against a real php and php-cgi: php-src's .phpt suite,
@@ -44,28 +44,30 @@ passing, so the percentages are of all php-src tests.
 <!-- phpt-table start: written by `rhp-difftest gen readme`; edit only the notes -->
 | area | passing | total | % | notes |
 |---|---:|---:|---:|---|
-| Zend/tests | 5,271 | 5,396 | 97.7% | no Fiber (0/113); lazy objects 215/229 (no typed reference sources); the pipe operator `\|>` is refused |
-| tests | 853 | 895 | 95.3% | php-src's tests of the language, functions, classes and output |
-| sapi/cli | 23 | 117 | 19.7% | tests that spawn the php binary run rhp; tests of the `-S` server are skipped |
-| sapi/cgi | 7 | 24 | 29.2% | `rhp --cgi` against php-cgi |
+| Zend/tests | 5,272 | 5,396 | 97.7% | no Fiber (0/113); lazy objects 215/229 (no typed reference sources); the pipe operator `\|>` is refused |
+| tests | 854 | 895 | 95.4% | php-src's tests of the language, functions, classes and output |
+| sapi/cli | 88 | 117 | 75.2% | tests that spawn the php binary run rhp, the `-S` server tests included |
+| sapi/cgi | 16 | 24 | 66.7% | `rhp --cgi` against php-cgi |
 | ext/standard | 3,415 | 3,880 | 88.0% | user stream wrappers carry no filters |
 | ext/bcmath | 64 | 170 | 37.6% | the `bc*` functions; no `BcMath\Number` |
 | ext/bz2 | 16 | 27 | 59.3% | libbz2 1.0.8, linked statically |
+| ext/calendar | 48 | 54 | 88.9% | php-src's calendar conversions, compiled in (rhp-csrc); the 6 others skip (32-bit) |
 | ext/ctype | 38 | 49 | 77.6% | |
 | ext/curl | 157 | 180 | 87.2% | on libcurl |
 | ext/date | 690 | 705 | 97.9% | on timelib, compiled in (rhp-csrc) |
-| ext/dom | 477 | 901 | 52.9% | the `DOMDocument` API on libxml2; no `Dom\` (HTML5) API |
+| ext/dom | 870 | 901 | 96.6% | the `DOMDocument` API and the `Dom\` API on libxml2, HTML5 parsing and CSS selectors on lexbor (rhp-csrc) |
 | ext/fileinfo | 60 | 64 | 93.8% | php's bundled libmagic and magic database, compiled in (rhp-csrc); the 4 others skip |
 | ext/filter | 125 | 129 | 96.9% | all functions and filters; `uri_parser_class` knows only `parse_url` (no ext/uri) |
 | ext/gd | 278 | 336 | 82.7% | on libgd; php skips the others (bundled libgd, GD formats, 32-bit) |
+| ext/gettext | 19 | 19 | 100.0% | on libintl (glibc's on Linux) |
 | ext/gmp | 96 | 99 | 97.0% | on libgmp |
 | ext/hash | 66 | 83 | 79.5% | all 60 algorithms; no `mhash`, `hash_hkdf` |
 | ext/iconv | 80 | 82 | 97.6% | the system iconv |
-| ext/intl | 460 | 511 | 90.0% | on ICU: every class and function, reported as loaded |
+| ext/intl | 464 | 511 | 90.8% | on ICU: every class and function, reported as loaded |
 | ext/json | 94 | 94 | 100.0% | |
 | ext/libxml | 21 | 32 | 65.6% | on libxml2 |
 | ext/mbstring | 236 | 446 | 52.9% | on php-src's libmbfl (rhp-mbfl-sys) |
-| ext/opcache | 807 | 876 | 92.1% | the compiled-script cache only; no optimizer, JIT or file cache |
+| ext/opcache | 815 | 876 | 93.0% | the compiled-script cache only; no optimizer, JIT or file cache |
 | ext/openssl | 215 | 236 | 91.1% | on OpenSSL |
 | ext/pcntl | 24 | 66 | 36.4% | |
 | ext/pcre | 167 | 174 | 96.0% | PCRE2, linked statically |
@@ -74,12 +76,13 @@ passing, so the percentages are of all php-src tests.
 | ext/phar | 19 | 574 | 3.3% | reads and runs phars (composer.phar); no write API |
 | ext/posix | 32 | 61 | 52.5% | |
 | ext/random | 68 | 69 | 98.6% | the functions, `Random\Randomizer` and the engines |
-| ext/readline | 14 | 28 | 50.0% | on libedit: the functions, history and the callback interface; no interactive shell (`php -a`) |
-| ext/reflection | 476 | 540 | 88.1% | |
-| ext/session | 249 | 269 | 92.6% | |
-| ext/simplexml | 156 | 165 | 94.5% | on libxml2 |
-| ext/sockets | 3 | 119 | 2.5% | `socket_import_stream()` and socket options only; no `socket_create`; not reported as loaded |
-| ext/spl | 642 | 796 | 80.7% | |
+| ext/readline | 16 | 28 | 57.1% | on libedit: the functions, history, the callback interface and the interactive shell (`php -a`) |
+| ext/reflection | 480 | 540 | 88.9% | |
+| ext/session | 250 | 269 | 92.9% | |
+| ext/simplexml | 158 | 165 | 95.8% | on libxml2 |
+| ext/sockets | 58 | 119 | 48.7% | the socket calls, `AddressInfo` and the constants; no `socket_sendmsg`/`socket_recvmsg`, no multicast options |
+| ext/sodium | 31 | 31 | 100.0% | on libsodium, linked statically |
+| ext/spl | 646 | 796 | 81.2% | |
 | ext/sqlite3 | 93 | 101 | 92.1% | `SQLite3` on the libsqlite3 pdo_sqlite links |
 | ext/tokenizer | 51 | 54 | 94.4% | a port of the Zend scanner |
 | ext/xml | 61 | 71 | 85.9% | on libxml2 |
@@ -87,11 +90,11 @@ passing, so the percentages are of all php-src tests.
 | ext/xmlwriter | 50 | 51 | 98.0% | on libxml2 |
 | ext/zip | 120 | 125 | 96.0% | `ZipArchive` on libzip |
 | ext/zlib | 133 | 161 | 82.6% | system zlib; no incremental deflate/inflate contexts |
-| other ext/ | 3 | 2,962 | 0.1% | the 2 passing are ext/sodium tests that need none of its code |
+| other ext/ | 1 | 2,858 | 0.0% | the 1 passing is an ext/uri test that needs none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **16,178** | **22,219** | **72.8%** | |
+| **total** | **16,823** | **22,219** | **75.7%** | |
 
-Not implemented, so counted under other ext/: calendar, com_dotnet, dba, dl_test, enchant, exif, ffi, ftp, gettext, imap, ldap, mysqli, odbc, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pgsql, shmop, skeleton, snmp, soap, sodium, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
+Not implemented, so counted under other ext/: com_dotnet, dba, dl_test, enchant, exif, ffi, ftp, imap, ldap, mysqli, odbc, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pgsql, shmop, skeleton, snmp, soap, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->
 
 ## Application support
@@ -100,7 +103,7 @@ Measured on 2026-11-08 against php 8.5.12; only what was checked is listed.
 
 | application | version | what works |
 |---|---|---|
-| Composer | 2.11.1 (phar) | `composer_diff.py`: 29 commands on a small project (`install`, `update`, `require`, `remove`, `reinstall`, `audit`, `archive`, `init`, ...), downloads over the stream layer instead of curl, extraction with ZipArchive instead of `unzip`, and installs of the Symfony 7.4 fixture (Flex plugin, auto-scripts and `cache:clear` run by rhp): every command prints what php prints and leaves the same `composer.lock` and `vendor/` (`show --platform` compared on the extensions both engines load, `lib-*` lines included, the OpenSSL header version masked), except that `install` counts 12 package suggestions where php counts 11 (rhp does not report `sockets`). On the Laravel fixture, `install`, `dump-autoload -o` (php's `installed.php` and `autoload_static.php`), `package:discover`, `require`, `update`, `outdated` and the app's `artisan --version` print and write what php does, with `ext-fileinfo` required (no platform requirement ignored). `create-project laravel/laravel` (with `ext-fileinfo` ignored) runs the app's migration and writes the same SQLite database; it counts 67 suggestions where php counts 51. |
+| Composer | 2.11.1 (phar) | `composer_diff.py`: 29 commands on a small project (`install`, `update`, `require`, `remove`, `reinstall`, `audit`, `archive`, `init`, ...), downloads over the stream layer instead of curl, extraction with ZipArchive instead of `unzip`, and installs of the Symfony 7.4 fixture (Flex plugin, auto-scripts and `cache:clear` run by rhp): every command prints what php prints on macOS (on Linux, the three `install` runs that install monolog count 2 more package suggestions than php; cause not found yet) and leaves the same `composer.lock` and `vendor/` (`show --platform` compared on the extensions both engines load, `lib-*` lines included, the OpenSSL header version masked). On the Laravel fixture, `install`, `dump-autoload -o` (php's `installed.php` and `autoload_static.php`), `package:discover`, `require`, `update`, `outdated` and the app's `artisan --version` print and write what php does, with `ext-fileinfo` required (no platform requirement ignored). `create-project laravel/laravel` (with `ext-fileinfo` ignored) runs the app's migration and writes the same SQLite database; at the last check it counted 67 suggestions where php counts 51 (before ext/sockets, sodium, calendar and gettext existed; not re-measured). |
 | Symfony (skeleton + twig-bundle + mime, `tests/apps/symfony-7.4`) | 7.4.22 | All 1,835 of its PHP files compile under rhp. Its 32-request corpus (sessions, flashes, redirects, URL generation, cookies, error pages, streamed and file responses with Range and HEAD, ETags, uploads, Twig, PUT/PATCH) answers like php-cgi in all three passes (`default`, `debug` with `APP_DEBUG=1`, `cold` from an empty cache), and the files it writes (Twig cache, logs, compiled container, the routing `*.meta` files of a cold cache) are identical. All 33 `bin/console` commands of its console battery (`about`, `list`, `debug:router`, `debug:container`, `debug:twig`, `lint:*`, `cache:clear`, `cache:warmup`, `cache:pool:clear`, ...) print and write what php does. |
 | Symfony (skeleton + twig-bundle + mime, `tests/apps/symfony-8.1`) | 8.1.11 | All 1,901 of its PHP files compile under rhp. Its 32-request corpus (sessions, flashes, redirects, URL generation, cookies, error pages, streamed and file responses with Range and HEAD, ETags, uploads, Twig, PUT/PATCH) answers like php-cgi in all three passes (`default`, `debug` with `APP_DEBUG=1`, `cold` from an empty cache), and the files it writes (cold-cache routing `*.meta` included) are identical. All 33 `bin/console` commands of its console battery print and write what php does. |
 | Laravel (laravel/laravel, `tests/apps/laravel-13`) | 13.39.0 | All 8,167 of its PHP files compile under rhp. Its 23-request corpus (CSRF flows, Blade components and slots, `Js::from`/`@js`, a sync job and a queued closure, `CarbonPeriod`, `Rule::enum` with old input, multipart uploads, a throwing route, `Number::*`) answers like php-cgi in both passes (`default`, `debug` with `APP_DEBUG=true`, so the exception page too), with the same compiled views and session files. Its own `vendor/bin/phpunit` passes (2 tests) as under php. Its console battery: all 76 commands print and write what php does: the 56 `artisan` commands (`vendor:publish --tag=laravel-errors` included), the 10 `tinker --execute` snippets and the 10 workload scripts (Blade, security, validation, mail, HTTP, queue and events, database, `Storage`, `Number::*`, ...). Eloquent and migrations on SQLite match php. |

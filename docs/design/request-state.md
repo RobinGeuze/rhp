@@ -35,7 +35,7 @@ Kinds:
 | `zend/virtual_cwd.rs` | `CWD` (the request's working directory, and a descriptor of it), `UMASK` | request | `virtual_cwd::reset_state` |
 | `zend/call_stack.rs` | `BASE`, `LIMIT`, `RESERVED` (the stack limit; a fiber switch swaps `BASE` and `LIMIT`) | request | set by `call_stack::init` at request start |
 | `zend/fibers.rs` | `BLOCKING` (fiber switches blocked while tick functions or signal handlers run) | call | `SwitchBlock` guards |
-| `zend/virtual_cwd/realpath_cache.rs` | `CACHE` (php's realpath cache and its settings; php keeps it per process) | request | `realpath_cache::reset_state` |
+| `zend/virtual_cwd/realpath_cache.rs` | `CACHE` (php's realpath cache; php keeps it per thread under ZTS, across requests) | thread (entries, emptied when a request's realpath_cache_size/ttl/open_basedir differ); request (settings) | `realpath_cache::reset_state` (settings only), `clearstatcache(true)`, unlink/rename/rmdir |
 | `main/ini.rs` | `INI`, `INI_STARTUP` (ini overrides, `-d` values) | request | `ini::reset_state` |
 | `main/fopen_wrappers.rs` | `BASEDIR`, `ACTIVE` (open_basedir, its entries expanded after an ini_set) | request | `fopen_wrappers::reset_state` |
 | `main/ini.rs` | `STARTUP_DIAGS` | request | `ini::reset_state` |
@@ -59,6 +59,7 @@ Kinds:
 | `ext/standard/basic_functions.rs` | `ENV_OVERLAY` (`putenv` changes) | request | `basic_functions::reset_state` |
 | `ext/standard/basic_functions.rs` | `TICK_FUNCS` (`register_tick_function`) | request | `basic_functions::reset_state` |
 | `ext/standard/basic_functions.rs` | `ORIG_TZ` (the TZ `putenv` replaced in the process environment) | process, as in php | `basic_functions::reset_state` restores it |
+| `ext/standard/basic_functions.rs` | `ORIG_LOCALE_VARS` (the `LC_*`/`LANG`/`LANGUAGE` values `putenv` replaced in the process environment, for gettext) | process, as in php | `basic_functions::reset_state` restores them |
 | `ext/standard/string.rs` | `LOCALE_CHANGED` (the C library's locale, set by `setlocale`) | process, as in php | `string::reset_state` resets the locale |
 | `ext/standard/url_scanner_ex.rs` | `STATE`, `SESSION_STATE` (the URL rewriters of `output_add_rewrite_var` and of trans-sid) | request | `url_scanner_ex::reset_state` |
 | `ext/standard/browscap.rs` | `DATA` (the parsed browscap file) | thread (php: process) | — |

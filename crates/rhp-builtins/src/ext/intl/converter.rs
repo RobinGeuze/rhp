@@ -969,7 +969,7 @@ pub(super) fn fn_helper(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
             }
         }
         "getErrorCode" => Value::Int(co.ctx.err.borrow().code as i64),
-        "getErrorMessage" => Value::str(co.ctx.err.borrow().message().into_bytes()),
+        "getErrorMessage" => Value::str(co.ctx.err.borrow().message()),
         other => unreachable!("UConverter::{other}"),
     })
 }

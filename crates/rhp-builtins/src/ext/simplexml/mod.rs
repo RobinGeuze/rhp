@@ -2088,6 +2088,10 @@ fn m_as_xml(cx: &mut Cx, sxe: &Rc<SxeObject>, _: &Value, args: &[Value]) -> Resu
     let doc = sxe.document_ptr();
     let is_doc_child =
         unsafe { !(*node).parent.is_null() && (*(*node).parent).type_ == sys::XML_DOCUMENT_NODE };
+    let document = sxe.base.document.get();
+    if !document.is_null() && unsafe { (*document).modern_handlers } {
+        return as_xml_modern(cx, document, doc, node, is_doc_child, filename);
+    }
     if let Some(f) = filename {
         let cf = cs(&f);
         let bytes = cx.with_libxml(|| unsafe {
@@ -2111,6 +2115,36 @@ fn m_as_xml(cx: &mut Cx, sxe: &Rc<SxeObject>, _: &Value, args: &[Value]) -> Resu
         Some(s) => Value::str(s),
         None => Value::Bool(false),
     })
+}
+
+/// asXML through a modern document's handlers (php_new_dom_dump_*).
+fn as_xml_modern(
+    cx: &mut Cx,
+    document: *mut lxn::RefObj,
+    doc: *mut XmlDoc,
+    node: *mut XmlNode,
+    is_doc_child: bool,
+    filename: Option<Vec<u8>>,
+) -> Result<Value, Thrown> {
+    let encoding = unsafe { (*doc).encoding };
+    let target = if is_doc_child { doc.cast() } else { node };
+    let result = crate::ext::dom::modern_dump_to_str(document, target, 0, false, encoding)?;
+    let Some(data) = result else {
+        return Ok(Value::Bool(false));
+    };
+    let Some(f) = filename else {
+        return Ok(Value::str(data));
+    };
+    let cf = cs(&f);
+    let n = cx.with_libxml(|| unsafe {
+        let out = sys::xmlOutputBufferCreateFilename(cf.as_ptr().cast(), ptr::null_mut(), 0);
+        if out.is_null() {
+            return -1;
+        }
+        sys::xmlOutputBufferWrite(out, data.len() as c_int, data.as_ptr().cast());
+        sys::xmlOutputBufferClose(out)
+    })?;
+    Ok(Value::Bool(n != -1))
 }
 
 /// sxe_add_namespace_name_raw

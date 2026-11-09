@@ -210,7 +210,7 @@ pub(crate) fn constants() -> Vec<(&'static str, Value)> {
 
 pub(crate) fn reset_state() {
     ENV_OVERLAY.with(|e| e.borrow_mut().clear());
-    restore_process_tz();
+    restore_process_env();
     TICK_FUNCS.with(|t| t.borrow_mut().clear());
 }
 
@@ -431,6 +431,8 @@ fn fn_putenv(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     }
     if name == b"TZ" {
         set_process_tz(value);
+    } else if is_locale_var(name) {
+        set_process_locale_var(name, value);
     }
     let entry = (name.to_vec(), value.map(|v| v.to_vec()));
     ENV_OVERLAY.with(|e| e.borrow_mut().push(entry));
@@ -468,8 +470,53 @@ fn apply_tz(value: Option<&[u8]>) {
     }
 }
 
+/// The variables the C library's locale lookups read (libintl's
+/// gettext reads LANGUAGE and the LC_*/LANG chain with getenv()).
+fn is_locale_var(name: &[u8]) -> bool {
+    name.starts_with(b"LC_") || name == b"LANG" || name == b"LANGUAGE"
+}
+
+/// The locale variables as the process started with them, once putenv()
+/// changed them.
+static ORIG_LOCALE_VARS: std::sync::Mutex<Vec<EnvVar>> = std::sync::Mutex::new(Vec::new());
+
+/// A variable's name and value (`None`: unset).
+type EnvVar = (Vec<u8>, Option<Vec<u8>>);
+
+/// putenv() of a locale variable changes the process environment, as in
+/// php, so gettext sees it.
+fn set_process_locale_var(name: &[u8], value: Option<&[u8]>) {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(cname) = std::ffi::CString::new(name) else {
+        return;
+    };
+    let mut orig = ORIG_LOCALE_VARS.lock().unwrap_or_else(|e| e.into_inner());
+    if !orig.iter().any(|(n, _)| n == name) {
+        let was =
+            std::env::var_os(std::ffi::OsStr::from_bytes(name)).map(|v| v.as_bytes().to_vec());
+        orig.push((name.to_vec(), was));
+    }
+    set_env(&cname, value);
+}
+
+fn set_env(name: &std::ffi::CStr, value: Option<&[u8]>) {
+    // SAFETY: valid C strings; php changes the environment the same way.
+    unsafe {
+        match value.and_then(|v| std::ffi::CString::new(v).ok()) {
+            Some(v) => libc::setenv(name.as_ptr(), v.as_ptr(), 1),
+            None => libc::unsetenv(name.as_ptr()),
+        };
+    }
+}
+
 /// php restores the environment putenv() changed at request end.
-fn restore_process_tz() {
+fn restore_process_env() {
+    let vars = std::mem::take(&mut *ORIG_LOCALE_VARS.lock().unwrap_or_else(|e| e.into_inner()));
+    for (name, value) in vars {
+        if let Ok(cname) = std::ffi::CString::new(name) {
+            set_env(&cname, value.as_deref());
+        }
+    }
     let mut orig = ORIG_TZ.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(tz) = orig.take() {
         apply_tz(tz.as_deref());

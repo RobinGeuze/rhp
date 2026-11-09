@@ -6593,6 +6593,7 @@ ext/dom/tests/bug80332_2.phpt
 ext/dom/tests/bug80600.phpt
 ext/dom/tests/bug80602.phpt
 ext/dom/tests/bug80602_2.phpt
+ext/dom/tests/bug80602_3.phpt
 ext/dom/tests/bug80602_4.phpt
 ext/dom/tests/bug80927.phpt
 ext/dom/tests/bug81433.phpt
@@ -6744,6 +6745,8 @@ ext/dom/tests/gh22077.phpt
 ext/dom/tests/gh22219.phpt
 ext/dom/tests/gh22447.phpt
 ext/dom/tests/gh22825.phpt
+ext/dom/tests/gh23116.phpt
+ext/dom/tests/gh23120.phpt
 ext/dom/tests/gh23331.phpt
 ext/dom/tests/gh23331_2.phpt
 ext/dom/tests/gh23331_3.phpt
@@ -11062,6 +11065,7 @@ ext/simplexml/tests/bug12170.phpt
 ext/simplexml/tests/bug24392.phpt
 ext/simplexml/tests/bug26976.phpt
 ext/simplexml/tests/bug27010.phpt
+ext/simplexml/tests/bug35785.phpt
 ext/simplexml/tests/bug36611.phpt
 ext/simplexml/tests/bug37076.phpt
 ext/simplexml/tests/bug37076_1.phpt
@@ -11074,6 +11078,7 @@ ext/simplexml/tests/bug39662.phpt
 ext/simplexml/tests/bug39760.phpt
 ext/simplexml/tests/bug40451.phpt
 ext/simplexml/tests/bug41175.phpt
+ext/simplexml/tests/bug41582.phpt
 ext/simplexml/tests/bug41861.phpt
 ext/simplexml/tests/bug41867.phpt
 ext/simplexml/tests/bug41947.phpt
@@ -11090,6 +11095,7 @@ ext/simplexml/tests/bug51615.phpt
 ext/simplexml/tests/bug52751.phpt
 ext/simplexml/tests/bug53033.phpt
 ext/simplexml/tests/bug54973.phpt
+ext/simplexml/tests/bug55098.phpt
 ext/simplexml/tests/bug61335.phpt
 ext/simplexml/tests/bug62328.phpt
 ext/simplexml/tests/bug62639.phpt
@@ -11124,6 +11130,7 @@ ext/simplexml/tests/gh12192.phpt
 ext/simplexml/tests/gh12208.phpt
 ext/simplexml/tests/gh12223.phpt
 ext/simplexml/tests/gh12231.phpt
+ext/simplexml/tests/gh12929.phpt
 ext/simplexml/tests/gh14638.phpt
 ext/simplexml/tests/gh15837.phpt
 ext/simplexml/tests/gh16317.phpt

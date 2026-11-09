@@ -1,19 +1,19 @@
 
-Deprecated: Constant C::X is deprecated in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/lang/param_default_recv_init_cache.php on line 5
+Deprecated: Constant C::X is deprecated in F on line 5
 
-Deprecated: Constant C::X is deprecated in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/lang/param_default_recv_init_cache.php on line 5
+Deprecated: Constant C::X is deprecated in F on line 5
 
-Deprecated: Constant C::A is deprecated in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/lang/param_default_recv_init_cache.php on line 5
+Deprecated: Constant C::A is deprecated in F on line 5
 
-Deprecated: Constant MT_RAND_PHP is deprecated since 8.3, as it uses a biased non-standard variant of Mt19937 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/lang/param_default_recv_init_cache.php on line 5
+Deprecated: Constant MT_RAND_PHP is deprecated since 8.3, as it uses a biased non-standard variant of Mt19937 in F on line 5
 
-Deprecated: Constant C::X is deprecated in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/lang/param_default_recv_init_cache.php on line 5
+Deprecated: Constant C::X is deprecated in F on line 5
 
-Deprecated: Constant C::A is deprecated in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/lang/param_default_recv_init_cache.php on line 5
+Deprecated: Constant C::A is deprecated in F on line 5
 
-Deprecated: Constant C::X is deprecated in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/lang/param_default_recv_init_cache.php on line 5
+Deprecated: Constant C::X is deprecated in F on line 5
 
-Deprecated: Constant C::A is deprecated in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/lang/param_default_recv_init_cache.php on line 5
+Deprecated: Constant C::A is deprecated in F on line 5
 array(4) {
   [0]=>
   string(1) "x"
@@ -28,7 +28,7 @@ array(4) {
   int(2)
 }
 
-Deprecated: Constant MT_RAND_PHP is deprecated since 8.3, as it uses a biased non-standard variant of Mt19937 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/lang/param_default_recv_init_cache.php on line 7
+Deprecated: Constant MT_RAND_PHP is deprecated since 8.3, as it uses a biased non-standard variant of Mt19937 in F on line 7
 int(1)
 int(1)
 W

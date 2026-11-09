@@ -1,4 +1,4 @@
-<?php
+<?php ob_start(fn ($s) => str_replace(__FILE__, 'F', $s));
 // RECV_INIT caches a default that is not refcounted: a deprecated constant
 // deprecates on the first call only; a `new` default runs every time.
 class C { #[\Deprecated] const X = 'x'; #[\Deprecated] const A = [1]; }

@@ -1,4 +1,4 @@
-<?php
+<?php ob_start(fn ($s) => str_replace(__FILE__, 'F', $s));
 // An ArrayObject / ArrayIterator over another one uses that one's storage.
 $in = new ArrayObject([1, 2, 3]);
 $ao = @new ArrayObject($in);

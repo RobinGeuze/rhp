@@ -1,5 +1,5 @@
 
-Deprecated: Use of "self" in callables is deprecated in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/reflection/lazy_initializer_scope.php on line 10
+Deprecated: Use of "self" in callables is deprecated in F on line 10
 array(2) {
   [0]=>
   string(4) "self"

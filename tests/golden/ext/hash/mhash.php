@@ -1,4 +1,4 @@
-<?php
+<?php ob_start(fn ($s) => str_replace(__FILE__, 'F', $s));
 // PHP_MHASH_BC: the mhash*() functions and their deprecated MHASH_* constants.
 var_dump(MHASH_CRC32, MHASH_XXH128, defined('MHASH_SNEFRU256'));
 var_dump(mhash_count());

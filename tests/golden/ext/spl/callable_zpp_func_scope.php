@@ -1,4 +1,4 @@
-<?php
+<?php ob_start(fn ($s) => str_replace(__FILE__, 'F', $s));
 // A prelude parameter that is php's Z_PARAM_FUNC: checked in the caller's
 // scope (deprecations included) and kept resolved, so a `self::` or private
 // callable still works when the iterator runs elsewhere.

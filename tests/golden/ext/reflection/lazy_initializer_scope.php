@@ -1,4 +1,4 @@
-<?php
+<?php ob_start(fn ($s) => str_replace(__FILE__, 'F', $s));
 // The lazy object initializer is php's fcc: resolved where newLazyGhost()
 // was called; getLazyInitializer() returns the callable as passed.
 class K {

@@ -1,0 +1,4 @@
+string(30) "include_file_url_empty.tmp.inc"
+bool(true)
+ValueError: Path must not be empty
+ValueError: Path must not be empty

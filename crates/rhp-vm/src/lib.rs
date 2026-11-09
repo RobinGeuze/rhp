@@ -412,6 +412,12 @@ pub struct Vm {
     preloaded: Option<Rc<opcache::Preload>>,
     /// This thread's memory accounting (checked between instructions).
     mem: &'static rhp_values::mem::MemState,
+    /// `EG(vm_interrupt)`, polled between instructions: the process-wide
+    /// flag under the command-line SAPIs (pcntl signals, the interval
+    /// timer), else this thread's (its max_execution_time timer).
+    interrupt: &'static std::sync::atomic::AtomicBool,
+    /// Whether [`Vm::interrupt`] is the process-wide flag.
+    interrupt_is_process: bool,
     /// A memory_limit crossing waiting for an interrupt point.
     delayed_oom: Option<Box<memory::DelayedOom>>,
     /// EG(active_fiber): the running Fiber object.

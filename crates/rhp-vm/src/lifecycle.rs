@@ -197,6 +197,8 @@ impl Vm {
             preload_rec: None,
             preloaded: None,
             mem: rhp_values::mem::state(),
+            interrupt: builtins::zend::timeout::interrupt_flag(),
+            interrupt_is_process: builtins::main::sapi::is_command_line(),
             delayed_oom: None,
             _request_state: RequestStateReset,
         }
@@ -937,6 +939,9 @@ impl Vm {
         // {main}'s variables are the global symbol table's entries.
         self.bind_global_scope(&mut main_frame);
         self.stack.push(main_frame);
+        // php_execute_script: the script runs under max_execution_time
+        // (max_input_time covered reading the input).
+        builtins::zend::timeout::script_startup();
         // auto_prepend_file runs first, required in the global scope
         // (php_execute_script's zend_execute_scripts).
         let prepend = builtins::ini_value(b"auto_prepend_file")

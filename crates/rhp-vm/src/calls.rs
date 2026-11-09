@@ -2768,10 +2768,10 @@ impl Vm {
         // And its interrupt function: queued async signals are dispatched
         // with the call still on the trace.
         let r = if r.is_ok()
-            && builtins::pcntl_interrupt_pending()
+            && self.interrupt.load(std::sync::atomic::Ordering::Relaxed)
             && !builtins::zend::timeout::timed_out()
         {
-            builtins::pcntl_dispatch(self).and(r)
+            self.dispatch_interrupt().and(r)
         } else {
             r
         };
@@ -2796,11 +2796,27 @@ impl Vm {
         r
     }
 
+    /// The interrupt flag is set and no timeout is pending: run the queued
+    /// pcntl signal handlers (the process-wide flag), or just clear this
+    /// thread's flag (a threaded SAPI's timer that was disarmed or already
+    /// raised).
+    #[cold]
+    pub(crate) fn dispatch_interrupt(&mut self) -> Result<(), Thrown> {
+        if self.interrupt_is_process {
+            return builtins::pcntl_dispatch(self);
+        }
+        self.interrupt
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+
     /// zend_fcall_interrupt's zend_timeout: the fatal error, when
     /// max_execution_time ran out.
     #[inline]
     fn fcall_timeout(&mut self) -> Option<Thrown> {
-        if !builtins::pcntl_interrupt_pending() || !builtins::zend::timeout::timed_out() {
+        if !self.interrupt.load(std::sync::atomic::Ordering::Relaxed)
+            || !builtins::zend::timeout::timed_out()
+        {
             return None;
         }
         let msg = builtins::zend::timeout::take_timed_out()?;

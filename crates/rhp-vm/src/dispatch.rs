@@ -683,7 +683,7 @@ impl Vm {
 
             // pcntl async signals (php's `EG(vm_interrupt)` check): run queued
             // PHP signal handlers before the next instruction.
-            if builtins::pcntl_interrupt_pending() {
+            if self.interrupt.load(std::sync::atomic::Ordering::Relaxed) {
                 // max_execution_time ran out (zend_timeout): the fatal error
                 // comes where a jump lands or a user function starts.
                 if builtins::zend::timeout::timed_out() {
@@ -718,7 +718,7 @@ impl Vm {
                     // A throwing handler raises at this (not yet run)
                     // instruction; otherwise the instruction then runs as
                     // usual.
-                    builtins::pcntl_dispatch(self)?;
+                    self.dispatch_interrupt()?;
                     self.stack[top].pc = pc;
                     continue;
                 }

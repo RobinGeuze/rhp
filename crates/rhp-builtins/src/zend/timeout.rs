@@ -1,17 +1,30 @@
 //! max_execution_time (Zend/zend_execute_API.c's zend_set_timeout,
-//! zend_timeout_handler and zend_timeout): a one-shot interval timer whose
-//! signal sets `EG(timed_out)` and the VM interrupt flag; the VM then
-//! raises "Maximum execution time of N seconds exceeded" where php's
-//! interrupt checks are: where a jump lands, where a user function starts,
-//! or when a builtin call returns. hard_timeout re-arms the timer from the handler, so
-//! shutdown functions get one more window; a timeout the VM does not get
-//! to in time kills the process, as in php. Like php's NTS build this uses
-//! a process-wide timer (ITIMER_PROF, ITIMER_REAL on Apple Silicon where
-//! ITIMER_PROF is broken), so only the command-line SAPIs arm it. A
-//! blocking builtin ends early only if the signal interrupts its system
-//! call (sleep under ITIMER_REAL), as in php.
+//! zend_timeout_handler and zend_timeout): when the timer fires it sets
+//! `EG(timed_out)` and the VM interrupt flag; the VM then raises "Maximum
+//! execution time of N seconds exceeded" where php's interrupt checks are:
+//! where a jump lands, where a user function starts, or when a builtin call
+//! returns.
+//!
+//! Two timers, as php has two builds:
+//!
+//! - The command-line SAPIs (one request per process) use php's NTS timer:
+//!   a process-wide one-shot interval timer (ITIMER_PROF, ITIMER_REAL on
+//!   Apple Silicon where ITIMER_PROF is broken) whose signal handler sets
+//!   the flags. hard_timeout re-arms it from the handler, so shutdown
+//!   functions get one more window; a timeout the VM does not get to in
+//!   time kills the process. A blocking builtin ends early only if the
+//!   signal interrupts its system call (sleep under ITIMER_REAL).
+//! - Every other SAPI (an embedding server running requests on many
+//!   threads) gets php's ZTS behaviour (zend_max_execution_timer.c): a
+//!   wall-clock timer per thread, here one watchdog thread that sets the
+//!   timed-out thread's own flags. There is no hard timeout, as in ZTS
+//!   builds. A blocking builtin is not interrupted: the error comes when it
+//!   returns.
 
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 /// `EG(timed_out)`.
 static TIMED_OUT: AtomicBool = AtomicBool::new(false);
@@ -25,7 +38,8 @@ const TIMER: (libc::c_int, libc::c_int) = (libc::ITIMER_REAL, libc::SIGALRM);
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 const TIMER: (libc::c_int, libc::c_int) = (libc::ITIMER_PROF, libc::SIGPROF);
 
-/// Whether this process may own the timer (one request at a time).
+/// Whether this process may own the timer (one request at a time): the
+/// command-line SAPIs. Every other SAPI uses its thread's timer.
 fn armable() -> bool {
     crate::main::sapi::is_command_line()
 }
@@ -35,7 +49,120 @@ fn armable() -> bool {
 fn set_timeout_ex(seconds: i64, reset_signals: bool) {
     if armable() {
         arm(seconds, reset_signals);
+    } else {
+        thread_arm(seconds);
     }
+}
+
+/// A thread's timer state (ZTS's `EG(timed_out)` and `EG(vm_interrupt)`),
+/// shared with the watchdog.
+struct ThreadTimer {
+    /// The VM's interrupt flag on this thread ([`interrupt_flag`]).
+    interrupt: AtomicBool,
+    /// `EG(timed_out)`.
+    timed_out: AtomicBool,
+}
+
+thread_local! {
+    static THREAD_TIMER: Arc<ThreadTimer> = Arc::new(ThreadTimer {
+        interrupt: AtomicBool::new(false),
+        timed_out: AtomicBool::new(false),
+    });
+    /// `EG(timeout_seconds)` of the request on this thread.
+    static THREAD_SECONDS: Cell<i64> = const { Cell::new(0) };
+}
+
+/// The deadlines of the armed thread timers, and the thread that fires
+/// them.
+struct Watchdog {
+    armed: Mutex<Vec<(Instant, Arc<ThreadTimer>)>>,
+    wake: Condvar,
+}
+
+fn watchdog() -> &'static Watchdog {
+    static W: OnceLock<Watchdog> = OnceLock::new();
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    let w = W.get_or_init(|| Watchdog {
+        armed: Mutex::new(Vec::new()),
+        wake: Condvar::new(),
+    });
+    STARTED.call_once(|| {
+        let _ = std::thread::Builder::new()
+            .name("rhp-timeout".into())
+            .spawn(move || watch(w));
+    });
+    w
+}
+
+/// The watchdog thread: wait for the earliest deadline, then set that
+/// thread's flags (zend_timeout_handler under ZTS).
+fn watch(w: &'static Watchdog) {
+    let mut armed = w.armed.lock().unwrap_or_else(|e| e.into_inner());
+    loop {
+        let now = Instant::now();
+        armed.retain(|(at, t)| {
+            if *at > now {
+                return true;
+            }
+            t.timed_out.store(true, Ordering::Relaxed);
+            t.interrupt.store(true, Ordering::Release);
+            false
+        });
+        armed = match armed.iter().map(|e| e.0).min() {
+            Some(at) => {
+                w.wake
+                    .wait_timeout(armed, at - now)
+                    .unwrap_or_else(|e| e.into_inner())
+                    .0
+            }
+            None => w.wake.wait(armed).unwrap_or_else(|e| e.into_inner()),
+        };
+    }
+}
+
+/// zend_max_execution_timer_settime for this thread: fire in `seconds`
+/// (0, or out of range: leave the timer as it is).
+fn thread_arm(seconds: i64) {
+    if !(1..=999_999_999).contains(&seconds) {
+        return;
+    }
+    let t = THREAD_TIMER.with(Arc::clone);
+    let w = watchdog();
+    let mut armed = w.armed.lock().unwrap_or_else(|e| e.into_inner());
+    armed.retain(|(_, x)| !Arc::ptr_eq(x, &t));
+    armed.push((Instant::now() + Duration::from_secs(seconds as u64), t));
+    w.wake.notify_one();
+}
+
+/// zend_max_execution_timer_settime(0): disarm this thread's timer.
+fn thread_disarm() {
+    let t = THREAD_TIMER.with(Arc::clone);
+    let w = watchdog();
+    let mut armed = w.armed.lock().unwrap_or_else(|e| e.into_inner());
+    armed.retain(|(_, x)| !Arc::ptr_eq(x, &t));
+}
+
+/// The flag the VM polls between instructions for this thread's engine
+/// (`EG(vm_interrupt)`): the process-wide one (pcntl's signals and the
+/// interval timer) under the command-line SAPIs, else this thread's own.
+/// Valid for as long as the thread runs.
+pub fn interrupt_flag() -> &'static AtomicBool {
+    if armable() {
+        return crate::ext::pcntl::process_interrupt();
+    }
+    THREAD_TIMER.with(|t| {
+        // SAFETY: the thread-local's Arc keeps the timer alive until the
+        // thread exits; the engine using it lives on this thread.
+        unsafe { &*(&t.interrupt as *const AtomicBool) }
+    })
+}
+
+/// This thread's `EG(timed_out)` (threaded SAPIs).
+fn thread_timed_out() -> &'static AtomicBool {
+    THREAD_TIMER.with(|t| {
+        // SAFETY: as in interrupt_flag.
+        unsafe { &*(&t.timed_out as *const AtomicBool) }
+    })
 }
 
 /// [`set_timeout_ex`] without the SAPI check (the signal handler calls it:
@@ -79,8 +206,12 @@ static LOCATE_CTX: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 static LOCATE_FN: AtomicUsize = AtomicUsize::new(0);
 
 /// Install the running engine's locator (`ctx` must stay valid until
-/// [`clear_locator`]).
+/// [`clear_locator`]). Only the process-wide timer has a hard timeout, so
+/// only the command-line SAPIs install one.
 pub fn set_locator(ctx: *const (), f: Locator) {
+    if !armable() {
+        return;
+    }
     LOCATE_FN.store(f as usize, Ordering::Relaxed);
     LOCATE_CTX.store(ctx as *mut (), Ordering::Release);
 }
@@ -142,14 +273,28 @@ extern "C" fn handler(_sig: libc::c_int) {
 
 /// zend_set_timeout: the request's (or set_time_limit's) limit.
 pub fn set_timeout(seconds: i64, reset_signals: bool) {
-    SECONDS.store(seconds, Ordering::Relaxed);
-    set_timeout_ex(seconds, reset_signals);
-    TIMED_OUT.store(false, Ordering::Relaxed);
+    if armable() {
+        SECONDS.store(seconds, Ordering::Relaxed);
+        set_timeout_ex(seconds, reset_signals);
+        TIMED_OUT.store(false, Ordering::Relaxed);
+    } else {
+        THREAD_SECONDS.with(|s| s.set(seconds));
+        thread_arm(seconds);
+        thread_timed_out().store(false, Ordering::Relaxed);
+    }
 }
 
 /// zend_unset_timeout: disarm the timer.
 pub fn unset_timeout() {
-    if armable() && SECONDS.load(Ordering::Relaxed) != 0 {
+    if !armable() {
+        if THREAD_SECONDS.with(Cell::get) != 0 {
+            thread_disarm();
+        }
+        // After the disarm: a deadline that passed meanwhile is forgotten.
+        thread_timed_out().store(false, Ordering::Relaxed);
+        return;
+    }
+    if SECONDS.load(Ordering::Relaxed) != 0 {
         // SAFETY: a zeroed itimerval disarms the timer.
         unsafe {
             let t: libc::itimerval = std::mem::zeroed();
@@ -159,16 +304,29 @@ pub fn unset_timeout() {
     TIMED_OUT.store(false, Ordering::Relaxed);
 }
 
-/// php_request_startup's timer: max_execution_time (hard_timeout read
-/// once, as at module startup).
+fn ini_long(name: &[u8]) -> i64 {
+    crate::main::ini::c_atol(&crate::ini_value(name).flatten().unwrap_or_default())
+}
+
+/// php_request_startup's timer: max_input_time while the request's input
+/// is read, else max_execution_time (hard_timeout read once, as at module
+/// startup).
 pub fn request_startup() {
-    let ini = |n: &[u8]| crate::ini_value(n).flatten().unwrap_or_default();
-    HARD.store(
-        crate::main::ini::c_atol(&ini(b"hard_timeout")),
-        Ordering::Relaxed,
-    );
-    let secs = crate::main::ini::c_atol(&ini(b"max_execution_time"));
-    set_timeout(secs, true);
+    HARD.store(ini_long(b"hard_timeout"), Ordering::Relaxed);
+    let input = ini_long(b"max_input_time");
+    if input == -1 {
+        set_timeout(ini_long(b"max_execution_time"), true);
+    } else {
+        set_timeout(input, true);
+    }
+}
+
+/// php_execute_script: with a max_input_time, the script itself runs
+/// under max_execution_time.
+pub fn script_startup() {
+    if ini_long(b"max_input_time") != -1 {
+        set_timeout(ini_long(b"max_execution_time"), false);
+    }
 }
 
 /// OnUpdateTimeout at runtime (`set_time_limit`, `ini_set`).
@@ -180,17 +338,28 @@ pub fn on_update(v: &[u8]) {
 /// Whether the timer fired and the VM has not raised the error yet.
 #[inline]
 pub fn timed_out() -> bool {
-    TIMED_OUT.load(Ordering::Relaxed)
+    if armable() {
+        TIMED_OUT.load(Ordering::Relaxed)
+    } else {
+        thread_timed_out().load(Ordering::Relaxed)
+    }
 }
 
 /// zend_timeout: the fatal error's message, once the timer fired.
 pub fn take_timed_out() -> Option<String> {
-    if !TIMED_OUT.swap(false, Ordering::Relaxed) {
-        return None;
-    }
+    let secs = if armable() {
+        if !TIMED_OUT.swap(false, Ordering::Relaxed) {
+            return None;
+        }
+        SECONDS.load(Ordering::Relaxed)
+    } else {
+        if !thread_timed_out().swap(false, Ordering::Relaxed) {
+            return None;
+        }
+        THREAD_SECONDS.with(Cell::get)
+    };
     // php_on_timeout.
     crate::main::set_connection_timeout();
-    let secs = SECONDS.load(Ordering::Relaxed);
     let s = if secs == 1 { "" } else { "s" };
     Some(format!(
         "Maximum execution time of {secs} second{s} exceeded"

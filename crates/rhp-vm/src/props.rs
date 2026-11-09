@@ -942,6 +942,31 @@ impl Vm {
                     Deny::Vis(sp.visibility),
                 ));
             }
+        } else {
+            // zend_std_get_static_property_with_info: an instance property
+            // of that name the scope may not see is a visibility error
+            // before it is an undeclared static one.
+            let name = PhpStr::from_bytes(pname);
+            let scope = self.stack[top].defining_class;
+            let deny = match classes::resolve_prop(&self.classes, cls, scope, &name) {
+                classes::PropRes::Denied(deny) => Some(deny),
+                // A parent's private property is in the class's
+                // properties_info too.
+                classes::PropRes::Dynamic => self
+                    .class(cls)
+                    .props
+                    .values()
+                    .any(|pe| {
+                        pe.name == name
+                            && pe.visibility == rhp_values::Visibility::Private
+                            && Some(pe.declaring_class) != scope
+                    })
+                    .then_some(Deny::Vis(rhp_values::Visibility::Private)),
+                classes::PropRes::Slot(_) => None,
+            };
+            if let Some(deny) = deny {
+                return Err(classes::prop_access_err(&self.classes, cls, pname, deny));
+            }
         }
         Ok(())
     }

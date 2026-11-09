@@ -11268,6 +11268,7 @@ ext/sodium/tests/utils.phpt
 ext/sodium/tests/version.phpt
 ext/spl/tests/AppendIterator_invalid_ctor.phpt
 ext/spl/tests/ArrayObject/ArrayObject__serialize_saves_iterator_class.phpt
+ext/spl/tests/ArrayObject/ArrayObject_clone_other_std_props.phpt
 ext/spl/tests/ArrayObject/ArrayObject_dump_during_sort.phpt
 ext/spl/tests/ArrayObject/ArrayObject_get_object_vars.phpt
 ext/spl/tests/ArrayObject/ArrayObject_illegal_offset.phpt
@@ -11318,6 +11319,7 @@ ext/spl/tests/ArrayObject/array_020.phpt
 ext/spl/tests/ArrayObject/array_021.phpt
 ext/spl/tests/ArrayObject/array_023.phpt
 ext/spl/tests/ArrayObject/array_024.phpt
+ext/spl/tests/ArrayObject/array_025.phpt
 ext/spl/tests/ArrayObject/array_026.phpt
 ext/spl/tests/ArrayObject/array_027.phpt
 ext/spl/tests/ArrayObject/array_028.phpt

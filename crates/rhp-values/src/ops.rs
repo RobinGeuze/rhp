@@ -845,28 +845,61 @@ fn callables_equal(a: &Value, b: &Value) -> bool {
     let a = deref(a);
     let b = deref(b);
     match (&a, &b) {
-        (Value::Str(x), Value::Str(y)) => x.as_bytes().eq_ignore_ascii_case(y.as_bytes()),
-        (Value::Array(x), Value::Array(y)) if x.len() == 2 && y.len() == 2 => {
-            let xs: Vec<Value> = x.values().map(deref).collect();
-            let ys: Vec<Value> = y.values().map(deref).collect();
-            let target = match (&xs[0], &ys[0]) {
-                (Value::Object(p), Value::Object(q)) => std::rc::Rc::ptr_eq(p, q),
-                (Value::Str(p), Value::Str(q)) => p.as_bytes().eq_ignore_ascii_case(q.as_bytes()),
-                _ => false,
-            };
-            target && callables_equal(&xs[1], &ys[1])
-        }
         (Value::Closure(p), Value::Closure(q)) => std::rc::Rc::ptr_eq(p, q),
         // `$invokable(...)`: the object's __invoke.
         (Value::Object(p), Value::Object(q)) => std::rc::Rc::ptr_eq(p, q),
-        (Value::Object(o), Value::Array(arr)) | (Value::Array(arr), Value::Object(o))
-            if arr.len() == 2 =>
-        {
-            let v: Vec<Value> = arr.values().map(deref).collect();
-            matches!(&v[0], Value::Object(p) if std::rc::Rc::ptr_eq(p, o))
-                && matches!(&v[1], Value::Str(m) if m.as_bytes().eq_ignore_ascii_case(b"__invoke"))
+        _ => match (callable_parts(&a), callable_parts(&b)) {
+            (Some((ta, ma)), Some((tb, mb))) => {
+                let target = match (ta, tb) {
+                    (CallTarget::None, CallTarget::None) => true,
+                    (CallTarget::Obj(p), CallTarget::Obj(q)) => std::rc::Rc::ptr_eq(&p, &q),
+                    (CallTarget::Class(p), CallTarget::Class(q)) => p.eq_ignore_ascii_case(&q),
+                    _ => false,
+                };
+                target && ma.eq_ignore_ascii_case(&mb)
+            }
+            _ => false,
+        },
+    }
+}
+
+enum CallTarget {
+    None,
+    Obj(crate::ObjectHandle),
+    Class(Vec<u8>),
+}
+
+/// A callable's receiver and function name: `'f'`, `'C::m'`, `[C, 'm']`,
+/// `[$o, 'm']`, and an invokable object as `[$o, '__invoke']` (so the
+/// spellings of one callable compare equal, as zend_closure_compare
+/// compares the functions they resolved to).
+fn callable_parts(v: &Value) -> Option<(CallTarget, Vec<u8>)> {
+    match v {
+        Value::Str(s) => {
+            let s = s.as_bytes();
+            let s = s.strip_prefix(b"\\").unwrap_or(s);
+            match s.windows(2).position(|w| w == b"::") {
+                Some(i) => Some((CallTarget::Class(s[..i].to_vec()), s[i + 2..].to_vec())),
+                None => Some((CallTarget::None, s.to_vec())),
+            }
         }
-        _ => false,
+        Value::Object(o) => Some((CallTarget::Obj(o.clone()), b"__invoke".to_vec())),
+        Value::Array(arr) if arr.len() == 2 => {
+            let v: Vec<Value> = arr.values().map(deref).collect();
+            let Value::Str(m) = &v[1] else {
+                return None;
+            };
+            let target = match &v[0] {
+                Value::Object(o) => CallTarget::Obj(o.clone()),
+                Value::Str(c) => {
+                    let c = c.as_bytes();
+                    CallTarget::Class(c.strip_prefix(b"\\").unwrap_or(c).to_vec())
+                }
+                _ => return None,
+            };
+            Some((target, m.as_bytes().to_vec()))
+        }
+        _ => None,
     }
 }
 

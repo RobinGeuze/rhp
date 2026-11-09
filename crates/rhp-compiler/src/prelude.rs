@@ -19,6 +19,8 @@ pub(crate) struct PreludeParts {
     pub(crate) classes: Vec<Rc<ClassProto>>,
     pub(crate) functions: Vec<Rc<FunctionProto>>,
     pub(crate) closures: Vec<Rc<FunctionProto>>,
+    /// The classes' lowercase names.
+    pub(crate) class_names: std::collections::HashSet<Vec<u8>>,
 }
 
 thread_local! {
@@ -127,6 +129,10 @@ fn prelude_classes_isolated(builtins: &Builtins, src: &str) -> Result<PreludePar
     );
     let (classes, functions) = r?;
     Ok(PreludeParts {
+        class_names: classes
+            .iter()
+            .map(|c| c.name.as_bytes().to_ascii_lowercase())
+            .collect(),
         classes: classes.into_iter().map(Rc::new).collect(),
         functions,
         closures: cx.closures.take(),

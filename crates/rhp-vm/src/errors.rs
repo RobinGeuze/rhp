@@ -1019,8 +1019,11 @@ impl Vm {
             return;
         }
         let ini = |vm: &Self, n: &[u8]| vm.ini_get(n).unwrap_or_default();
-        let log = ini_bool(&ini(self, b"log_errors"));
+        let log = self.sapi.diag_part != 2 && ini_bool(&ini(self, b"log_errors"));
         let mut mode = display_errors_mode(&ini(self, b"display_errors"));
+        if self.sapi.diag_part == 1 {
+            mode = DisplayErrors::Off;
+        }
         if matches!(mode, DisplayErrors::Stderr)
             && !matches!(
                 builtins::main::sapi::sapi_name().as_str(),
@@ -1043,7 +1046,10 @@ impl Vm {
             m.extend_from_slice(message);
             m.extend_from_slice(&tail);
             let target = ini(self, b"error_log");
-            if target.is_empty() || target == b"syslog" {
+            if target == b"syslog" {
+                let line = m.strip_suffix(b"\n").unwrap_or(&m);
+                builtins::php_syslog(builtins::syslog_error_priority(ty), line);
+            } else if target.is_empty() {
                 // error_log unset: the SAPI's log_message (the CLI's writes
                 // to stderr).
                 let line = m.strip_suffix(b"\n").unwrap_or(&m).to_vec();

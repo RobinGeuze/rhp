@@ -298,7 +298,7 @@ pub fn main_bytes(raw: &[Vec<u8>]) -> i32 {
         let _ = std::io::Write::flush(&mut std::io::stdout());
     }
     if num_repeats > 1 {
-        print!("Executing for the first time...\n");
+        println!("Executing for the first time...");
         let _ = std::io::Write::flush(&mut std::io::stdout());
     }
 
@@ -331,7 +331,7 @@ pub fn main_bytes(raw: &[Vec<u8>]) -> i32 {
         if num_repeats <= 0 {
             return status;
         }
-        print!("Finished execution, repeating...\n");
+        println!("Finished execution, repeating...");
         let _ = std::io::Write::flush(&mut std::io::stdout());
     }
 }

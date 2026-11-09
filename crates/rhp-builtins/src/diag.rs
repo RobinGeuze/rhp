@@ -146,6 +146,10 @@ pub fn locate_for_open(
     Ok(match located {
         // the stream layer takes a file:// prefix off itself
         streams::Located::Plain(_) => Some(path.to_vec()),
+        // php://input keeps the uri as given.
+        streams::Located::Wrapper(_) if path.eq_ignore_ascii_case(b"php://input") => {
+            Some(path.to_vec())
+        }
         streams::Located::Wrapper(p) => Some(p),
         streams::Located::Unknown(_) => Some(crate::zend::virtual_cwd::expand_local(path)),
         streams::Located::RemoteHost => {

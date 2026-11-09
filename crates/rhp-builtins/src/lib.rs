@@ -38,6 +38,8 @@ pub use ext::readline::cli::{
     shell_output as readline_shell_output, shell_run as readline_shell_run,
 };
 pub use ext::standard::http_fopen_wrapper;
+/// `error_log = syslog` (main/php_syslog.c).
+pub use ext::standard::syslog::{error_priority as syslog_error_priority, php_syslog};
 pub use host::{
     host_compare, host_loose_eq, Host, MagicFetch, ObCall, ScopeVar, StreamKind, StreamMeta,
     UnserProp, WrapperRestore,

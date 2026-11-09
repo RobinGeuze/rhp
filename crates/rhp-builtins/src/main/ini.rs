@@ -1228,10 +1228,13 @@ const MAIN_C_DEFAULTS: &[(&str, &str)] = &[
     ("max_input_time", "-1"),
 ];
 
+/// A directive's (name, built-in default, current value).
+pub(crate) type NonDefault = (&'static str, Option<Vec<u8>>, Option<Vec<u8>>);
+
 /// `php --ini=diff`: (name, built-in default, current value) of each
 /// registered directive whose value is not its default, sorted by name
 /// with strcasecmp.
-pub(crate) fn non_default_entries() -> Vec<(&'static str, Option<Vec<u8>>, Option<Vec<u8>>)> {
+pub(crate) fn non_default_entries() -> Vec<NonDefault> {
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for e in INI_TABLE {

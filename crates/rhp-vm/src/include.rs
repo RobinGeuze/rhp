@@ -217,6 +217,40 @@ impl Vm {
     /// (zend_exception_error) as `Parse error: …` (E_PARSE) or, for a
     /// CompileError, `Fatal error: …` (E_COMPILE_ERROR) through the usual
     /// display/log path (exit status 255 is the SAPI's job).
+    /// The main script did not compile; with auto_prepend_file set the
+    /// request runs it first, then reports this (`file` is the script).
+    pub fn defer_main_compile_error(&mut self, file: &[u8], e: IncludeError) {
+        self.main_compile_error = Some((file.to_vec(), e));
+    }
+
+    /// Report the main script's compile error `e`; the request then ends
+    /// as after a fatal error (shutdown functions still run).
+    pub(crate) fn main_compile_failed(&mut self, file: &[u8], e: IncludeError) -> Thrown {
+        let name = String::from_utf8_lossy(file).into_owned();
+        match e {
+            IncludeError::Parse {
+                class,
+                message,
+                line,
+                diags,
+            } => {
+                self.emit_parse_diags(file, &diags);
+                self.report_parse_error(class, &message, &name, line);
+                Thrown::Exit(255)
+            }
+            IncludeError::Compile {
+                message,
+                line,
+                diags,
+            } => {
+                self.compile_failed(&message, file, line, &diags, false);
+                Thrown::Exit(255)
+            }
+            IncludeError::HardLimit { line } => self.compile_hard_limit(Some((file, line))),
+            IncludeError::Thrown(t) => t,
+        }
+    }
+
     pub fn report_parse_error(&mut self, class: &str, message: &str, file: &str, line: u32) {
         let (ty, label) = if class == "ParseError" {
             (4, "Parse error")

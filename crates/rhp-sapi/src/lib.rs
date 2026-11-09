@@ -514,6 +514,21 @@ pub fn run_request(sapi: Box<dyn Sapi>, req: Request) -> Outcome {
         Script::File(_) => vm.compile_main(&file, &argv0, source, compile),
         _ => compile(&source).map(std::rc::Rc::new),
     };
+    // php compiles the main script after auto_prepend_file ran: its
+    // compile error comes after the prepended file's output, and the
+    // shutdown functions it registered run.
+    let prepends = matches!(
+        req.script,
+        Script::File(_) | Script::Source { .. } | Script::Stdin
+    ) && rhp_builtins::Host::ini_get(&vm, b"auto_prepend_file")
+        .is_some_and(|p| !p.is_empty());
+    let compiled = match compiled {
+        Err(e @ (IncludeError::Parse { .. } | IncludeError::Compile { .. })) if prepends => {
+            vm.defer_main_compile_error(file.as_bytes(), e);
+            compile(b"").map(std::rc::Rc::new)
+        }
+        r => r,
+    };
     let program = match compiled {
         Ok(p) => p,
         Err(IncludeError::Parse {

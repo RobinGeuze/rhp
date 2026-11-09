@@ -27,6 +27,10 @@ pub(crate) struct SapiState {
     /// php-cgi: module-startup diagnostics (level, message) shown after the
     /// response body.
     pub(crate) deferred_startup_diags: Vec<(i64, String)>,
+    /// Which half of an error report runs: 0 both, 1 only the log (php-cgi
+    /// logs a startup diagnostic at once), 2 only the display (the
+    /// deferred display of one already logged).
+    pub(crate) diag_part: u8,
     /// The exit status when the script ends without `exit`
     /// (`EG(exit_status)`): 255 after an E_ERROR at module startup, or
     /// after php-cli failed to write the output.
@@ -54,6 +58,7 @@ impl SapiState {
             startup: false,
             post_too_big: false,
             deferred_startup_diags: Vec::new(),
+            diag_part: 0,
             exit_status: 0,
             startup_failed: false,
             body: BodyState::default(),
@@ -105,6 +110,12 @@ impl Vm {
         }
         if builtins::main::sapi::is_cgi() {
             if self.startup_diags_shown() {
+                // Logged now, displayed after the body.
+                self.sapi.diag_part = 1;
+                for (level, msg) in &diags {
+                    self.module_startup_diag(*level, msg);
+                }
+                self.sapi.diag_part = 0;
                 self.sapi.deferred_startup_diags = diags;
             } else {
                 for (level, msg) in diags {
@@ -289,9 +300,11 @@ impl Vm {
         // zend_ini_deactivate restores startup values changed at runtime
         // (re-running their handlers); php-cgi's deferred startup warnings
         // come out with them.
+        self.sapi.diag_part = 2;
         for (level, msg) in std::mem::take(&mut self.sapi.deferred_startup_diags) {
             self.module_startup_diag(level, &msg);
         }
+        self.sapi.diag_part = 0;
         // The module is up by now: the usual display / log rules apply.
         for (level, d) in builtins::take_shutdown_diagnostics() {
             let label = if level == rhp_builtins::E_DEPRECATED {

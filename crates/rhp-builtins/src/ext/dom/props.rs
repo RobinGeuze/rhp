@@ -2095,7 +2095,7 @@ fn fragment_serialize(
     d: &DomObject,
     node: *mut XmlNode,
 ) -> Result<Option<Value>, Thrown> {
-    let private = super::modern::private(d).map(|p| &*p);
+    let private = unsafe { super::modern::private(d) }.map(|p| &*p);
     unsafe {
         if (*(*node).doc).type_ == sys::XML_HTML_DOCUMENT_NODE {
             let mut out = super::html5_serializer::Out::default();

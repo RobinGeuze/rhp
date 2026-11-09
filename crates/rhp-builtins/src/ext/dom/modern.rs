@@ -67,12 +67,20 @@ fn dom_err_msg(cx: &mut Cx, code: i64, msg: &str) -> Thrown {
 }
 
 /// The document's namespace mapper (php_dom_get_ns_mapper).
-pub fn mapper(d: &DomObject) -> &'static mut NsMapper {
-    nscompat::mapper(d.document()).expect("a modern document has private data")
+///
+/// # Safety
+/// No other reference to the document's private data is in use while
+/// the result is.
+pub unsafe fn mapper<'a>(d: &DomObject) -> &'a mut NsMapper {
+    unsafe { nscompat::mapper(d.document()) }.expect("a modern document has private data")
 }
 
-pub fn private(d: &DomObject) -> Option<&'static mut DomPrivate> {
-    nscompat::of(d.document())
+/// The document's private data (php_dom_get_private_data).
+///
+/// # Safety
+/// As for [`mapper`].
+pub unsafe fn private<'a>(d: &DomObject) -> Option<&'a mut DomPrivate> {
+    unsafe { nscompat::of(d.document()) }
 }
 
 pub fn is_modern(d: &DomObject) -> bool {
@@ -292,7 +300,7 @@ fn dump(
             }
         });
     }
-    let p = private(d).map(|p| &*p);
+    let p = unsafe { private(d) }.map(|p| &*p);
     super::xml_serializer::dump_to_str(node, options, format, encoding, false, p)
 }
 
@@ -689,7 +697,7 @@ pub fn html_create_from_file(cx: &mut Cx, _: &Value, args: &[Value]) -> Result<V
 fn html_save(d: &DomObject, docp: *mut XmlDoc, node: *mut XmlNode) -> Vec<u8> {
     rhp_csrc::lexbor::setup();
     let mut utf8 = super::html5_serializer::Out::default();
-    super::html5_serializer::serialize_outer(&mut utf8, private(d).map(|p| &*p), node);
+    super::html5_serializer::serialize_outer(&mut utf8, unsafe { private(d) }.map(|p| &*p), node);
     let enc = unsafe { b((*docp).encoding) }.to_vec();
     super::html5::encode_output(&enc, &utf8)
 }
@@ -742,7 +750,11 @@ pub fn save_html_file(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value
     // as it is made (encoded), and a failed write stops the save.
     rhp_csrc::lexbor::setup();
     let mut utf8 = super::html5_serializer::Out::default();
-    super::html5_serializer::serialize_outer(&mut utf8, private(&intern).map(|p| &*p), docn);
+    super::html5_serializer::serialize_outer(
+        &mut utf8,
+        unsafe { private(&intern) }.map(|p| &*p),
+        docn,
+    );
     let enc = unsafe { b((*docn.cast::<XmlDoc>()).encoding) }.to_vec();
     for piece in super::html5::encode_output_pieces(&enc, &utf8) {
         // php_stream_write of nothing writes nothing.
@@ -951,7 +963,7 @@ pub fn doc_create_element_ns(cx: &mut Cx, this: &Value, args: &[Value]) -> Resul
     let docp: *mut XmlDoc = docn.cast();
     match validate_and_extract(uri.as_deref(), &name) {
         Ok((local, prefix)) => {
-            let ns = mapper(&intern).get_ns(
+            let ns = unsafe { mapper(&intern) }.get_ns(
                 prefix.as_deref().unwrap_or(b""),
                 uri.as_deref().unwrap_or(b""),
             );
@@ -1009,7 +1021,7 @@ pub fn doc_create_attribute_ns(cx: &mut Cx, this: &Value, args: &[Value]) -> Res
         return Err(dom_err(cx, INVALID_STATE_ERR));
     }
     if let Some(u) = uri.as_ref().filter(|u| !u.is_empty()) {
-        let ns = mapper(&intern).get_ns(prefix.as_deref().unwrap_or(b""), u);
+        let ns = unsafe { mapper(&intern) }.get_ns(prefix.as_deref().unwrap_or(b""), u);
         unsafe { (*node).ns = ns };
     }
     create_object(cx, node, Some(&intern))
@@ -1452,7 +1464,12 @@ pub fn clone_node(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Th
         }
         Ok(v)
     } else {
-        let node = clone_node_modern(Some(mapper(&intern)), n, unsafe { (*n).doc }, recursive);
+        let node = clone_node_modern(
+            Some(unsafe { mapper(&intern) }),
+            n,
+            unsafe { (*n).doc },
+            recursive,
+        );
         if node.is_null() {
             return Ok(Value::Bool(false));
         }
@@ -1927,7 +1944,7 @@ pub fn el_set_attribute_ns(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<
     let (intern, elemp) = get_obj(cx, this)?;
     match validate_and_extract(uri.as_deref(), &name) {
         Ok((local, prefix)) => {
-            let ns = mapper(&intern).get_ns(
+            let ns = unsafe { mapper(&intern) }.get_ns(
                 prefix.as_deref().unwrap_or(b""),
                 uri.as_deref().unwrap_or(b""),
             );
@@ -2094,7 +2111,7 @@ fn namespace_infos(
     nodep: *mut XmlNode,
     out: &mut PhpArray,
 ) -> Result<(), Thrown> {
-    let m = mapper(intern);
+    let m = unsafe { mapper(intern) };
     // prefix ("" for the default) to namespace, first (innermost) wins
     let mut table: Vec<(Vec<u8>, *mut XmlNs)> = Vec::new();
     let mut cur = nodep as *const XmlNode;
@@ -2303,7 +2320,7 @@ fn xml_fragment(
     context: *mut XmlNode,
     input: &[u8],
 ) -> Result<*mut XmlNode, Thrown> {
-    let m = mapper(d);
+    let m = unsafe { mapper(d) };
     let mut decls = Vec::new();
     for ns in nscompat::in_scope_ns(m, context, true) {
         unsafe {

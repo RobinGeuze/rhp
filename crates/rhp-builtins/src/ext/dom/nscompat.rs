@@ -238,7 +238,11 @@ pub fn destroy(h: *mut PrivateHeader) {
 }
 
 /// php_dom_get_private_data: the document's modern state.
-pub fn of(document: *mut RefObj) -> Option<&'static mut DomPrivate> {
+///
+/// # Safety
+/// `document` is null or a live document reference, and no other
+/// reference to its private data is in use while the result is.
+pub unsafe fn of<'a>(document: *mut RefObj) -> Option<&'a mut DomPrivate> {
     unsafe {
         let d = document.as_ref()?;
         (d.private_data as *mut DomPrivate).as_mut()
@@ -246,8 +250,11 @@ pub fn of(document: *mut RefObj) -> Option<&'static mut DomPrivate> {
 }
 
 /// php_dom_get_ns_mapper
-pub fn mapper(document: *mut RefObj) -> Option<&'static mut NsMapper> {
-    of(document).map(|p| &mut p.ns_mapper)
+///
+/// # Safety
+/// As for [`of`].
+pub unsafe fn mapper<'a>(document: *mut RefObj) -> Option<&'a mut NsMapper> {
+    unsafe { of(document) }.map(|p| &mut p.ns_mapper)
 }
 
 fn free_templated_content(p: &mut DomPrivate, base: *mut XmlNode) {

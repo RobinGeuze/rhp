@@ -1315,7 +1315,7 @@ pub fn modern_dump_to_str(
     format: bool,
     encoding: *const u8,
 ) -> Result<Option<Vec<u8>>, Thrown> {
-    let p = nscompat::of(document).map(|p| &*p);
+    let p = unsafe { nscompat::of(document) }.map(|p| &*p);
     xml_serializer::dump_to_str(node, options, format, encoding, false, p)
 }
 

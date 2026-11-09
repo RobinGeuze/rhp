@@ -4745,6 +4745,7 @@ Illuminate\Tests\Filesystem\FilesystemTest::testReplaceWhenUnixSymlinkExists
 Illuminate\Tests\Filesystem\FilesystemTest::testRequireOnceRequiresFileProperly
 Illuminate\Tests\Filesystem\FilesystemTest::testRequireOnceThrowsExceptionNonexisitingFile
 Illuminate\Tests\Filesystem\FilesystemTest::testSetChmod
+Illuminate\Tests\Filesystem\FilesystemTest::testSharedGet
 Illuminate\Tests\Filesystem\FilesystemTest::testSizeOutputsSize
 Illuminate\Tests\Filesystem\FilesystemTest::testTypeIdentifiesDirectory
 Illuminate\Tests\Filesystem\FilesystemTest::testTypeIdentifiesFile

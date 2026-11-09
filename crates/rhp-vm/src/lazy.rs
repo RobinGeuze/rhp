@@ -105,7 +105,7 @@ impl Vm {
                 let props = self.blank_props(cls);
                 let h: ObjectHandle = Rc::new(RefCell::new(ObjectData::new(cls, id, props)));
                 self.track_destructible(&h);
-                for (k, pe) in &self.classes[cls as usize].props {
+                for (k, pe) in self.classes[cls as usize].props.iter() {
                     if !pe.virt {
                         lazy_props.push(k.clone());
                     }

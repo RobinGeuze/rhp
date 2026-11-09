@@ -388,10 +388,12 @@ impl Vm {
         let parent = e.parent.map(|p| &self.classes[p as usize]);
         let case_names: Vec<&[u8]> = proto.enum_cases.iter().map(|c| c.name.as_bytes()).collect();
         let mut constants = e.constants.clone();
-        for (k, c) in constants.iter_mut() {
-            if e.kind == ClassKind::Enum && case_names.contains(&k.as_slice()) {
-                // Each request makes its own case objects.
-                c.value = Value::Null;
+        if e.kind == ClassKind::Enum {
+            for (k, c) in Rc::make_mut(&mut constants).iter_mut() {
+                if case_names.contains(&k.as_slice()) {
+                    // Each request makes its own case objects.
+                    c.value = Value::Null;
+                }
             }
         }
         if !constants.values().all(|c| plain(&c.value))

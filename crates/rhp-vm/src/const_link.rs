@@ -35,7 +35,7 @@ impl Vm {
         // (constant name, parent declaring class, parent type)
         let mut inherited: Vec<(Vec<u8>, ClassId, TypeHint)> = Vec::new();
         for src in &sources {
-            for (k, c) in &self.classes[*src as usize].constants {
+            for (k, c) in self.classes[*src as usize].constants.iter() {
                 if c.visibility == rhp_values::Visibility::Private {
                     continue;
                 }
@@ -488,7 +488,7 @@ impl Vm {
         }
         for t in &proto.traits {
             if let Some(&tid) = self.class_ids.get(&lc(t.as_bytes())) {
-                for (k, c) in &self.classes[tid as usize].constants {
+                for (k, c) in self.classes[tid as usize].constants.iter() {
                     table
                         .entry(k.clone())
                         .or_insert((None, c.visibility, c.is_final));

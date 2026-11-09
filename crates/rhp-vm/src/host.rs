@@ -2205,7 +2205,7 @@ impl Host for Vm {
         let entry = self.class(o.class);
         let mut out = Vec::new();
         let mut before = 0usize;
-        for (key, pe) in &entry.props {
+        for (key, pe) in entry.props.iter() {
             // A virtual property has no slot to dump.
             if self.internal_slot(o.class, key) || pe.virt {
                 continue;

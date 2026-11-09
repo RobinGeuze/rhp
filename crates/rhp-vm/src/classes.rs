@@ -48,19 +48,21 @@ pub struct ClassEntry {
     /// by *storage key*: the plain name for public/protected properties, the
     /// php-mangled `"\0Class\0name"` for private ones — so a parent's private
     /// `$x` and a child's `$x` are two distinct slots (see [`prop_storage_key`]).
-    pub props: IndexMap<PhpStr, PropEntry, FxBuildHasher>,
+    /// Shared by the copies of a linked class; evaluating a default copies
+    /// it first (`Rc::make_mut`), as do the constants.
+    pub props: Rc<IndexMap<PhpStr, PropEntry, FxBuildHasher>>,
     /// The objects' slot layout: `props`' keys, slot `i` for entry `i`
     /// (a virtual property's slot stays empty).
     pub layout: Rc<rhp_values::PropLayout>,
     /// php's `properties_info`: unmangled name -> storage key of the most-derived
     /// declaration of that name (which may be an inherited parent private).
-    pub prop_visible: FxHashMap<PhpStr, PhpStr>,
+    pub prop_visible: Rc<FxHashMap<PhpStr, PhpStr>>,
     /// Private instance properties declared by THIS class (incl. trait-imported):
     /// unmangled name -> storage key. Consulted first when this class is the
     /// calling scope, so its methods see their own private slot.
-    pub own_private: FxHashMap<PhpStr, PhpStr>,
+    pub own_private: Rc<FxHashMap<PhpStr, PhpStr>>,
     /// Flattened class constants (case-sensitive), in php's member order.
-    pub constants: IndexMap<Vec<u8>, ClassConst, FxBuildHasher>,
+    pub constants: Rc<IndexMap<Vec<u8>, ClassConst, FxBuildHasher>>,
     /// Flattened static-property slots (shared cells; inherited ones alias).
     pub static_props: IndexMap<Vec<u8>, StaticProp, FxBuildHasher>,
     /// Enum case singletons in declaration order (empty for non-enums).
@@ -1580,10 +1582,10 @@ impl Vm {
         // whose inherited declaration is a parent *private* gets a fresh slot
         // appended, leaving the parent's private slot in place (php shadowing).
         let mut props: IndexMap<PhpStr, PropEntry, FxBuildHasher> = parent
-            .map(|p| self.classes[p as usize].props.clone())
+            .map(|p| (*self.classes[p as usize].props).clone())
             .unwrap_or_default();
         let mut prop_visible: FxHashMap<PhpStr, PhpStr> = parent
-            .map(|p| self.classes[p as usize].prop_visible.clone())
+            .map(|p| (*self.classes[p as usize].prop_visible).clone())
             .unwrap_or_default();
         let mut own_private: FxHashMap<PhpStr, PhpStr> = FxHashMap::default();
         let classes = &self.classes;
@@ -1873,7 +1875,12 @@ impl Vm {
             .unwrap_or_default();
         for tname in &proto.traits {
             let tid = self.class_ids[&lc(tname.as_bytes())];
-            for (k, c) in self.classes[tid as usize].constants.clone() {
+            for (k, c) in self.classes[tid as usize]
+                .constants
+                .iter()
+                .map(|(k, c)| (k.clone(), c.clone()))
+                .collect::<Vec<_>>()
+            {
                 constants.insert(
                     k,
                     ClassConst {
@@ -1888,7 +1895,12 @@ impl Vm {
         // constant takes precedence, so don't overwrite.
         for iname in &proto.interfaces {
             let iid = self.class_ids[&lc(iname.as_bytes())];
-            for (k, cc) in self.classes[iid as usize].constants.clone() {
+            for (k, cc) in self.classes[iid as usize]
+                .constants
+                .iter()
+                .map(|(k, c)| (k.clone(), c.clone()))
+                .collect::<Vec<_>>()
+            {
                 constants.entry(k).or_insert(cc);
             }
         }
@@ -2058,11 +2070,11 @@ impl Vm {
             interfaces,
             traits,
             methods: Rc::new(methods),
-            props,
+            props: Rc::new(props),
             layout,
-            prop_visible,
-            own_private,
-            constants,
+            prop_visible: Rc::new(prop_visible),
+            own_private: Rc::new(own_private),
+            constants: Rc::new(constants),
             static_props,
             enum_cases: Vec::new(),
             enum_backing: proto.enum_backing,
@@ -2131,7 +2143,7 @@ impl Vm {
                 ),
             };
             let obj = self.new_enum_case(id, &case.name, value);
-            self.classes[id as usize].constants.insert(
+            Rc::make_mut(&mut self.classes[id as usize].constants).insert(
                 case.name.as_bytes().to_vec(),
                 ClassConst {
                     value: Value::Object(obj.clone()),
@@ -2813,7 +2825,9 @@ impl Vm {
         if owner != cls && self.classes[owner as usize].constants[name].init.is_none() {
             let v = self.classes[owner as usize].constants[name].value.clone();
             self.classes[cls as usize].state += 1;
-            let e = self.classes[cls as usize].constants.get_mut(name).unwrap();
+            let e = Rc::make_mut(&mut self.classes[cls as usize].constants)
+                .get_mut(name)
+                .unwrap();
             e.value = v.clone();
             e.init = None;
             return Ok(Some(v));
@@ -2829,8 +2843,7 @@ impl Vm {
                     ),
                 ));
             }
-            self.classes[owner as usize]
-                .constants
+            Rc::make_mut(&mut self.classes[owner as usize].constants)
                 .get_mut(name)
                 .unwrap()
                 .visited = true;
@@ -2839,7 +2852,8 @@ impl Vm {
             ConstInit::Expr(t) | ConstInit::EnumCase(t) => self.run_init_thunk(t, decl),
         };
         if in_const_expr {
-            if let Some(e) = self.classes[owner as usize].constants.get_mut(name) {
+            if let Some(e) = Rc::make_mut(&mut self.classes[owner as usize].constants).get_mut(name)
+            {
                 e.visited = false;
             }
         }
@@ -2850,8 +2864,7 @@ impl Vm {
         // Evaluation may have completed it re-entrantly; finish it only once.
         self.classes[owner as usize].state += 1;
         self.classes[cls as usize].state += 1;
-        let e = self.classes[owner as usize]
-            .constants
+        let e = Rc::make_mut(&mut self.classes[owner as usize].constants)
             .get_mut(name)
             .unwrap();
         if e.init.is_some() {
@@ -2867,7 +2880,9 @@ impl Vm {
         }
         let value = e.value.clone();
         if owner != cls {
-            let e = self.classes[cls as usize].constants.get_mut(name).unwrap();
+            let e = Rc::make_mut(&mut self.classes[cls as usize].constants)
+                .get_mut(name)
+                .unwrap();
             e.value = value.clone();
             e.init = None;
         }
@@ -2930,7 +2945,7 @@ impl Vm {
                 }
                 (None, None) => continue,
             };
-            if let Some(pe) = self.classes[cls as usize].props.get_mut(&name) {
+            if let Some(pe) = Rc::make_mut(&mut self.classes[cls as usize].props).get_mut(&name) {
                 pe.default = v;
                 pe.init = None;
             }

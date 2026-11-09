@@ -855,6 +855,16 @@ impl Vm {
         })
     }
 
+    /// sodium_remove_param_values_from_backtrace on an exception already
+    /// thrown.
+    pub(crate) fn hide_thrown_trace_args(&mut self, obj: &ObjectHandle) {
+        let kt = self.declared_prop_key(obj, b"trace");
+        let mut b = obj.borrow_mut();
+        if let Some(Value::Array(trace)) = b.props_mut().get_mut(&kt) {
+            hide_trace_args(trace);
+        }
+    }
+
     /// Stamp a freshly created Throwable with php's creation-site `file`,
     /// `line` and `trace` (zend_default_exception_new).
     pub(crate) fn init_throwable(&mut self, obj: &ObjectHandle) {

@@ -120,6 +120,7 @@ impl Vm {
             includer: None,
             fcc_scope: std::cell::Cell::new(None),
             fcc_this: std::cell::RefCell::new(None),
+            recv_init_cache: Default::default(),
             included_files: Default::default(),
             internal_classes: 0,
             link_cache: Default::default(),

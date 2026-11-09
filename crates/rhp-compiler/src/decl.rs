@@ -337,6 +337,35 @@ impl AttrNames<'_, '_> {
     }
 }
 
+/// zend_try_ct_eval_class_const: the value of a constant the active class
+/// declared earlier, named `self::X` (outside a trait) or by the class's
+/// name.
+fn own_class_const(cx: &FileCtx, e: &Expression) -> Option<Value> {
+    use crate::parse::cst::ClassLikeConstantSelector as Sel;
+    let Expression::Access(Access::ClassConstant(c)) = crate::util::unparen(e) else {
+        return None;
+    };
+    let Sel::Identifier(id) = &c.constant else {
+        return None;
+    };
+    let scope = cx.class_scope.borrow().clone()?;
+    let own = match crate::util::unparen(c.class) {
+        Expression::Self_(_) => !scope.is_trait,
+        Expression::Identifier(cid) => {
+            let raw = identifier_raw(cid);
+            if raw.eq_ignore_ascii_case(b"self") {
+                !scope.is_trait
+            } else {
+                !AttrNames::special(raw)
+                    && cx.resolve_class_name(cid).eq_ignore_ascii_case(&scope.name)
+            }
+        }
+        _ => false,
+    };
+    own.then(|| scope.consts.borrow().get(id.value).cloned())
+        .flatten()
+}
+
 impl crate::ast_export::ConstExprNames for AttrNames<'_, '_> {
     fn fold(&self, e: &Expression) -> Option<Value> {
         use crate::parse::cst::{ClassLikeConstantSelector as Sel, MagicConstant};
@@ -376,6 +405,12 @@ impl crate::ast_export::ConstExprNames for AttrNames<'_, '_> {
             }
             Expression::ConstantAccess(ca) if self.subst => {
                 return crate::fold::ct_constant(self.cx, &ca.name);
+            }
+            // zend_try_ct_eval_class_const.
+            Expression::Access(Access::ClassConstant(_)) if self.subst => {
+                if let Some(v) = own_class_const(self.cx, e) {
+                    return Some(v);
+                }
             }
             Expression::MagicConstant(MagicConstant::Class(_)) => {
                 return match self.class_name {
@@ -689,6 +724,7 @@ pub(crate) fn compile_class(cx: &FileCtx, class: &Class) -> Result<ClassProto, T
         parent: parent.as_ref().map(|p| p.as_bytes().to_vec()),
         is_trait: false,
         is_anon: false,
+        consts: Default::default(),
     };
     let saved = cx.in_readonly_class.replace(flags.is_readonly);
     let m = cx.with_class_scope(scope, || compile_members(cx, &class.members, &name));
@@ -738,6 +774,108 @@ thread_local! {
     static ANON_CLASS_COUNTER: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
+/// CG(rtd_key_counter) for the whole file, as php's compiler counts it in
+/// source order: each anonymous class takes one when its compile starts
+/// (zend_generate_anon_class_name), each class-like php can't bind at
+/// compile time one when its compile ends (zend_build_runtime_definition_key
+/// for ZEND_DECLARE_CLASS). Records the anonymous classes' values.
+///
+/// A class-like is bound at compile time when it is at the top level and has
+/// no interfaces, traits or enum interfaces, and its parent (if any) is
+/// already declared. rhp knows the parent only when it is internal or an
+/// earlier such class of this file; one from an earlier file counts as
+/// unknown.
+pub(crate) fn assign_rtd_keys(
+    cx: &FileCtx,
+    flat: &[(Rc<crate::NsContext>, &crate::parse::cst::Statement)],
+) {
+    use crate::parse::cst::{ClassLikeMember, Node, Statement};
+    use mago_span::HasSpan;
+    if cx.is_prelude {
+        return;
+    }
+    // (offset, the anonymous class's start offset)
+    let mut events: Vec<(u32, Option<u32>)> = Vec::new();
+    fn walk(node: Node, events: &mut Vec<(u32, Option<u32>)>) {
+        match node {
+            Node::AnonymousClass(ac) => {
+                let start = ac.span().start.offset;
+                events.push((start, Some(start)));
+            }
+            Node::Class(_) | Node::Interface(_) | Node::Trait(_) | Node::Enum(_) => {
+                events.push((node.span().end.offset, None));
+            }
+            _ => {}
+        }
+        node.visit_children(|ch| walk(ch, events));
+    }
+    let uses_traits = |m: &crate::parse::cst::Sequence<ClassLikeMember>| {
+        m.iter().any(|m| matches!(m, ClassLikeMember::TraitUse(_)))
+    };
+    let mut bound: Vec<Vec<u8>> = Vec::new();
+    let prelude = crate::prelude::prelude_classes(cx.builtins).ok();
+    let internal = |name: &[u8]| {
+        prelude.as_ref().is_some_and(|p| {
+            p.classes
+                .iter()
+                .any(|c| c.name.as_bytes().eq_ignore_ascii_case(name))
+        })
+    };
+    for (ns, stmt) in flat {
+        let stmt: &Statement = stmt;
+        cx.set_ns(ns);
+        let (keyed, name) = match stmt {
+            Statement::Class(c) => {
+                let parent_known = match c.extends.as_ref().and_then(|e| e.types.iter().next()) {
+                    None => true,
+                    Some(p) => {
+                        let p = cx.resolve_class_name(p).to_ascii_lowercase();
+                        internal(&p) || bound.contains(&p)
+                    }
+                };
+                (
+                    c.implements.is_some() || uses_traits(&c.members) || !parent_known,
+                    Some(join_ns(&cx.cur_ns(), c.name.value)),
+                )
+            }
+            Statement::Interface(i) => (
+                i.extends.is_some(),
+                Some(join_ns(&cx.cur_ns(), i.name.value)),
+            ),
+            Statement::Trait(t) => (
+                uses_traits(&t.members),
+                Some(join_ns(&cx.cur_ns(), t.name.value)),
+            ),
+            Statement::Enum(_) => (true, None),
+            _ => {
+                walk(Node::Statement(stmt), &mut events);
+                continue;
+            }
+        };
+        // What the declaration nests (in its methods) comes first.
+        // (The statement's child is the class-like node itself.)
+        Node::Statement(stmt)
+            .visit_children(|decl| decl.visit_children(|ch| walk(ch, &mut events)));
+        if keyed {
+            events.push((stmt.span().end.offset, None));
+        } else if let Some(n) = name {
+            bound.push(n.to_ascii_lowercase());
+        }
+    }
+    events.sort_by_key(|e| e.0);
+    let base = ANON_CLASS_COUNTER.with(|c| {
+        let b = c.get();
+        c.set(b.wrapping_add(events.len() as u32));
+        b
+    });
+    let mut keys = cx.anon_keys.borrow_mut();
+    for (i, (_, anon)) in events.into_iter().enumerate() {
+        if let Some(start) = anon {
+            keys.insert(start, base.wrapping_add(i as u32));
+        }
+    }
+}
+
 /// Compile an anonymous class body under its generated `name`
 /// (`Prefix@anonymous\0file:line$n`, zend_generate_anon_class_name).
 pub(crate) fn compile_anon_class(
@@ -768,10 +906,13 @@ pub(crate) fn compile_anon_class(
         .unwrap_or_else(|| b"class".to_vec());
     name.extend_from_slice(b"@anonymous\0");
     name.extend_from_slice(&cx.file_name());
-    let n = ANON_CLASS_COUNTER.with(|c| {
-        let n = c.get();
-        c.set(n.wrapping_add(1));
-        n
+    let key = cx.anon_keys.borrow().get(&ac.span().start.offset).copied();
+    let n = key.unwrap_or_else(|| {
+        ANON_CLASS_COUNTER.with(|c| {
+            let n = c.get();
+            c.set(n.wrapping_add(1));
+            n
+        })
     });
     name.extend_from_slice(format!(":{}${:x}", cx.line_of(ac.span().start.offset), n).as_bytes());
     let name = PhpStr::from_bytes(name);
@@ -804,6 +945,7 @@ pub(crate) fn compile_anon_class(
         parent: parent.as_ref().map(|p| p.as_bytes().to_vec()),
         is_trait: false,
         is_anon: true,
+        consts: Default::default(),
     };
     let saved = cx.in_readonly_class.replace(flags.is_readonly);
     let m = cx.with_class_scope(scope, || compile_members(cx, &ac.members, &name));
@@ -900,6 +1042,7 @@ pub(crate) fn compile_enum(
         parent: None,
         is_trait: false,
         is_anon: false,
+        consts: Default::default(),
     };
     let m = cx.with_class_scope(scope, || compile_members(cx, &en.members, &name))?;
     add_stringable(&mut interfaces, &m.methods, &name);
@@ -1187,6 +1330,21 @@ fn compile_member(
             )?;
             for item in c.items.iter() {
                 let value = const_init_or_thunk(cx, item.value, Some(class_name))?;
+                // What php's constants_table holds after compiling it: the
+                // value when zend_eval_const_expr folds it.
+                let known = match &value {
+                    ConstInitProto::Const(v) => Some(v.clone()),
+                    ConstInitProto::Thunk(_) => {
+                        crate::fold::fold_const_with(cx, item.value, &|e| own_class_const(cx, e))
+                            .ok()
+                    }
+                };
+                if let (Some(v), Some(scope)) = (known, cx.class_scope.borrow().as_ref()) {
+                    scope
+                        .consts
+                        .borrow_mut()
+                        .insert(item.name.value.to_vec(), v);
+                }
                 let value = match &compiled {
                     Some(t) => {
                         check_const_value(cx, &t.ty, value, class_name, item.name.value, cstart)
@@ -1523,6 +1681,7 @@ pub(crate) fn compile_trait(
         parent: None,
         is_trait: true,
         is_anon: false,
+        consts: Default::default(),
     };
     let m = cx.with_class_scope(scope, || compile_members(cx, &t.members, &name));
     cx.in_trait.set(saved);
@@ -1600,6 +1759,7 @@ pub(crate) fn compile_interface(
         parent: None,
         is_trait: false,
         is_anon: false,
+        consts: Default::default(),
     };
     let m = cx.with_class_scope(scope, || compile_members(cx, &iface.members, &name));
     cx.in_interface.set(saved);

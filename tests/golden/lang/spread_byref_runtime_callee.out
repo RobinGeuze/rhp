@@ -1,0 +1,67 @@
+array(2) {
+  [0]=>
+  string(1) "m"
+  [1]=>
+  int(2)
+}
+array(3) {
+  [0]=>
+  int(1)
+  [1]=>
+  string(1) "s"
+  [2]=>
+  string(1) "s"
+}
+array(2) {
+  [0]=>
+  int(9)
+  [1]=>
+  int(2)
+}
+array(2) {
+  [0]=>
+  int(9)
+  [1]=>
+  int(2)
+}
+array(2) {
+  [0]=>
+  string(4) "anon"
+  [1]=>
+  int(2)
+}
+array(1) {
+  [0]=>
+  string(1) "m"
+}
+array(1) {
+  [0]=>
+  string(1) "m"
+}
+array(1) {
+  ["a"]=>
+  string(1) "m"
+}
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}
+array(2) {
+  [0]=>
+  string(1) "m"
+  [1]=>
+  int(2)
+}
+E8: Only variables should be passed by reference (line 22)
+array(1) {
+  [0]=>
+  string(1) "s"
+}
+int(1)
+array(1) {
+  [0]=>
+  string(1) "s"
+}
+done

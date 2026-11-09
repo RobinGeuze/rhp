@@ -119,13 +119,19 @@ pub trait Sapi {
 
     /// A write to the `STDOUT` stream (php-cli): php writes the descriptor
     /// directly, past the output layer, so what the SAPI holds goes out
-    /// first.
-    fn write_raw_stdout(&mut self, data: &[u8]) {
+    /// first. The bytes written: a non-blocking descriptor may take part.
+    fn write_raw_stdout(&mut self, data: &[u8]) -> usize {
         use std::io::Write;
         let _ = self.flush();
-        let mut so = std::io::stdout().lock();
-        let _ = so.write_all(data);
-        let _ = so.flush();
+        let _ = std::io::stdout().lock().flush();
+        write_fd(1, data)
+    }
+
+    /// A write to the `STDERR` stream: the bytes written (see
+    /// [`Sapi::write_raw_stdout`]).
+    fn write_stderr_stream(&mut self, data: &[u8]) -> usize {
+        self.write_stderr(data);
+        data.len()
     }
 
     /// Whether the SAPI module's `additional_functions` (`dl`) are
@@ -806,4 +812,22 @@ pub fn register(m: &mut crate::Registry) {
         m,
         &[("header_register_callback", fn_header_register_callback)],
     );
+}
+
+/// php_stdiop_write on a descriptor: write(2) until done, EINTR retried; a
+/// full non-blocking pipe (EAGAIN) or an error ends it with the count so far.
+pub fn write_fd(fd: i32, data: &[u8]) -> usize {
+    let mut done = 0;
+    while done < data.len() {
+        let rest = &data[done..];
+        let n = unsafe { libc::write(fd, rest.as_ptr() as *const libc::c_void, rest.len()) };
+        if n > 0 {
+            done += n as usize;
+        } else if n < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+            continue;
+        } else {
+            break;
+        }
+    }
+    done
 }

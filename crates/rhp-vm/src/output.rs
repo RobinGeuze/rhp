@@ -1136,7 +1136,7 @@ impl Vm {
 
     /// A write to the `STDOUT` stream: php writes the descriptor directly,
     /// bypassing the output layer (no headers, no SAPI buffering).
-    pub(crate) fn emit_raw_stdout(&mut self, data: &[u8]) {
-        self.sapi.sapi.write_raw_stdout(data);
+    pub(crate) fn emit_raw_stdout(&mut self, data: &[u8]) -> usize {
+        self.sapi.sapi.write_raw_stdout(data)
     }
 }

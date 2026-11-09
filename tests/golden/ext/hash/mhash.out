@@ -1,0 +1,91 @@
+
+Deprecated: Constant MHASH_CRC32 is deprecated since 8.5, as the mhash*() functions were deprecated in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 3
+
+Deprecated: Constant MHASH_XXH128 is deprecated since 8.5, as the mhash*() functions were deprecated in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 3
+int(0)
+int(41)
+bool(true)
+
+Deprecated: Function mhash_count() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 4
+int(41)
+
+Deprecated: Function mhash_get_hash_name() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 6
+
+Deprecated: Function mhash_get_block_size() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 6
+string(5) "CRC32"
+int(4)
+
+Deprecated: Function mhash_get_hash_name() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 6
+
+Deprecated: Function mhash_get_block_size() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 6
+string(3) "MD5"
+int(16)
+
+Deprecated: Function mhash_get_hash_name() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 6
+
+Deprecated: Function mhash_get_block_size() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 6
+string(8) "HAVAL256"
+int(32)
+
+Deprecated: Function mhash_get_hash_name() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 6
+
+Deprecated: Function mhash_get_block_size() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 6
+bool(false)
+bool(false)
+
+Deprecated: Function mhash_get_hash_name() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 6
+
+Deprecated: Function mhash_get_block_size() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 6
+string(5) "TIGER"
+int(24)
+
+Deprecated: Function mhash_get_hash_name() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 6
+
+Deprecated: Function mhash_get_block_size() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 6
+bool(false)
+bool(false)
+
+Deprecated: Function mhash_get_hash_name() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 6
+
+Deprecated: Function mhash_get_block_size() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 6
+string(5) "JOAAT"
+int(4)
+
+Deprecated: Function mhash_get_hash_name() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 6
+
+Deprecated: Function mhash_get_block_size() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 6
+string(6) "XXH128"
+int(16)
+
+Deprecated: Function mhash_get_hash_name() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 6
+
+Deprecated: Function mhash_get_block_size() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 6
+bool(false)
+bool(false)
+
+Deprecated: Function mhash_get_hash_name() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 6
+
+Deprecated: Function mhash_get_block_size() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 6
+bool(false)
+bool(false)
+
+Deprecated: Function mhash() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 8
+
+Deprecated: Function mhash() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 8
+
+Deprecated: Function mhash() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 8
+string(32) "900150983cd24fb0d6963f7d28e17f72"
+string(40) "4fd0b215276ef12f2b3e4c8ecac2811498b656fc"
+bool(false)
+
+Deprecated: Function mhash() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 9
+ValueError: mhash(): Argument #1 ($algo) must be a valid cryptographic hashing algorithm
+
+Deprecated: Function mhash_keygen_s2k() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 10
+string(40) "5d532c3b62bb593c80d0503e471ebbd528ec282d"
+
+Deprecated: Function mhash_keygen_s2k() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 11
+string(18) "67085bad498d5a1a32"
+
+Deprecated: Function mhash_keygen_s2k() is deprecated since 8.1 in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/hash/mhash.php on line 12
+ValueError: mhash_keygen_s2k(): Argument #4 ($length) must be a greater than 0

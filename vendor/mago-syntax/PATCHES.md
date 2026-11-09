@@ -12,6 +12,11 @@ source. Drop a change once upstream mago lexes the case like php.
 - `src/lexer/mod.rs`, `matches_start_of_*_document`: a heredoc / nowdoc
   opener ends at `\r` alone too (php's NEWLINE is `\r`, `\n` or `\r\n`).
   Zend/tests/heredoc_nowdoc/bug79934.phpt.
+- `src/parser/internal/escape.rs` (new), `literal.rs`, `string.rs`: string
+  escapes are decoded by a port of php's zend_scan_escape_string instead of
+  mago_syntax_core's `parse_literal_string_in`: `\X` is a hex escape, and
+  `\"` / `` \` `` decode only inside their own quotes (a heredoc keeps both).
+  Symfony Yaml's heredoc fixtures, WordPress kses' `\X1C` data.
 - Memory (rhp parses a 1.1 MB file into 37 MB of arena instead of 177 MB):
   - `src/cst/cst/expression.rs`, `src/cst/cst/statement.rs`: every
     `Expression` and `Statement` variant holds `&'arena Node` (the spans of

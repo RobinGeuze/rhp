@@ -543,15 +543,7 @@ impl Vm {
     /// set for a class with hooked properties and inherited by its children
     /// (a child that implements an abstract hooked property keeps it).
     pub(crate) fn iterates_hooked(&self, cls: ClassId) -> bool {
-        let mut c = Some(cls);
-        while let Some(id) = c {
-            let e = &self.classes[id as usize];
-            if e.hooked {
-                return true;
-            }
-            c = e.parent;
-        }
-        false
+        self.classes[cls as usize].hooked_iter
     }
 
     /// The order zho_build_properties_ex walks `cls`'s properties in, as

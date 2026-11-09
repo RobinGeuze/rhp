@@ -1,0 +1,40 @@
+int(2)
+int(2)
+int(3)
+object(ArrayObject)#3 (1) {
+  ["storage":"ArrayObject":private]=>
+  array(3) {
+    [0]=>
+    int(1)
+    [1]=>
+    int(2)
+    [2]=>
+    string(1) "c"
+  }
+}
+int(2)
+int(2)
+int(3)
+int(1)
+int(1)
+int(2)
+int(2)
+int(2)
+array(2) {
+  [0]=>
+  int(5)
+  [1]=>
+  int(6)
+}
+array(3) {
+  [0]=>
+  int(5)
+  [1]=>
+  int(6)
+  [2]=>
+  int(8)
+}
+array(1) {
+  [0]=>
+  int(7)
+}

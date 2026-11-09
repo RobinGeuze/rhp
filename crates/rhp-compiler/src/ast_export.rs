@@ -498,20 +498,8 @@ impl<'s> Ex<'s> {
     }
 
     /// A literal part's value, as the compiler reads it.
-    fn literal_part(cs: &CompositeString, l: &LiteralStringPart) -> Vec<u8> {
-        let mut v = l.value.unwrap_or(l.raw).to_vec();
-        if let CompositeString::ShellExecute(_) = cs {
-            v = crate::strings::shell_exec_value(&v);
-        }
-        if let CompositeString::Document(d) = cs {
-            if d.kind == DocumentKind::Heredoc && matches!(d.indentation, DocumentIndentation::None)
-            {
-                if let Some(fixed) = crate::strings::heredoc_value(l.raw, &v) {
-                    v = fixed;
-                }
-            }
-        }
-        v
+    fn literal_part(_cs: &CompositeString, l: &LiteralStringPart) -> Vec<u8> {
+        l.value.unwrap_or(l.raw).to_vec()
     }
 
     /// A composite string without interpolation: its value.

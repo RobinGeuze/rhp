@@ -164,6 +164,12 @@ impl Sapi for CliSapi {
         "cli"
     }
 
+    fn write_stderr_stream(&mut self, data: &[u8]) -> usize {
+        use std::io::Write;
+        let _ = std::io::stderr().lock().flush();
+        rhp_builtins::main::sapi::write_fd(2, data)
+    }
+
     fn ini_defaults(&self) -> Vec<(&'static str, &'static str)> {
         // sapi_cli_ini_defaults (the built-in table already holds the CLI's
         // HARDCODED_INI values as defaults).

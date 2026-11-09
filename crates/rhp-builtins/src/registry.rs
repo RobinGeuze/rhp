@@ -94,12 +94,30 @@ pub fn constant_deprecation(name: &[u8]) -> Option<String> {
         .or_else(|| ext::filter::constant_deprecation(name))
         .or_else(|| ext::standard::assert::constant_deprecation(name))
         .or_else(|| ext::intl::constant_deprecation(name))
+        .or_else(|| ext::hash::constant_deprecation(name))
 }
 
 /// The compiler's `Builtins::prelude_flags`: what php's body of prelude
 /// function `class::name` (or `name`) does that its PHP declaration can't
-/// say. Only intl's functions have any.
+/// say: intl's functions, and the SPL and Reflection methods whose
+/// callable parameter is php's Z_PARAM_FUNC.
 pub fn prelude_flags(class: Option<&[u8]>, name: &[u8]) -> rhp_bytecode::ProtoFlags {
+    const ZPP_FUNC: &[(&[u8], &[u8])] = &[
+        (b"", b"iterator_apply"),
+        (b"callbackfilteriterator", b"__construct"),
+        (b"recursivecallbackfilteriterator", b"__construct"),
+        (b"reflectionclass", b"newlazyghost"),
+        (b"reflectionclass", b"newlazyproxy"),
+        (b"reflectionclass", b"resetaslazyghost"),
+        (b"reflectionclass", b"resetaslazyproxy"),
+    ];
+    let c = class.unwrap_or_default();
+    if ZPP_FUNC
+        .iter()
+        .any(|(k, f)| k.eq_ignore_ascii_case(c) && f.eq_ignore_ascii_case(name))
+    {
+        return rhp_bytecode::ProtoFlags::ZPP_CALLABLE;
+    }
     ext::intl::prelude_flags(class, name)
 }
 

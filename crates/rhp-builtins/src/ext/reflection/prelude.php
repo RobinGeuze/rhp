@@ -649,13 +649,9 @@ class ReflectionClass implements Reflector {
         }
         $s .= $c['internal'] ? '<internal' . ($this->getExtensionName() !== false ? ':' . $this->getExtensionName() : '') : '<user';
         $s .= '> ';
-        // ce->get_iterator: a Traversable class, or one with hooked
-        // properties (zend_hooked_object_get_iterator), inherited from the
-        // parent; ones from an interface do not set it (the interface's own do).
-        $iter = $kind !== 'interface' && $kind !== 'trait' && $this->implementsInterface('Traversable');
-        for ($rc = $this; !$iter && $rc; $rc = $rc->getParentClass()) {
-            foreach ($rc->getProperties() as $rp) { if (!$rp->__dynamic() && $rp->hasHooks() && ($rp->class === $rc->name || !interface_exists($rp->class, false))) { $iter = true; break; } }
-        }
+        // ce->get_iterator: a Traversable class, or one iterating its
+        // hooked properties (zend_hooked_object_get_iterator).
+        $iter = ($kind !== 'interface' && $kind !== 'trait' && $this->implementsInterface('Traversable')) || $c['hooked_iter'];
         if ($iter) { $s .= '<iterateable> '; }
         if ($kind === 'interface' || $kind === 'trait' || $kind === 'enum') {
             $s .= $kind . ' ';
@@ -1041,9 +1037,7 @@ class ReflectionProperty implements Reflector {
         }
         if ($object === null) { throw new TypeError('ReflectionProperty::getValue(): Argument #1 ($object) must be provided for instance properties'); }
         if (!($object instanceof $this->class)) { throw new ReflectionException('Given object is not an instance of the class this property was declared in'); }
-        if ($this->__i['type'] !== null && !isset($this->__i['dynamic']) && !__reflect('is_init', $object, $this->class, $this->name)) {
-            throw new Error('Typed property ' . $this->class . '::$' . $this->name . ' must not be accessed before initialization');
-        }
+        // read_property: an unset() typed slot goes to __get().
         return __reflect_get_prop($object, $this->name, $this->class);
     }
     public function setValue(mixed $objectOrValue, mixed $value = null): void {

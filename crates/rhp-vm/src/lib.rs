@@ -72,6 +72,9 @@ pub use cli_modes::CliMode;
 pub use include::IncludeError;
 pub use link_cache::link_cache_stats;
 
+/// [`Vm`]'s `recv_init_cache` key: proto address, parameter, scope.
+type RecvInitKey = (usize, u16, Option<ClassId>);
+
 /// The virtual machine: call stack + global tables, running one request
 /// under its SAPI.
 pub struct Vm {
@@ -211,6 +214,10 @@ pub struct Vm {
     /// The `$this` that goes with `fcc_scope` (a callable bound when it was
     /// checked, such as a shutdown function's).
     fcc_this: std::cell::RefCell<Option<ObjectHandle>>,
+    /// RECV_INIT's runtime cache: a parameter default already evaluated, by
+    /// (proto address, parameter, scope: a trait method's using class); the
+    /// proto is kept alive with it.
+    recv_init_cache: rustc_hash::FxHashMap<RecvInitKey, (Rc<FunctionProto>, Value)>,
     // Resolved real paths already included (for the `_once` variants), in
     // inclusion order (`get_included_files`).
     included_files: indexmap::IndexSet<Vec<u8>, rustc_hash::FxBuildHasher>,

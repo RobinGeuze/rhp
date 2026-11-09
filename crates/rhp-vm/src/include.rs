@@ -62,6 +62,10 @@ impl From<Thrown> for IncludeError {
     }
 }
 
+thread_local! {
+    static UNOPENABLE: std::cell::RefCell<Option<Vec<u8>>> = const { std::cell::RefCell::new(None) };
+}
+
 impl Vm {
     /// The diagnostics php's compiler raised for a file just loaded: once
     /// per compile, or on every load from opcache with
@@ -277,8 +281,15 @@ impl Vm {
         // wrapper, an error handler for a compile warning, an autoloader)
         // may include files of its own.
         let primary = std::mem::take(&mut self.primary_next);
+        // php_stream_open_wrapper_ex refuses an empty name (the _once
+        // forms resolve it first, as the working directory, and fail to
+        // open that).
+        if raw_path.is_empty() && !kind.is_once() {
+            return Err(Thrown::error("ValueError", "Path must not be empty"));
+        }
         let path_str = String::from_utf8_lossy(&raw_path).into_owned();
         builtins::main::streams::clear_errno();
+        Self::take_unopenable();
         // php looks a script up in opcache by the name it was asked for
         // before opening anything ([`Vm::opcache_lookup_name`]): a cached
         // script needs no open, and no realpath or stat while its revalidate
@@ -369,7 +380,7 @@ impl Vm {
             })
         };
         // The plain-files opener's open_basedir check of the resolved path.
-        let mut shown = match user_shown {
+        let mut shown = match user_shown.or_else(Self::take_unopenable) {
             Some(n) => String::from_utf8_lossy(&n).into_owned(),
             None => path_str.clone(),
         };
@@ -405,7 +416,7 @@ impl Vm {
                 let ip =
                     String::from_utf8_lossy(&self.ini_get(b"include_path").unwrap_or_default())
                         .into_owned();
-                let reason = if path_str.is_empty() || quiet_open {
+                let reason = if (path_str.is_empty() && !kind.is_once()) || quiet_open {
                     None
                 } else if let Some(r) = reason_override {
                     Some(r)
@@ -636,6 +647,12 @@ impl Vm {
     /// (`phar://`, …) the wrapper's contents; otherwise the real path of
     /// the first candidate ([`Vm::include_candidates`]) that opens as a
     /// file, resolved through the realpath cache.
+    /// [`Vm::resolve_include_file`]: the name a search resolved to that did
+    /// not open as a file, which the warning names.
+    pub(crate) fn take_unopenable() -> Option<Vec<u8>> {
+        UNOPENABLE.with(|u| u.borrow_mut().take())
+    }
+
     pub(crate) fn resolve_include_file(
         &self,
         top: usize,
@@ -651,7 +668,17 @@ impl Vm {
             let key = w.canonical(url).unwrap_or_else(|| normalize_url(url));
             return Some((key, IncludeSource::Bytes(src)));
         }
-        for cand in self.include_candidates(top, path) {
+        // php_resolve_path: a `file://` URL is the plain path it names,
+        // realpath'd, with no include_path search.
+        let file_url = path.len() >= 7 && path.as_bytes()[..7].eq_ignore_ascii_case(b"file://");
+        let candidates = if file_url {
+            use std::os::unix::ffi::OsStrExt;
+            let p = builtins::main::streams::file_path(path.as_bytes());
+            vec![std::path::PathBuf::from(std::ffi::OsStr::from_bytes(p))]
+        } else {
+            self.include_candidates(top, path)
+        };
+        for cand in candidates {
             use std::os::unix::ffi::OsStrExt;
             // tsrm_realpath, through the realpath cache.
             let Some(real) = builtins::zend::virtual_cwd::realpath(cand.as_os_str().as_bytes())
@@ -659,13 +686,18 @@ impl Vm {
                 continue;
             };
             let real_path = std::ffi::OsStr::from_bytes(&real);
-            let Ok(f) = std::fs::File::open(real_path) else {
-                continue;
+            // php_resolve_path stops at the first name that resolves; a
+            // directory then fails to open under its resolved name.
+            let f = std::fs::File::open(real_path)
+                .ok()
+                .filter(|f| !f.metadata().is_ok_and(|m| m.is_dir()));
+            return match f {
+                Some(f) => Some((real, IncludeSource::File(f))),
+                None => {
+                    UNOPENABLE.with(|u| *u.borrow_mut() = Some(real));
+                    None
+                }
             };
-            if f.metadata().is_ok_and(|m| m.is_dir()) {
-                continue;
-            }
-            return Some((real, IncludeSource::File(f)));
         }
         None
     }

@@ -155,6 +155,7 @@ fn compile_program(
         &mut flat,
     );
     let cx = FileCtx::new(builtins, file, source, program, &flat);
+    decl::assign_rtd_keys(&cx, &flat);
     symbols::check_file(&cx, program);
     let r = compile_file(&cx, &flat, with_prelude);
     // A recorded compile error came first in source order (compilation stops

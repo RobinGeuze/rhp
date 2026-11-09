@@ -3,8 +3,9 @@
 
 use rhp_builtins::zend::object_handlers::CastTarget;
 use rhp_builtins::Host;
-use rhp_bytecode::FunctionProto;
+use rhp_bytecode::{FunctionProto, Pc};
 use rhp_values::{conv, ArrayKey, ClassId, PhpStr, Thrown, Value};
+use std::rc::Rc;
 
 use crate::{deref, Frame, Vm};
 
@@ -239,6 +240,8 @@ impl Vm {
             // zend_check_type_slow's zend_is_callable runs in the callee's
             // frame (its scope and `$this`), deprecations included.
             let callable = needs_callable_check(&ty.kinds, &cur);
+            // Why a Z_PARAM_FUNC argument is no callback (the error's tail).
+            let mut not_callable: Option<Vec<u8>> = None;
             let checked = if callable {
                 // zend_is_callable_check_class autoloads the named class; a
                 // throwing autoloader's exception is what the caller sees
@@ -265,7 +268,7 @@ impl Vm {
                 let mut deps = Vec::new();
                 let quiet = proto.is_internal()
                     && !proto.flags.contains(rhp_bytecode::ProtoFlags::ZPP_CALLABLE);
-                let _ = self.resolve_callable_ex(&cur, quiet, &mut deps);
+                not_callable = self.resolve_callable_ex(&cur, quiet, &mut deps).err();
                 let ctx = if proto.is_internal() { scope } else { ctx };
                 let r = self.check_one(&cur, ty, strict, ctx);
                 self.fcc_scope.set(saved);
@@ -321,6 +324,21 @@ impl Vm {
                         " (${})",
                         String::from_utf8_lossy(proto.names[p.name as usize].as_bytes())
                     );
+                    // Z_PARAM_FUNC's own error (zend_wrong_callback_error).
+                    if proto.flags.contains(rhp_bytecode::ProtoFlags::ZPP_CALLABLE)
+                        && ty.kinds.contains(&rhp_bytecode::TypeKind::Callable)
+                    {
+                        let why =
+                            not_callable.unwrap_or_else(|| b"no array or string given".to_vec());
+                        let null = if ty.nullable { " or null" } else { "" };
+                        let e = Thrown::type_error(format!(
+                            "{}(): Argument #{}{label} must be a valid callback{null}, {}",
+                            self.func_c_name(proto, ctx),
+                            i + 1,
+                            String::from_utf8_lossy(&why)
+                        ));
+                        return Err((i, e));
+                    }
                     return Err((
                         i,
                         self.arg_type_error(proto, frame, i, &label, &cur, caller, ctx),
@@ -434,6 +452,42 @@ impl Vm {
             }
         }
         Ok(())
+    }
+
+    /// RECV_INIT's cache hit: the default an earlier call evaluated.
+    #[inline(never)]
+    pub(crate) fn recv_init_cached(&mut self, top: usize, index: u16, target: Pc) {
+        let f = &self.stack[top];
+        let key = (Rc::as_ptr(&f.proto) as usize, index, f.defining_class);
+        if let Some((_, v)) = self.recv_init_cache.get(&key) {
+            let v = v.clone();
+            let cv = self.stack[top].proto.params[index as usize].cv;
+            self.stack[top].regs[cv as usize] = v;
+            self.stack[top].pc = target as usize;
+        }
+    }
+
+    /// RECV_INIT keeps a default that is not refcounted in its runtime
+    /// cache, so the next call neither evaluates it nor repeats its
+    /// deprecations.
+    #[inline(never)]
+    pub(crate) fn recv_init_store(&mut self, top: usize, index: u16, strings: bool) {
+        let f = &self.stack[top];
+        let proto = &f.proto;
+        let v = &f.regs[proto.params[index as usize].cv as usize];
+        let ok = match v {
+            Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) => true,
+            // php interns a constant's string and every 0- or 1-byte one;
+            // an array is refcounted without opcache.
+            Value::Str(st) => strings || st.len() <= 1,
+            _ => false,
+        };
+        if ok {
+            // A trait method runs per using class (php copies it).
+            let key = (Rc::as_ptr(proto) as usize, index, f.defining_class);
+            let entry = (proto.clone(), v.clone());
+            self.recv_init_cache.insert(key, entry);
+        }
     }
 
     /// php's RECV_INIT type check of a non-constant default just stored
@@ -657,6 +711,12 @@ impl Vm {
         // `$this` (an instance method named without an object is callable),
         // deprecations included.
         let mut autoload_thrown = None;
+        // An internal function's return value is not checked (php does
+        // only in debug builds): a stored callable stays valid where its
+        // caller resolved it (getLazyInitializer's `['self', 'init']`).
+        if proto.is_internal() && needs_callable_check(&checked.kinds, &v) {
+            return Ok(v);
+        }
         let r = if needs_callable_check(&checked.kinds, &v) {
             // zend_is_callable_check_class autoloads the named class.
             if let Err(t) = self.autoload_callable_class(&v) {

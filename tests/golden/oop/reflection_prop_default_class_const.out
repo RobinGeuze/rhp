@@ -1,0 +1,7 @@
+Property [ public $a = 1 ]
+Property [ public $b = 2 ]
+Property [ public $c = ['p', 'k' => [0 => 1, 1 => 2], E::A] ]
+Property [ public $d = self::LATER ]
+Property [ public static $s = 3 ]
+Property [ public $e = 2 ]
+Property [ public $t = self::Z ]

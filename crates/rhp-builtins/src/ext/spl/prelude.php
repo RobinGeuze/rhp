@@ -6,7 +6,18 @@ class ArrayIterator implements SeekableIterator, ArrayAccess, Serializable, Coun
     private $__s = []; private $__f = 0; private $__k = []; private $__p = 0;
     // The backing object (foreach by reference reaches its property slots).
     private $__o = null;
-    public function __construct($array = [], int $flags = 0) { $this->__o = is_object($array) && !($array instanceof ArrayObject || $array instanceof ArrayIterator) ? $array : null; if (is_object($array)) { __spl_deprecated('ArrayIterator::__construct(): Using an object as a backing array for ' . ($this instanceof ArrayIterator ? 'ArrayIterator' : 'ArrayObject') . ' is deprecated, as it allows violating class constraints and invariants'); } $this->__s = is_object($array) ? get_object_vars($array) : $array; $this->__f = $flags; $this->__k = array_keys($this->__s); }
+    // The ArrayObject / ArrayIterator whose storage this one shares.
+    private $__w = null;
+    public function __construct($array = [], int $flags = 0) { $this->__o = is_object($array) && !($array instanceof ArrayObject || $array instanceof ArrayIterator) ? $array : null; if (is_object($array)) { __spl_deprecated('ArrayIterator::__construct(): Using an object as a backing array for ' . ($this instanceof ArrayIterator ? 'ArrayIterator' : 'ArrayObject') . ' is deprecated, as it allows violating class constraints and invariants'); } self::__store($this, $array); $this->__f = $flags; $this->__k = array_keys($this->__s); }
+    // The storage of an ArrayObject / ArrayIterator over $array: another
+    // one's storage (shared, shown as that object), else the array or the
+    // object's properties.
+    private static function __store($me, $array): void {
+        // (storage another one shares stays shared: it sees the new array)
+        if ($me->__w !== null) { __spl_array_bind($me, null); $me->__w = null; }
+        if (($array instanceof ArrayObject || $array instanceof ArrayIterator) && $array !== $me) { __spl_array_bind($me, $array); $me->__w = $array; }
+        else { $me->__s = is_object($array) ? get_object_vars($array) : $array; }
+    }
     public function current(): mixed { $k = $this->__k[$this->__p] ?? null; return $k === null ? null : ($this->__s[$k] ?? null); }
     public function key(): mixed { return $this->__k[$this->__p] ?? null; }
     public function next(): void { $this->__p++; }
@@ -37,16 +48,17 @@ class ArrayIterator implements SeekableIterator, ArrayAccess, Serializable, Coun
     public function setFlags(int $flags): void { $this->__f = $flags; }
     public function asort(int $flags = SORT_REGULAR): true { asort($this->__s, $flags); return true; }
     public function ksort(int $flags = SORT_REGULAR): true { ksort($this->__s, $flags); return true; }
-    public function uasort(callable $callback): true { uasort($this->__s, $callback); return true; }
-    public function uksort(callable $callback): true { uksort($this->__s, $callback); return true; }
+    // spl_array_method parses the callback as "z": uasort() checks it.
+    public function uasort($callback): true { uasort($this->__s, $callback); return true; }
+    public function uksort($callback): true { uksort($this->__s, $callback); return true; }
     public function natsort(): true { natsort($this->__s); return true; }
     public function natcasesort(): true { natcasesort($this->__s); return true; }
-    public function __serialize(): array { return [$this->__f & 0xffff, $this->__s, get_mangled_object_vars($this), null]; }
+    public function __serialize(): array { return [$this->__f & 0xffff, $this->__w ?? $this->__s, get_mangled_object_vars($this), null]; }
     public function __unserialize(array $data): void {
         self::__checkData($data);
         $this->__f = $data[0];
         if (is_object($data[1])) { __spl_deprecated('ArrayIterator::__unserialize(): Using an object as a backing array for ' . ($this instanceof ArrayIterator ? 'ArrayIterator' : 'ArrayObject') . ' is deprecated, as it allows violating class constraints and invariants'); }
-        $this->__s = is_object($data[1]) ? get_object_vars($data[1]) : $data[1];
+        self::__store($this, $data[1]);
         $this->__loadMembers($data[2]);
     }
     // ArrayObject::__unserialize's checks.
@@ -65,7 +77,7 @@ class ArrayIterator implements SeekableIterator, ArrayAccess, Serializable, Coun
         __serialize_init();
         try {
             $s = 'x:' . serialize($this->__f & 0x0100ffff);
-            if ($this->__o !== $this) { $s .= serialize($this->__o ?? $this->__s) . ';'; }
+            if ($this->__o !== $this) { $s .= serialize($this->__o ?? $this->__w ?? $this->__s) . ';'; }
             $s .= 'm:' . serialize(get_mangled_object_vars($this));
         } finally { __serialize_destroy(); }
         return $s;
@@ -86,10 +98,18 @@ class ArrayObject implements IteratorAggregate, ArrayAccess, Serializable, Count
     // The backing object, whose property table offset writes also update
     // (not another ArrayObject / ArrayIterator: php uses its storage).
     private $__o = null;
+    // The ArrayObject / ArrayIterator whose storage this one shares.
+    private $__w = null;
+    private static function __store($me, $array): void {
+        // (storage another one shares stays shared: it sees the new array)
+        if ($me->__w !== null) { __spl_array_bind($me, null); $me->__w = null; }
+        if (($array instanceof ArrayObject || $array instanceof ArrayIterator) && $array !== $me) { __spl_array_bind($me, $array); $me->__w = $array; }
+        else { $me->__s = is_object($array) ? get_object_vars($array) : $array; }
+    }
     private static function __backing($a, $self) { return is_object($a) && ($a === $self || !($a instanceof ArrayObject || $a instanceof ArrayIterator)) ? $a : null; }
-    public function __construct($array = [], int $flags = 0, string $iteratorClass = 'ArrayIterator') { $this->__o = self::__backing($array, $this); if (is_object($array)) { __spl_deprecated('ArrayObject::__construct(): Using an object as a backing array for ' . ($this instanceof ArrayIterator ? 'ArrayIterator' : 'ArrayObject') . ' is deprecated, as it allows violating class constraints and invariants'); } $this->__s = is_object($array) ? get_object_vars($array) : $array; $this->__f = $flags; $this->__i = $iteratorClass; }
+    public function __construct($array = [], int $flags = 0, string $iteratorClass = 'ArrayIterator') { $this->__o = self::__backing($array, $this); if (is_object($array)) { __spl_deprecated('ArrayObject::__construct(): Using an object as a backing array for ' . ($this instanceof ArrayIterator ? 'ArrayIterator' : 'ArrayObject') . ' is deprecated, as it allows violating class constraints and invariants'); } self::__store($this, $array); $this->__f = $flags; $this->__i = $iteratorClass; }
     public function getIterator(): Iterator { $c = $this->__i; return new $c($this->__s); }
-    public function exchangeArray($array): array { if (is_object($array)) { __spl_deprecated('ArrayObject::exchangeArray(): Using an object as a backing array for ' . ($this instanceof ArrayIterator ? 'ArrayIterator' : 'ArrayObject') . ' is deprecated, as it allows violating class constraints and invariants'); } $old = $this->__s; $this->__o = self::__backing($array, $this); $this->__s = is_object($array) ? get_object_vars($array) : $array; return $old; }
+    public function exchangeArray($array): array { if (is_object($array)) { __spl_deprecated('ArrayObject::exchangeArray(): Using an object as a backing array for ' . ($this instanceof ArrayIterator ? 'ArrayIterator' : 'ArrayObject') . ' is deprecated, as it allows violating class constraints and invariants'); } $old = $this->__s; $this->__o = self::__backing($array, $this); self::__store($this, $array); return $old; }
     public function getIteratorClass(): string { return $this->__i; }
     public function setIteratorClass(string $iteratorClass): void { $this->__i = $iteratorClass; }
     public function count(): int { return count($this->__s); }
@@ -107,16 +127,17 @@ class ArrayObject implements IteratorAggregate, ArrayAccess, Serializable, Count
     public function setFlags(int $flags): void { $this->__f = $flags; }
     public function asort(int $flags = SORT_REGULAR): true { asort($this->__s, $flags); return true; }
     public function ksort(int $flags = SORT_REGULAR): true { ksort($this->__s, $flags); return true; }
-    public function uasort(callable $callback): true { uasort($this->__s, $callback); return true; }
-    public function uksort(callable $callback): true { uksort($this->__s, $callback); return true; }
+    // spl_array_method parses the callback as "z": uasort() checks it.
+    public function uasort($callback): true { uasort($this->__s, $callback); return true; }
+    public function uksort($callback): true { uksort($this->__s, $callback); return true; }
     public function natsort(): true { natsort($this->__s); return true; }
     public function natcasesort(): true { natcasesort($this->__s); return true; }
-    public function __serialize(): array { return [$this->__f & 0xffff, $this->__s, get_mangled_object_vars($this), $this->__i === 'ArrayIterator' ? null : $this->__i]; }
+    public function __serialize(): array { return [$this->__f & 0xffff, $this->__w ?? $this->__s, get_mangled_object_vars($this), $this->__i === 'ArrayIterator' ? null : $this->__i]; }
     public function __unserialize(array $data): void {
         self::__checkData($data);
         $this->__f = $data[0];
         if (is_object($data[1])) { __spl_deprecated('ArrayObject::__unserialize(): Using an object as a backing array for ArrayObject is deprecated, as it allows violating class constraints and invariants'); }
-        $this->__s = is_object($data[1]) ? get_object_vars($data[1]) : $data[1];
+        self::__store($this, $data[1]);
         $this->__loadMembers($data[2]);
         if (isset($data[3])) {
             $c = $data[3];
@@ -145,7 +166,7 @@ class ArrayObject implements IteratorAggregate, ArrayAccess, Serializable, Count
         __serialize_init();
         try {
             $s = 'x:' . serialize($this->__f & 0x0100ffff);
-            if ($this->__o !== $this) { $s .= serialize($this->__o ?? $this->__s) . ';'; }
+            if ($this->__o !== $this) { $s .= serialize($this->__o ?? $this->__w ?? $this->__s) . ';'; }
             $s .= 'm:' . serialize(get_mangled_object_vars($this));
         } finally { __serialize_destroy(); }
         return $s;
@@ -379,7 +400,8 @@ function iterator_count($iterator) {
     return $count;
 }
 
-function iterator_apply($iterator, $callback, $args = null) {
+function iterator_apply(Traversable $iterator, callable $callback, ?array $args = null) {
+    $callback = __spl_fcc($callback);
     if ($iterator instanceof IteratorAggregate) { $iterator = $iterator->getIterator(); }
     $count = 0;
     $iterator->rewind();

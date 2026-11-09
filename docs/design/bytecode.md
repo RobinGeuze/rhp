@@ -515,8 +515,15 @@ runs code before zend_parse_parameters (intl's entry points reset the
 global intl error first), so `bind_frame` calls `rhp_builtins::before_zpp`
 before it binds and checks the arguments. `ZPP_CALLABLE` makes a prelude
 function's `callable` parameter check raise the callable's deprecations,
-as php's Z_PARAM_FUNC does; other prelude functions check it silently and
-leave them to the builtin they hand it to. The compiler sets both on
+as php's Z_PARAM_FUNC does, and a callable that is no callback fails with
+zpp's "must be a valid callback, …"; other prelude functions check it
+silently and leave them to the builtin they hand it to. Where php keeps the
+resolved fcc for later (CallbackFilterIterator, iterator_apply, the lazy
+object initializers), the prelude keeps a closure bound to the caller's
+scope (`__spl_fcc`, `LazyInfo::call`), so `['self', 'f']` or a private
+method still calls the same function from another scope; an internal
+function's `callable` return value is not checked (php checks internal
+return types only in debug builds). The compiler sets both on
 prelude protos from `Builtins::prelude_flags` (rhp-builtins answers from
 the stub signatures), so the prelude's text carries no markers. A native
 intl function whose zpp fails gets the reset from `before_failed_zpp`.
@@ -586,7 +593,15 @@ default `Const` copy or `Init` block; missing+no-default ⇒ `ArgumentCountError
 An `Init` block is guarded by `JmpIfArg { index, target }`; for a typed
 parameter it ends in `RecvInitCheck { index }`, php's RECV_INIT check of the
 evaluated default (a constant default was checked, and an int one widened
-for a float type, at compile time).
+for a float type, at compile time). RECV_INIT also keeps an evaluated
+default that is not refcounted in its runtime cache, so later calls neither
+evaluate it again nor repeat a deprecated constant's deprecation: unless the
+expression has a `new`, `RecvInitCached { index, target }` (after the
+`JmpIfArg`) takes a cached value and jumps to the check, and
+`RecvInitStore { index, strings }` (after the evaluation) caches a null,
+bool, int, float or 0/1-byte string, or any string when the default is a
+lone constant fetch (php interns those). The cache is the VM's, keyed by
+proto, parameter and scope (php copies a trait method per using class).
 A call with an unpack or a named argument marshals its arguments into an
 array (int keys positional, string keys named) and uses the `_V` path
 (`CallV`, `CallMethodV`, `NewV`, …; `CallParentHook` with `argc ==
@@ -603,8 +618,15 @@ variable sent to a callee only the run time knows, and assigned or
 incremented by a later argument (`$o->m($p, $p = new X)`, or inside one
 that can write it: `[$p] = ..`, `g($p)`), asks the callee
 as it is sent (SEND_VAR_EX), so a by-value parameter gets the value from
-before the assignment. An anonymous class's constructor arguments are sent
-like a named class's.
+before the assignment. So does a variable a later call, assignment,
+increment, include or eval could write through another name: any variable
+of the main script (a global), and one the file may alias
+(`FileCtx::may_alias`, a text scan for `&$p`, `$p = &`, `global $p`, `$$`, `eval(`,
+`extract(`). An unpack of a plain variable to a callee only the run time
+knows (`$o->m(...$a)`, `new $c(...$a)`) asks it the same way
+(`ArgSpreadRefDyn`), so its by-reference parameters write back into the
+array. An anonymous class's constructor arguments are sent like a named
+class's.
 
 **Exceptions (phase 3+/5)** — see §3.4–3.5. `try` *entry* needs no opcode (the
 `exception_table` describes protected ranges); only these are explicit:

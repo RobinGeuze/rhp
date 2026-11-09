@@ -1049,6 +1049,12 @@ impl Vm {
                     }
                 }
                 Instr::RecvInitCheck { index } => self.recv_init_check(top, index)?,
+                Instr::RecvInitCached { index, target } => {
+                    self.recv_init_cached(top, index, target)
+                }
+                Instr::RecvInitStore { index, strings } => {
+                    self.recv_init_store(top, index, strings)
+                }
                 Instr::JmpTrue { cond, target } => {
                     let f = &mut self.stack[top];
                     if let Value::Bool(b) = f.regs[cond as usize] {
@@ -1153,6 +1159,9 @@ impl Vm {
                 }
                 Instr::ArgSpreadRef { arr, src, sig } => {
                     self.arg_spread_ref(top, &proto, arr, src, sig)?
+                }
+                Instr::ArgSpreadRefDyn { arr, src, callee } => {
+                    self.arg_spread_ref_dyn(top, arr, src, callee)?
                 }
                 Instr::ArgSpread { arr, src } => {
                     let entries = self.unpack_entries(top, src, true)?;
@@ -3020,18 +3029,56 @@ impl Vm {
             Value::Array(a) => a.values().cloned().collect(),
             _ => Vec::new(),
         };
-        let flags: Vec<Value> = list(&sig[2]);
-        let names: Vec<Value> = list(&sig[3]);
+        let flags: Vec<bool> = list(&sig[2])
+            .iter()
+            .map(|b| matches!(b, Value::Bool(true)))
+            .collect();
+        let names: Vec<Vec<u8>> = list(&sig[3]).iter().map(conv::to_string_bytes).collect();
+        self.spread_by_ref(top, arr, src, &fname, variadic, &flags, &names)
+    }
+
+    /// [`Instr::ArgSpreadRefDyn`]: the callee's parameters, asked now.
+    #[cold]
+    fn arg_spread_ref_dyn(
+        &mut self,
+        top: usize,
+        arr: Reg,
+        src: Reg,
+        callee: Reg,
+    ) -> Result<(), Thrown> {
+        let c = self.reg_get(top, callee);
+        let (fname, variadic, flags, names) = match self.callable_proto(&c) {
+            Some((p, scope)) if p.params.iter().any(|q| q.by_ref) => (
+                self.func_c_name(&p, scope).into_bytes(),
+                p.params.last().is_some_and(|q| q.variadic),
+                p.params.iter().map(|q| q.by_ref).collect::<Vec<_>>(),
+                p.params
+                    .iter()
+                    .map(|q| p.names[q.name as usize].as_bytes().to_vec())
+                    .collect::<Vec<_>>(),
+            ),
+            _ => (Vec::new(), false, Vec::new(), Vec::new()),
+        };
+        self.spread_by_ref(top, arr, src, &fname, variadic, &flags, &names)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spread_by_ref(
+        &mut self,
+        top: usize,
+        arr: Reg,
+        src: Reg,
+        fname: &[u8],
+        variadic: bool,
+        flags: &[bool],
+        names: &[Vec<u8>],
+    ) -> Result<(), Thrown> {
         let by_ref = |p: usize| match flags.get(p) {
-            Some(b) => matches!(b, Value::Bool(true)),
-            None => variadic && matches!(flags.last(), Some(Value::Bool(true))),
+            Some(b) => *b,
+            None => variadic && flags.last() == Some(&true),
         };
         // a named element's position
-        let named_pos = |s: &[u8]| {
-            names
-                .iter()
-                .position(|n| matches!(n, Value::Str(n) if n.as_bytes() == s))
-        };
+        let named_pos = |s: &[u8]| names.iter().position(|n| n.as_slice() == s);
         let source = match &self.stack[top].regs[src as usize] {
             Value::Ref(rc) if matches!(*rc.borrow(), Value::Array(_)) => Some(rc.clone()),
             _ => None,
@@ -3089,7 +3136,7 @@ impl Vm {
                     let msg = format!(
                         "Cannot pass by-reference argument {} of {}() by unpacking a Traversable, passing by-value instead",
                         at + 1,
-                        String::from_utf8_lossy(&fname)
+                        String::from_utf8_lossy(fname)
                     );
                     self.diag(builtins::E_WARNING, &msg)?;
                 }
@@ -3358,16 +3405,29 @@ impl Vm {
 
     /// The class's native `ce->get_iterator`, unless a user class overrode
     /// `getIterator()` (zend_implement_aggregate then switches to
-    /// zend_user_it_get_new_iterator).
+    /// zend_user_it_get_new_iterator), or, for an Iterator, one of its
+    /// methods (zend_implement_iterator: zend_user_it_get_iterator).
     fn native_get_iterator(
         &self,
         h: &ObjectHandle,
     ) -> Option<rhp_builtins::zend::object_handlers::GetIteratorFn> {
         let f = self.handlers_of(h).and_then(|t| t.get_iterator)?;
-        match self.lookup_method(h.borrow().class, b"getiterator") {
-            Some(m) if !self.is_internal_class(m.defining_class) => None,
-            _ => Some(f),
+        let cls = h.borrow().class;
+        let user = |name: &[u8]| {
+            self.lookup_method(cls, name)
+                .is_some_and(|m| !self.is_internal_class(m.defining_class))
+        };
+        if user(b"getiterator") {
+            return None;
         }
+        if self.class_implements(cls, b"Iterator")
+            && [&b"rewind"[..], b"valid", b"key", b"current", b"next"]
+                .into_iter()
+                .any(user)
+        {
+            return None;
+        }
+        Some(f)
     }
 
     /// zend_user_it_get_new_iterator: follow `getIterator()` until an object

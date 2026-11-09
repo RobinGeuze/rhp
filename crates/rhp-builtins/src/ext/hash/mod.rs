@@ -1199,6 +1199,11 @@ pub fn register(m: &mut crate::Registry) {
             ("hash_equals", fn_hash_equals),
             ("hash_algos", fn_hash_algos),
             ("hash_hmac_algos", fn_hash_hmac_algos),
+            ("mhash", fn_mhash),
+            ("mhash_count", fn_mhash_count),
+            ("mhash_get_block_size", fn_mhash_get_block_size),
+            ("mhash_get_hash_name", fn_mhash_get_hash_name),
+            ("mhash_keygen_s2k", fn_mhash_keygen_s2k),
         ],
     );
     crate::register_helpers(
@@ -1210,9 +1215,160 @@ pub fn register(m: &mut crate::Registry) {
     );
 }
 
-/// `HASH_HMAC`.
+/// `HASH_HMAC` and the `MHASH_*` algorithm numbers (php's mhash_init).
 pub fn constants() -> Vec<(&'static str, Value)> {
-    vec![("HASH_HMAC", Value::Int(1))]
+    let mut v = vec![("HASH_HMAC", Value::Int(1))];
+    for (n, row) in MHASH.iter().enumerate() {
+        if let Some((c, _)) = row {
+            v.push((c, Value::Int(n as i64)));
+        }
+    }
+    v
+}
+
+/// php's `mhash_to_hash` (PHP_MHASH_BC): by algorithm number, the
+/// constant's name and the hash algorithm.
+const MHASH: [Option<(&str, &str)>; 42] = [
+    Some(("MHASH_CRC32", "crc32")),
+    Some(("MHASH_MD5", "md5")),
+    Some(("MHASH_SHA1", "sha1")),
+    Some(("MHASH_HAVAL256", "haval256,3")),
+    None,
+    Some(("MHASH_RIPEMD160", "ripemd160")),
+    None,
+    Some(("MHASH_TIGER", "tiger192,3")),
+    Some(("MHASH_GOST", "gost")),
+    Some(("MHASH_CRC32B", "crc32b")),
+    Some(("MHASH_HAVAL224", "haval224,3")),
+    Some(("MHASH_HAVAL192", "haval192,3")),
+    Some(("MHASH_HAVAL160", "haval160,3")),
+    Some(("MHASH_HAVAL128", "haval128,3")),
+    Some(("MHASH_TIGER128", "tiger128,3")),
+    Some(("MHASH_TIGER160", "tiger160,3")),
+    Some(("MHASH_MD4", "md4")),
+    Some(("MHASH_SHA256", "sha256")),
+    Some(("MHASH_ADLER32", "adler32")),
+    Some(("MHASH_SHA224", "sha224")),
+    Some(("MHASH_SHA512", "sha512")),
+    Some(("MHASH_SHA384", "sha384")),
+    Some(("MHASH_WHIRLPOOL", "whirlpool")),
+    Some(("MHASH_RIPEMD128", "ripemd128")),
+    Some(("MHASH_RIPEMD256", "ripemd256")),
+    Some(("MHASH_RIPEMD320", "ripemd320")),
+    None,
+    Some(("MHASH_SNEFRU256", "snefru256")),
+    Some(("MHASH_MD2", "md2")),
+    Some(("MHASH_FNV132", "fnv132")),
+    Some(("MHASH_FNV1A32", "fnv1a32")),
+    Some(("MHASH_FNV164", "fnv164")),
+    Some(("MHASH_FNV1A64", "fnv1a64")),
+    Some(("MHASH_JOAAT", "joaat")),
+    Some(("MHASH_CRC32C", "crc32c")),
+    Some(("MHASH_MURMUR3A", "murmur3a")),
+    Some(("MHASH_MURMUR3C", "murmur3c")),
+    Some(("MHASH_MURMUR3F", "murmur3f")),
+    Some(("MHASH_XXH32", "xxh32")),
+    Some(("MHASH_XXH64", "xxh64")),
+    Some(("MHASH_XXH3", "xxh3")),
+    Some(("MHASH_XXH128", "xxh128")),
+];
+
+/// mhash_init registers every `MHASH_*` constant deprecated.
+pub(crate) fn constant_deprecation(name: &[u8]) -> Option<String> {
+    // (asked on every run-time constant fetch)
+    if !name.starts_with(b"MHASH_") {
+        return None;
+    }
+    MHASH
+        .iter()
+        .flatten()
+        .any(|(c, _)| c.as_bytes() == name)
+        .then(|| {
+            format!(
+                "Constant {} is deprecated since 8.5, as the mhash*() functions were deprecated",
+                String::from_utf8_lossy(name)
+            )
+        })
+}
+
+fn mhash_row(n: i64) -> Option<(&'static str, &'static str)> {
+    usize::try_from(n)
+        .ok()
+        .and_then(|n| MHASH.get(n).copied().flatten())
+}
+
+fn fn_mhash(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let Some((_, algo)) = mhash_row(as_int(&args[0])) else {
+        return Ok(Value::Bool(false));
+    };
+    let data = conv::to_string_bytes(&args[1]);
+    match args.get(2).map(crate::zend::zpp::deref) {
+        Some(Value::Null) | None => Ok(Value::str(
+            digest(algo.as_bytes(), &data).unwrap_or_default(),
+        )),
+        Some(k) => {
+            let key = conv::to_string_bytes(&k);
+            match hmac(algo.as_bytes(), &key, &data) {
+                Some(raw) => Ok(Value::str(raw)),
+                None => Err(Thrown::error(
+                    "ValueError",
+                    "mhash(): Argument #1 ($algo) must be a valid cryptographic hashing algorithm",
+                )),
+            }
+        }
+    }
+}
+
+fn fn_mhash_count(_: &mut dyn Host, _: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Int(MHASH.len() as i64 - 1))
+}
+
+fn fn_mhash_get_block_size(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(match mhash_row(as_int(&args[0])) {
+        Some((_, algo)) => Value::Int(digest(algo.as_bytes(), b"").map_or(0, |d| d.len()) as i64),
+        None => Value::Bool(false),
+    })
+}
+
+fn fn_mhash_get_hash_name(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    Ok(match mhash_row(as_int(&args[0])) {
+        Some((c, _)) => Value::str(c.as_bytes()["MHASH_".len()..].to_vec()),
+        None => Value::Bool(false),
+    })
+}
+
+/// The salted S2K: block i hashes i NUL bytes, the salt padded to 8 bytes
+/// and the password.
+fn fn_mhash_keygen_s2k(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let password = conv::to_string_bytes(&args[1]);
+    let mut salt = conv::to_string_bytes(&args[2]);
+    let bytes = as_int(&args[3]) as i32;
+    if bytes <= 0 {
+        return Err(Thrown::error(
+            "ValueError",
+            "mhash_keygen_s2k(): Argument #4 ($length) must be a greater than 0",
+        ));
+    }
+    salt.resize(8, 0);
+    let Some((_, algo)) = mhash_row(as_int(&args[0])) else {
+        return Ok(Value::Bool(false));
+    };
+    let block = digest(algo.as_bytes(), b"").map_or(0, |d| d.len());
+    if block == 0 {
+        return Ok(Value::Bool(false));
+    }
+    let bytes = bytes as usize;
+    let mut key = Vec::with_capacity(bytes + block);
+    let mut i = 0;
+    while key.len() < bytes {
+        let mut input = vec![0u8; i];
+        input.extend_from_slice(&salt);
+        input.extend_from_slice(&password);
+        key.extend(digest(algo.as_bytes(), &input).unwrap_or_default());
+        i += 1;
+    }
+    key.truncate(bytes);
+    Ok(Value::str(key))
 }
 
 /// The incremental-hashing API. A `HashContext` buffers the data fed to it

@@ -1,0 +1,14 @@
+
+Deprecated: Use of "self" in callables is deprecated in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/reflection/lazy_initializer_scope.php on line 10
+array(2) {
+  [0]=>
+  string(4) "self"
+  [1]=>
+  string(4) "init"
+}
+string(8) "K::pinit"
+int(1)
+int(2)
+TypeError: ReflectionClass::newLazyGhost(): Argument #1 ($initializer) must be a valid callback, function "nope" not found or invalid function name
+TypeError: ReflectionClass::newLazyProxy(): Argument #1 ($factory) must be a valid callback, function "nope" not found or invalid function name
+TypeError: ReflectionClass::resetAsLazyGhost(): Argument #2 ($initializer) must be a valid callback, function "nope" not found or invalid function name

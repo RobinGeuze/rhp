@@ -7864,6 +7864,8 @@ ext/hash/tests/fnv164.phpt
 ext/hash/tests/fnv1a32.phpt
 ext/hash/tests/fnv1a64.phpt
 ext/hash/tests/gh12186_1.phpt
+ext/hash/tests/gh16711_1.phpt
+ext/hash/tests/gh16711_2.phpt
 ext/hash/tests/gost.phpt
 ext/hash/tests/hash-clone.phpt
 ext/hash/tests/hash_algos.phpt
@@ -7894,6 +7896,10 @@ ext/hash/tests/joaat.phpt
 ext/hash/tests/md2.phpt
 ext/hash/tests/md4.phpt
 ext/hash/tests/md5.phpt
+ext/hash/tests/mhash_001.phpt
+ext/hash/tests/mhash_002.phpt
+ext/hash/tests/mhash_003.phpt
+ext/hash/tests/mhash_004.phpt
 ext/hash/tests/murmur_seed_deprecation.phpt
 ext/hash/tests/murmurhash3.phpt
 ext/hash/tests/murmurhash3_seed.phpt
@@ -10355,7 +10361,10 @@ ext/phar/tests/tar/tar_nohash.phpt
 ext/phar/tests/tar/tar_openssl_hash.phpt
 ext/posix/tests/001.phpt
 ext/posix/tests/bug75696.phpt
+ext/posix/tests/posix_ctermid.phpt
+ext/posix/tests/posix_ctermid_basic.phpt
 ext/posix/tests/posix_errno_basic.phpt
+ext/posix/tests/posix_errno_variation1.phpt
 ext/posix/tests/posix_errno_variation2.phpt
 ext/posix/tests/posix_getcwd.phpt
 ext/posix/tests/posix_getegid_basic.phpt
@@ -10379,11 +10388,24 @@ ext/posix/tests/posix_getsid_basic.phpt
 ext/posix/tests/posix_getsid_error.phpt
 ext/posix/tests/posix_isatty.phpt
 ext/posix/tests/posix_isatty_no_warning_on_stream_cast.phpt
+ext/posix/tests/posix_isatty_non_castable_user_stream.phpt
 ext/posix/tests/posix_kill_error.phpt
 ext/posix/tests/posix_kill_pidoverflow.phpt
+ext/posix/tests/posix_setegid_basic.phpt
+ext/posix/tests/posix_seteuid_basic.phpt
+ext/posix/tests/posix_seteuid_variation5.phpt
+ext/posix/tests/posix_setgid_basic.phpt
+ext/posix/tests/posix_setgid_variation5.phpt
+ext/posix/tests/posix_setpgid_error.phpt
+ext/posix/tests/posix_setuid_basic.phpt
+ext/posix/tests/posix_setuid_variation5.phpt
 ext/posix/tests/posix_strerror_error.phpt
+ext/posix/tests/posix_sysconf.phpt
+ext/posix/tests/posix_times.phpt
+ext/posix/tests/posix_times_basic.phpt
 ext/posix/tests/posix_ttyname.phpt
 ext/posix/tests/posix_ttyname_no_warning_on_cast.phpt
+ext/posix/tests/posix_ttyname_non_castable_user_stream.phpt
 ext/posix/tests/posix_uname_basic.phpt
 ext/random/tests/01_functions/array_rand_mt_rand_php.phpt
 ext/random/tests/01_functions/bug46587.phpt
@@ -10585,6 +10607,7 @@ ext/reflection/tests/ReflectionClass_newInstance_001.phpt
 ext/reflection/tests/ReflectionClass_setStaticPropertyValue_001.phpt
 ext/reflection/tests/ReflectionClass_setStaticPropertyValue_002.phpt
 ext/reflection/tests/ReflectionClass_setStaticPropertyValue_003.phpt
+ext/reflection/tests/ReflectionClass_toString_001.phpt
 ext/reflection/tests/ReflectionClass_toString_002.phpt
 ext/reflection/tests/ReflectionClass_toString_003.phpt
 ext/reflection/tests/ReflectionClass_toString_004.phpt
@@ -11455,6 +11478,7 @@ ext/sodium/tests/utils.phpt
 ext/sodium/tests/version.phpt
 ext/spl/tests/AppendIterator_invalid_ctor.phpt
 ext/spl/tests/ArrayObject/ArrayObject__serialize_saves_iterator_class.phpt
+ext/spl/tests/ArrayObject/ArrayObject_clone_other_std_props.phpt
 ext/spl/tests/ArrayObject/ArrayObject_dump_during_sort.phpt
 ext/spl/tests/ArrayObject/ArrayObject_get_object_vars.phpt
 ext/spl/tests/ArrayObject/ArrayObject_illegal_offset.phpt
@@ -11462,6 +11486,7 @@ ext/spl/tests/ArrayObject/ArrayObject_modify_shared_object_properties.phpt
 ext/spl/tests/ArrayObject/ArrayObject_proptable_canonicalization.phpt
 ext/spl/tests/ArrayObject/ArrayObject_unserialize_empty_string.phpt
 ext/spl/tests/ArrayObject/arrayIterator_ksort_basic1.phpt
+ext/spl/tests/ArrayObject/arrayObject___construct_basic1.phpt
 ext/spl/tests/ArrayObject/arrayObject___construct_basic2.phpt
 ext/spl/tests/ArrayObject/arrayObject___construct_basic3.phpt
 ext/spl/tests/ArrayObject/arrayObject___construct_basic6.phpt
@@ -11470,6 +11495,7 @@ ext/spl/tests/ArrayObject/arrayObject_asort_basic1.phpt
 ext/spl/tests/ArrayObject/arrayObject_clone_basic1.phpt
 ext/spl/tests/ArrayObject/arrayObject_count_basic1.phpt
 ext/spl/tests/ArrayObject/arrayObject_exchangeArray_basic1.phpt
+ext/spl/tests/ArrayObject/arrayObject_exchangeArray_basic2.phpt
 ext/spl/tests/ArrayObject/arrayObject_getFlags_basic1.phpt
 ext/spl/tests/ArrayObject/arrayObject_ksort_basic1.phpt
 ext/spl/tests/ArrayObject/arrayObject_magicMethods1.phpt
@@ -11484,6 +11510,7 @@ ext/spl/tests/ArrayObject/arrayObject_uasort_error1.phpt
 ext/spl/tests/ArrayObject/arrayObject_uksort_basic1.phpt
 ext/spl/tests/ArrayObject/arrayObject_uksort_error1.phpt
 ext/spl/tests/ArrayObject/array_001.phpt
+ext/spl/tests/ArrayObject/array_002.phpt
 ext/spl/tests/ArrayObject/array_003.phpt
 ext/spl/tests/ArrayObject/array_004.phpt
 ext/spl/tests/ArrayObject/array_005.phpt
@@ -11502,8 +11529,10 @@ ext/spl/tests/ArrayObject/array_020.phpt
 ext/spl/tests/ArrayObject/array_021.phpt
 ext/spl/tests/ArrayObject/array_023.phpt
 ext/spl/tests/ArrayObject/array_024.phpt
+ext/spl/tests/ArrayObject/array_025.phpt
 ext/spl/tests/ArrayObject/array_026.phpt
 ext/spl/tests/ArrayObject/array_027.phpt
+ext/spl/tests/ArrayObject/array_028.phpt
 ext/spl/tests/ArrayObject/bug31346.phpt
 ext/spl/tests/ArrayObject/bug38618.phpt
 ext/spl/tests/ArrayObject/bug41691.phpt
@@ -11515,6 +11544,7 @@ ext/spl/tests/ArrayObject/gh11178.phpt
 ext/spl/tests/ArrayObject/gh15833_1.phpt
 ext/spl/tests/ArrayObject/gh16646.phpt
 ext/spl/tests/ArrayObject/gh16646_2.phpt
+ext/spl/tests/CallbackFilterIteratorTest-002.phpt
 ext/spl/tests/CallbackFilterIteratorTest.phpt
 ext/spl/tests/DirectoryIterator_by_reference.phpt
 ext/spl/tests/DirectoryIterator_empty_constructor.phpt
@@ -11535,6 +11565,7 @@ ext/spl/tests/SPLDoublyLinkedList_iterate_by_reference.phpt
 ext/spl/tests/SplDoublyLinkedList_add_invalid_offset.phpt
 ext/spl/tests/SplDoublyLinkedList_add_null_offset.phpt
 ext/spl/tests/SplDoublyLinkedList_bottom_empty.phpt
+ext/spl/tests/SplDoublyLinkedList_consistent_iterator_mode.phpt
 ext/spl/tests/SplDoublyLinkedList_current.phpt
 ext/spl/tests/SplDoublyLinkedList_current_empty.phpt
 ext/spl/tests/SplDoublyLinkedList_debug-info.phpt
@@ -11883,6 +11914,7 @@ ext/spl/tests/dit_004.phpt
 ext/spl/tests/dit_005.phpt
 ext/spl/tests/dit_006.phpt
 ext/spl/tests/dllist_001.phpt
+ext/spl/tests/dllist_002.phpt
 ext/spl/tests/dllist_003.phpt
 ext/spl/tests/dllist_004.phpt
 ext/spl/tests/dllist_005.phpt
@@ -12050,6 +12082,7 @@ ext/spl/tests/regexiterator_setpregflags.phpt
 ext/spl/tests/serialize_property_tables.phpt
 ext/spl/tests/spl_001.phpt
 ext/spl/tests/spl_002.phpt
+ext/spl/tests/spl_004.phpt
 ext/spl/tests/spl_006.phpt
 ext/spl/tests/spl_007.phpt
 ext/spl/tests/spl_autoload_001.phpt

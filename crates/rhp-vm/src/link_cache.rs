@@ -200,6 +200,8 @@ fn copy_entry(
         handlers: e.handlers,
         create_object: e.create_object,
         hooked: e.hooked,
+        hooked_iter: e.hooked_iter,
+        stringable: e.stringable,
         checked_statics: e.checked_statics,
         stamp: e.stamp,
         state: 0,

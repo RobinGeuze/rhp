@@ -122,6 +122,8 @@ let outcome = run_request(
 | `flush_sends_headers` | a flush sends the headers first when nothing has (php's cli-server) | `false` |
 | `server_functions` | php-fpm's functions, as FrankenPHP has them, for a SAPI rhp has no module for: `fastcgi_finish_request()`, `apache_request_headers()` / `getallheaders()`, `apache_response_headers()` | `false` |
 | `end_response` | `fastcgi_finish_request()` ran: the output buffers were flushed and the headers sent, so the response is complete and can go to the client; the script (kernel.terminate, terminable middleware, shutdown functions) runs on with its output discarded, and `flush` is not called again | no-op |
+| `worker` | FrankenPHP's worker mode (below) | `false` |
+| `next_request` | a worker's next request: block until it arrives; `None` stops the worker | `None` |
 | `script_done` | the primary script returned (php_execute_script), before the shutdown functions: its return value, the response and `error_get_last()`. The SAPI may name a file to run next as another primary script in the same request (the cli-server's router declining a `.php` request) | `None` |
 | `log_message` | one `error_log` / `log_errors` line, no newline | stderr |
 | `write_stderr` | `display_errors=stderr` output | stderr |
@@ -135,6 +137,38 @@ the script runs); `CliSapi` writes descriptor 1 the same way. Both report
 a failed write (EPIPE, a closed client) as an abort; an HTTP server
 writes a status line and headers to its connection; a FrankenPHP-style
 embedding hands them to the host server's response writer.
+
+### Worker mode (FrankenPHP's)
+
+A SAPI with `worker()` and `server_functions()` runs a worker script:
+it boots the application once, then serves request after request in the
+same engine, keeping its globals, classes, objects and statics:
+
+```php
+$kernel = boot();
+while (frankenphp_handle_request(function () use ($kernel) {
+    echo $kernel->handle($_GET, $_POST, $_SERVER);
+})) {
+    $kernel->terminate();
+}
+```
+
+`frankenphp_handle_request($handler)` (the name FrankenPHP gives it, so
+Symfony Runtime's and Laravel Octane's FrankenPHP runners work unchanged)
+completes what the worker served so far, asks `Sapi::next_request` for
+the next request (false when it returns `None`), sets it up as
+`frankenphp_worker_request_startup` does (a fresh response, body and
+output layer, the superglobals, the session's RINIT, max_execution_time
+armed for the request), calls the handler, and completes the request
+(output buffers ended, the session written, headers sent, `flush`,
+`end_response`, uploads deleted) before it returns, so the client has its
+response while the worker runs on. Waiting for a request runs no timer.
+An uncaught throwable from the handler is a fatal error that ends the
+worker, as FrankenPHP bails out; `exit` ends it too. The host runs the
+worker with `run_request` on a thread of its own and starts a new one
+when it ends. Outside worker mode the function throws a
+RuntimeException. Memory accounting and `memory_limit` span the whole
+worker, not each request.
 
 ### `RequestInfo` (php's `SG(request_info)` + server variables)
 
@@ -331,8 +365,8 @@ threads, never from sharing an engine:
 - Every request gets a **fresh `Vm`**: nothing a script defines (globals,
   functions, classes, constants, statics, ini changes, output buffers,
   headers) survives into the next request. This matches php-fpm and
-  FrankenPHP's classic mode. Worker mode (one bootstrapped app serving many
-  requests) can come later as a separate API.
+  FrankenPHP's classic mode. Worker mode (above) is the exception the
+  script asks for: one `Vm` serves the worker's requests in turn.
 - The per-thread state outside the `Vm` (SAPI name and ini defaults,
   request-scoped builtin state) is in `thread_local!`s, like php's ZTS
   module globals. `Vm::new` resets it, and so does dropping the `Vm`
@@ -509,9 +543,8 @@ Limits of the model:
   axum, calling `run_request` directly from a worker pool). In place: the
   streamed body (`RequestInfo::body_reader`), a per-thread
   `max_execution_time` (below), php's web defaults and
-  `fastcgi_finish_request()` (`Sapi::server_functions`). Still to come:
-  FrankenPHP's worker mode (one bootstrapped app serving many requests,
-  `frankenphp_handle_request`), the C ABI shim, and interrupting a
+  `fastcgi_finish_request()` (`Sapi::server_functions`) and worker mode.
+  Still to come: the C ABI shim, and interrupting a
   script when the server learns early that the client went away (today
   the next `ub_write`/`flush` returning false reports it, as in php's
   SAPIs).

@@ -150,6 +150,23 @@ pub trait Sapi {
     /// and [`Sapi::flush`] is not called again.
     fn end_response(&mut self) {}
 
+    /// FrankenPHP's worker mode: the script boots once and then serves
+    /// request after request through `frankenphp_handle_request($handler)`
+    /// (a [`Sapi::server_functions`] function), keeping its globals,
+    /// classes and objects between them.
+    fn worker(&self) -> bool {
+        false
+    }
+
+    /// A worker's next request: block until one arrives and return its
+    /// input; from then on `send_headers`, `ub_write`, `flush` and
+    /// `end_response` are that request's, until `end_response` completes
+    /// it. `None`: the worker should stop (`frankenphp_handle_request()`
+    /// returns false).
+    fn next_request(&mut self) -> Option<RequestInfo> {
+        None
+    }
+
     /// Whether running past the hard memory limit
     /// (`memory_hard_limit_percent`) ends the process, as php does (message
     /// on stderr, exit 137). False: the request ends as a fatal error, so

@@ -499,6 +499,12 @@ pub trait Host {
         false
     }
 
+    /// `frankenphp_handle_request($handler)`: serve the worker's next
+    /// request with `handler`. False: no more requests.
+    fn worker_handle_request(&mut self, _handler: &Value) -> Result<bool, Thrown> {
+        Ok(false)
+    }
+
     /// The request body's read state and uploads (`request_parse_body`,
     /// `is_uploaded_file`, `move_uploaded_file`).
     fn body_state(&mut self) -> Option<&mut rfc1867::BodyState>;

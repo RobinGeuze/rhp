@@ -7,7 +7,7 @@ use rhp_builtins::main::rfc1867::{BodyState, Diag};
 use rhp_builtins::main::sapi;
 use rhp_builtins::main::sapi::{RequestInfo, Response, Sapi, TreatData};
 use rhp_builtins::{self as builtins, Host};
-use rhp_values::{ArrayKey, PhpArray, Value};
+use rhp_values::{ArrayKey, PhpArray, Thrown, Value};
 
 use crate::Vm;
 
@@ -39,6 +39,10 @@ pub(crate) struct SapiState {
     /// `fastcgi_finish_request()` completed the response: later output is
     /// discarded.
     pub(crate) response_ended: bool,
+    /// A worker's request is being served (between
+    /// `frankenphp_handle_request()` taking it and completing it); before
+    /// the first one, the worker's own start-up counts as one.
+    pub(crate) worker_in_request: bool,
 }
 
 impl SapiState {
@@ -61,6 +65,7 @@ impl SapiState {
             startup_failed: false,
             body: BodyState::default(),
             response_ended: false,
+            worker_in_request: true,
         }
     }
 }
@@ -389,6 +394,104 @@ impl Vm {
         true
     }
 
+    /// FrankenPHP's `frankenphp_handle_request`: complete what the worker
+    /// served so far, take its next request from the SAPI, set the
+    /// request up (`frankenphp_worker_request_startup`: response, body,
+    /// output layer, superglobals, the session's RINIT), call `handler`,
+    /// and complete the request (`frankenphp_worker_request_shutdown`)
+    /// before returning, so the client has its response while the worker
+    /// runs on. The timer runs per request; waiting for one has none. An
+    /// uncaught throwable from the handler is a fatal error that ends the
+    /// worker (zend_exception_error + zend_bailout).
+    pub(crate) fn worker_handle_request(&mut self, handler: &Value) -> Result<bool, Thrown> {
+        if !self.sapi.sapi.worker() {
+            let msg = "frankenphp_handle_request() called while not in worker mode";
+            return Err(
+                match builtins::Host::reflect_new_instance(
+                    self,
+                    b"RuntimeException",
+                    vec![Value::str(msg)],
+                    true,
+                ) {
+                    Ok(Value::Object(h)) => Thrown::Object(h),
+                    Ok(_) => Thrown::error("RuntimeException", msg),
+                    Err(t) => t,
+                },
+            );
+        }
+        self.worker_request_end()?;
+        let Some(info) = self.sapi.sapi.next_request() else {
+            return Ok(false);
+        };
+        self.worker_request_start(info)?;
+        match self.call_callable_value(handler, Vec::new()) {
+            Ok(_) => {}
+            Err(Thrown::Exit(code)) => {
+                self.worker_request_end()?;
+                return Err(Thrown::Exit(code));
+            }
+            Err(t) if t.is_catchable() => {
+                self.report_uncaught(t);
+                return Err(Thrown::Exit(255));
+            }
+            Err(t) => return Err(t),
+        }
+        self.worker_request_end()?;
+        Ok(true)
+    }
+
+    /// frankenphp_worker_request_startup for `info`.
+    fn worker_request_start(&mut self, info: RequestInfo) -> Result<(), Thrown> {
+        self.sapi.worker_in_request = true;
+        self.sapi.response = Response {
+            store: self.sapi.sapi.stores_headers(),
+            code: self.sapi.sapi.initial_response_code(),
+            ..Response::default()
+        };
+        self.sapi.response_ended = false;
+        self.sapi.post_too_big = false;
+        self.sapi.body = BodyState::default();
+        builtins::main::reset_connection_status();
+        self.set_request(info);
+        builtins::zend::timeout::request_startup();
+        self.check_post_size();
+        let expose = self.ini_get(b"expose_php").unwrap_or_default();
+        if crate::ini_bool(&expose) {
+            let line = format!("X-Powered-By: PHP/{}", builtins::PHP_VERSION);
+            let _ = sapi::header_op(self, sapi::HeaderOp::Replace(line.as_bytes(), 0));
+        }
+        self.output_reactivate();
+        self.output_startup();
+        self.seed_request_superglobals();
+        builtins::zend::timeout::script_startup();
+        self.sapi.startup = true;
+        let r = builtins::request_activate(self);
+        self.sapi.startup = false;
+        r
+    }
+
+    /// frankenphp_worker_request_shutdown: flush the output buffers, the
+    /// session's RSHUTDOWN, send the headers, complete the response,
+    /// delete the uploads. Nothing when no request is being served.
+    fn worker_request_end(&mut self) -> Result<(), Thrown> {
+        if !std::mem::take(&mut self.sapi.worker_in_request) {
+            return Ok(());
+        }
+        self.output_end_all();
+        let r = builtins::request_deactivate(self);
+        self.sapi_send_headers();
+        if !self.sapi.response_ended {
+            if !self.sapi.sapi.flush() {
+                builtins::main::set_connection_aborted();
+            }
+            self.sapi.sapi.end_response();
+            self.sapi.response_ended = true;
+        }
+        self.sapi.body.cleanup();
+        builtins::zend::timeout::unset_timeout();
+        r
+    }
+
     /// php_handle_aborted_connection: the status becomes aborted, output
     /// stops, and unless `ignore_user_abort` is on the script bails out
     /// (shutdown functions and destructors still run, with output off).
@@ -397,7 +500,7 @@ impl Vm {
         self.output_set_disabled();
         let ignore = self.ini_get(b"ignore_user_abort").unwrap_or_default();
         if !builtins::ini_parse_bool(&ignore) && self.pending_throw.is_none() {
-            self.pending_throw = Some(rhp_values::Thrown::Exit(self.sapi.exit_status));
+            self.pending_throw = Some(Thrown::Exit(self.sapi.exit_status));
         }
     }
 

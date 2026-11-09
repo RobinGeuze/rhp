@@ -363,6 +363,10 @@ impl Host for Vm {
         Vm::finish_response(self)
     }
 
+    fn worker_handle_request(&mut self, handler: &Value) -> Result<bool, Thrown> {
+        Vm::worker_handle_request(self, handler)
+    }
+
     fn log_message(&mut self, msg: &[u8]) {
         self.sapi.sapi.log_message(msg);
     }

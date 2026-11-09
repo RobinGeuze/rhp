@@ -672,3 +672,188 @@ fn a_streamed_body_stops_at_post_max_size() {
     );
     assert_eq!(body(&ev), "int(114686)\n");
 }
+
+/// A FrankenPHP-style worker: requests come from a queue; every SAPI call
+/// is recorded.
+struct Worker {
+    events: Rc<RefCell<Vec<String>>>,
+    queue: std::collections::VecDeque<RequestInfo>,
+}
+
+impl Sapi for Worker {
+    fn name(&self) -> &str {
+        "embed-worker"
+    }
+
+    fn ub_write(&mut self, data: &[u8]) -> bool {
+        let s = String::from_utf8_lossy(data).into_owned();
+        self.events.borrow_mut().push(format!("body:{s}"));
+        true
+    }
+
+    fn send_headers(&mut self, r: &Response) -> bool {
+        let own: Vec<String> = r
+            .headers
+            .iter()
+            .map(|h| String::from_utf8_lossy(h).into_owned())
+            .filter(|h| h.starts_with("X-"))
+            .collect();
+        self.events
+            .borrow_mut()
+            .push(format!("headers:{} {}", r.code, own.join(",")));
+        true
+    }
+
+    fn log_message(&mut self, msg: &[u8]) {
+        let s = String::from_utf8_lossy(msg).into_owned();
+        self.events.borrow_mut().push(format!("log:{s}"));
+    }
+
+    fn ini_defaults(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("expose_php", "0"), ("html_errors", "0")]
+    }
+
+    fn server_functions(&self) -> bool {
+        true
+    }
+
+    fn worker(&self) -> bool {
+        true
+    }
+
+    fn next_request(&mut self) -> Option<RequestInfo> {
+        self.events.borrow_mut().push("next".to_string());
+        self.queue.pop_front()
+    }
+
+    fn end_response(&mut self) {
+        self.events.borrow_mut().push("end".to_string());
+    }
+}
+
+fn run_worker(code: &str, queue: Vec<RequestInfo>) -> (Vec<String>, Outcome) {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let sapi = Worker {
+        events: events.clone(),
+        queue: queue.into(),
+    };
+    let outcome = run_request(
+        Box::new(sapi),
+        Request {
+            script: Script::Code(code.to_string()),
+            ini: vec![("log_errors".into(), "1".into())],
+            args: Vec::new(),
+            info: Some(get()),
+            php_binary: None,
+            cwd: None,
+            ini_files: None,
+        },
+    );
+    let ev = events.borrow().clone();
+    (ev, outcome)
+}
+
+/// Worker mode: the script boots once, keeps its state across requests,
+/// and each request gets its own superglobals, headers, output buffers
+/// and response, completed before the worker runs on.
+#[test]
+fn a_worker_serves_requests_with_one_bootstrapped_script() {
+    let code = "$n = 0; echo 'boot'; \
+        $handler = function () use (&$n) { $n++; ob_start(); header('X-N: ' . $n); \
+            echo $_GET['q'] ?? '-', ' ', json_encode($_POST), ' ', $n, ' ', http_response_code(); \
+            if ($n == 2) { http_response_code(404); } }; \
+        while (frankenphp_handle_request($handler)) { error_log('terminate ' . $n . ' ' . (headers_sent() ? 'sent' : '?')); } \
+        echo 'gone';";
+    let q = RequestInfo {
+        query_string: Some(b"q=one".to_vec()),
+        ..get()
+    };
+    let p = post("application/x-www-form-urlencoded", b"a=b");
+    let (ev, o) = run_worker(code, vec![q, p]);
+    assert_eq!(o, Outcome::Exit(0));
+    assert_eq!(
+        ev,
+        [
+            "headers:200 ",
+            "body:boot",
+            "end",
+            "next",
+            "headers:200 X-N: 1",
+            "body:one [] 1 200",
+            "end",
+            "log:terminate 1 sent",
+            "next",
+            "headers:404 X-N: 2",
+            "body:- {\"a\":\"b\"} 2 200",
+            "end",
+            "log:terminate 2 sent",
+            "next",
+        ]
+    );
+}
+
+/// An uncaught exception in the handler is a fatal error that ends the
+/// worker (FrankenPHP bails out); outside worker mode the function throws.
+#[test]
+fn a_worker_handler_exception_ends_the_worker() {
+    let code = "try { while (frankenphp_handle_request(function () { throw new Exception('boom'); })) {} } \
+        catch (Throwable $e) { echo 'caught'; }";
+    let (ev, o) = run_worker(code, vec![get(), get()]);
+    assert_eq!(o, Outcome::Exit(255));
+    assert!(!ev.iter().any(|e| e == "body:caught"), "{ev:?}");
+    assert_eq!(ev.iter().filter(|e| *e == "next").count(), 1, "{ev:?}");
+    assert!(
+        ev.iter()
+            .any(|e| e.contains("PHP Fatal error:  Uncaught Exception: boom")),
+        "{ev:?}"
+    );
+
+    let (ev, _) = run_with(
+        server(),
+        "try { frankenphp_handle_request(fn () => 1); } catch (RuntimeException $e) { echo $e->getMessage(); }",
+        &[],
+        get(),
+    );
+    assert_eq!(
+        body(&ev),
+        "frankenphp_handle_request() called while not in worker mode"
+    );
+}
+
+/// Each worker request has its own session (the session's RSHUTDOWN
+/// writes it when the request completes, RINIT starts the next fresh) and
+/// its own uploads.
+#[test]
+fn a_worker_request_has_its_own_session_and_uploads() {
+    let dir = std::env::temp_dir().join(format!("rhp-worker-sess-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let code = format!(
+        "ini_set('session.save_path', '{}'); $files = []; \
+         while (frankenphp_handle_request(function () use (&$files) {{ \
+            session_id('abc'); session_start(); $_SESSION['n'] = ($_SESSION['n'] ?? 0) + 1; \
+            echo session_status(), ' ', $_SESSION['n'], ' ', count($_FILES); \
+            foreach ($_FILES as $f) {{ $files[] = $f['tmp_name']; echo ' ', is_uploaded_file($f['tmp_name']) ? 'up' : 'no'; }} \
+         }})) {{ echo session_status(); error_log('after ' . session_status() . ' ' . implode(',', array_map('file_exists', $files))); }}",
+        dir.display()
+    );
+    let upload = b"--b\r\nContent-Disposition: form-data; name=\"f\"; filename=\"a.txt\"\r\n\r\nxyz\r\n--b--\r\n";
+    let (ev, o) = run_worker(
+        &code,
+        vec![post("multipart/form-data; boundary=b", upload), get()],
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(o, Outcome::Exit(0));
+    // The body writes of each request joined, and the log lines.
+    let mut seen: Vec<String> = Vec::new();
+    for e in &ev {
+        if let Some(b) = e.strip_prefix("body:") {
+            match seen.last_mut().filter(|l| !l.starts_with("log:")) {
+                Some(last) => last.push_str(b),
+                None => seen.push(b.to_string()),
+            }
+        } else if e.starts_with("log:") {
+            seen.push(e.clone());
+        }
+    }
+    assert_eq!(seen, ["2 1 1 up", "log:after 1 ", "2 2 0", "log:after 1 "]);
+}

@@ -2,8 +2,11 @@
 //! ([`Sapi::server_functions`](crate::main::sapi::Sapi::server_functions)):
 //! php-fpm's (sapi/fpm/fpm/fpm_main.c), which FrankenPHP has too:
 //! `fastcgi_finish_request`, `apache_request_headers` (`getallheaders`) and
-//! FrankenPHP's `apache_response_headers`. A SAPI with a name of its own
-//! gets them in place of the none it would have.
+//! FrankenPHP's `apache_response_headers`, plus FrankenPHP's worker-mode
+//! `frankenphp_handle_request` and `frankenphp_finish_request`, so the
+//! runtimes written for it (Symfony Runtime, Laravel Octane) run as they
+//! are. A SAPI with a name of its own gets them in place of the none it
+//! would have.
 
 use rhp_values::{Thrown, Value};
 
@@ -28,6 +31,8 @@ const FUNCTIONS: &[(&str, NativeFn)] = &[
     ("apache_request_headers", cgi::fn_apache_request_headers),
     ("getallheaders", cgi::fn_apache_request_headers),
     ("apache_response_headers", cgi::fn_apache_response_headers),
+    ("frankenphp_finish_request", fn_fastcgi_finish_request),
+    ("frankenphp_handle_request", fn_frankenphp_handle_request),
 ];
 
 /// fpm_main.c's `fastcgi_finish_request` (FrankenPHP's
@@ -36,4 +41,21 @@ const FUNCTIONS: &[(&str, NativeFn)] = &[
 /// discarded. False when the response was already complete.
 fn fn_fastcgi_finish_request(host: &mut dyn Host, _args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Bool(host.finish_response()))
+}
+
+/// FrankenPHP's `frankenphp_handle_request(callable $callback): bool`:
+/// wait for the worker's next request, run `$callback` for it with the
+/// request's superglobals, then complete its response. False when the
+/// worker should stop; outside worker mode a RuntimeException.
+fn fn_frankenphp_handle_request(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let name = "frankenphp_handle_request";
+    if args.len() != 1 {
+        return Err(Thrown::error(
+            "ArgumentCountError",
+            format!("{name}() expects exactly 1 argument, {} given", args.len()),
+        ));
+    }
+    let handler = rhp_values::ops::deref(&args[0]);
+    crate::zend::zpp::require_callback(host, name, 1, &handler)?;
+    host.worker_handle_request(&handler).map(Value::Bool)
 }

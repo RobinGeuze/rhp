@@ -227,6 +227,13 @@ impl Vm {
         }
     }
 
+    /// php_output_activate for a worker's next request: no buffers left
+    /// (they were ended), the status flags back to a fresh request's.
+    pub(crate) fn output_reactivate(&mut self) {
+        self.output_end_all();
+        self.output.flags = O_ACTIVATED;
+    }
+
     /// php_request_shutdown step 3 (php_output_end_all): finalize every
     /// buffer, top first, each into the one below.
     pub(crate) fn output_end_all(&mut self) {

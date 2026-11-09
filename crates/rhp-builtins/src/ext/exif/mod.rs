@@ -3041,6 +3041,10 @@ fn fn_exif_tagname(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown>
 fn fn_exif_imagetype(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let f = "exif_imagetype";
     let path = zpp::path_param(host, args, 0, f, pname(f, 0))?;
+    // php_stream_open_wrapper refuses an empty path.
+    if path.is_empty() {
+        return Err(Thrown::error("ValueError", "Path must not be empty"));
+    }
     let Some(res) =
         crate::ext::standard::file::open_stream(host, f, &path, b"rb", &Value::Null, false)?
     else {

@@ -41,3 +41,10 @@ try {
 } catch (ValueError $e) {
     echo $e->getMessage(), "\n";
 }
+
+// The limits parse as quantities and warn about what is no number.
+set_error_handler(function ($no, $msg) {
+    echo "E$no: $msg\n";
+    return true;
+});
+var_dump(ini_set('mbstring.regex_retry_limit', 'abc'), ini_get('mbstring.regex_retry_limit'));

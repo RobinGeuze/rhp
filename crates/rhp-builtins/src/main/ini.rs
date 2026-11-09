@@ -169,6 +169,8 @@ const QUANTITY_DIRECTIVES: &[&str] = &[
     "bcmath.scale",
     "fiber.stack_size",
     "zlib.output_compression_level",
+    "mbstring.regex_stack_limit",
+    "mbstring.regex_retry_limit",
 ];
 
 /// The warnings a directive's OnModify handler raises for `v`, and the

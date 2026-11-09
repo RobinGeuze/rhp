@@ -78,3 +78,8 @@ var_dump(exif_thumbnail($file), exif_imagetype($file), exif_tagname(0x0112), exi
 var_dump(exif_read_data(__FILE__), exif_read_data(__DIR__ . '/missing.jpg'));
 var_dump(ini_set('exif.encode_unicode', 'nope'), ini_get('exif.encode_unicode'));
 unlink($file);
+try {
+    exif_imagetype('');
+} catch (ValueError $e) {
+    echo $e->getMessage(), "\n";
+}

@@ -603,8 +603,15 @@ variable sent to a callee only the run time knows, and assigned or
 incremented by a later argument (`$o->m($p, $p = new X)`, or inside one
 that can write it: `[$p] = ..`, `g($p)`), asks the callee
 as it is sent (SEND_VAR_EX), so a by-value parameter gets the value from
-before the assignment. An anonymous class's constructor arguments are sent
-like a named class's.
+before the assignment. So does a variable a later call, assignment,
+increment, include or eval could write through another name: any variable
+of the main script (a global), and one the file may alias
+(`FileCtx::may_alias`, a text scan for `&$p`, `global $p`, `$$`, `eval(`,
+`extract(`). An unpack of a plain variable to a callee only the run time
+knows (`$o->m(...$a)`, `new $c(...$a)`) asks it the same way
+(`ArgSpreadRefDyn`), so its by-reference parameters write back into the
+array. An anonymous class's constructor arguments are sent like a named
+class's.
 
 **Exceptions (phase 3+/5)** — see §3.4–3.5. `try` *entry* needs no opcode (the
 `exception_table` describes protected ranges); only these are explicit:

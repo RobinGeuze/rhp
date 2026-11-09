@@ -1304,7 +1304,11 @@ impl ProtoBuilder<'_> {
                         // A later argument assigns the variable: SEND_VAR_EX
                         // asks the callee now and copies a by-value one
                         // before that runs (`f($p, $p = new X)`).
-                        if let (Some(t), true) = (target, later_arg_may_change(list, i, d.name)) {
+                        if let (Some(t), true) = (
+                            target,
+                            later_arg_may_change(list, i, d.name)
+                                || (self.var_may_alias(d.name) && later_arg_runs_code(list, i)),
+                        ) {
                             let r = self.send_var_ex_now(cv, t, i as u16);
                             slots.push(Slot::Ref(r));
                             continue;
@@ -1360,6 +1364,13 @@ impl ProtoBuilder<'_> {
             }
         }
         Ok((base, argc))
+    }
+
+    /// Whether a later argument could write `$name` (with `$`) through
+    /// another name: every variable of the main script is a global, and
+    /// [`FileCtx::may_alias`] for the rest.
+    fn var_may_alias(&self, name: &[u8]) -> bool {
+        matches!(self.scope_kind, crate::builder::ScopeKind::Main) || self.cx.may_alias(name)
     }
 
     /// A variable sent by SEND_VAR_EX at this point: a reference when the
@@ -2204,6 +2215,47 @@ fn later_arg_may_change(list: &[Argument], i: usize, name: &[u8]) -> bool {
             let (mut m, mut w) = (false, false);
             scan(Node::Expression(e), name, &mut m, &mut w);
             m && w
+        })
+}
+
+/// Whether an argument after the `i`th runs code that could write a
+/// variable through another name (a call, an assignment, an increment, an
+/// include or eval).
+fn later_arg_runs_code(list: &[Argument], i: usize) -> bool {
+    use crate::parse::cst::{Node, UnaryPostfixOperator as Post, UnaryPrefixOperator as Pre};
+    fn scan(node: Node, writes: &mut bool) {
+        if *writes {
+            return;
+        }
+        match node {
+            Node::Assignment(_)
+            | Node::Call(_)
+            | Node::Instantiation(_)
+            | Node::EvalConstruct(_)
+            | Node::IncludeConstruct(_)
+            | Node::IncludeOnceConstruct(_)
+            | Node::RequireConstruct(_)
+            | Node::RequireOnceConstruct(_) => *writes = true,
+            Node::UnaryPrefix(u)
+                if matches!(u.operator, Pre::PreIncrement(_) | Pre::PreDecrement(_)) =>
+            {
+                *writes = true
+            }
+            Node::UnaryPostfix(u)
+                if matches!(u.operator, Post::PostIncrement(_) | Post::PostDecrement(_)) =>
+            {
+                *writes = true
+            }
+            _ => node.visit_children(|ch| scan(ch, writes)),
+        }
+    }
+    list.iter()
+        .skip(i + 1)
+        .filter(|a| arg_may_write(a))
+        .any(|a| {
+            let mut w = false;
+            scan(Node::Expression(arg_value(a)), &mut w);
+            w
         })
 }
 

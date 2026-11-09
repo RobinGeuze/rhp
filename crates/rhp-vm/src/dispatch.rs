@@ -624,6 +624,58 @@ impl Vm {
         }
     }
 
+    /// The interrupt flag was set before the instruction at `pc`: a
+    /// max_execution_time timeout (raised where a jump lands or a user
+    /// function starts) or queued async signals. True when the instruction
+    /// is to be fetched again. Out of line to keep the dispatch loop small.
+    #[cold]
+    #[inline(never)]
+    fn vm_interrupt(
+        &mut self,
+        top: usize,
+        pc: usize,
+        proto: &Rc<FunctionProto>,
+    ) -> Result<bool, Thrown> {
+        // max_execution_time ran out (zend_timeout): the fatal error comes
+        // where a jump lands or a user function starts.
+        if builtins::zend::timeout::timed_out() {
+            if !proto.is_internal() {
+                let landed = match self.timeout_prev {
+                    Some((d, p)) if d == top => pc != p + 1,
+                    Some((d, _)) => d < top && pc == 0,
+                    None => false,
+                };
+                let mut at_check = self.timeout_wait == Some((top, pc));
+                if landed && !at_check {
+                    match loop_body_start(&proto.code, pc) {
+                        Some(body) if body != pc => {
+                            self.timeout_wait = Some((top, body));
+                        }
+                        _ => at_check = true,
+                    }
+                }
+                if at_check {
+                    self.timeout_wait = None;
+                    if let Some(msg) = builtins::zend::timeout::take_timed_out() {
+                        self.timeout_prev = None;
+                        // Located at this instruction (pc + 1, as when it
+                        // runs).
+                        self.stack[top].pc = pc + 1;
+                        return Err(self.fatal_error_here(1, msg.as_bytes()));
+                    }
+                }
+                self.timeout_prev = Some((top, pc));
+            }
+            return Ok(false);
+        }
+        // pcntl async signals (php's `EG(vm_interrupt)` check): a throwing
+        // handler raises at this (not yet run) instruction; otherwise the
+        // instruction then runs as usual.
+        self.dispatch_interrupt()?;
+        self.stack[top].pc = pc;
+        Ok(true)
+    }
+
     pub(crate) fn run_frames(&mut self) -> Result<Value, Thrown> {
         // The running frame and its proto, taken again only when an
         // instruction pushed or popped a frame (a call, a return): within
@@ -683,45 +735,10 @@ impl Vm {
 
             // pcntl async signals (php's `EG(vm_interrupt)` check): run queued
             // PHP signal handlers before the next instruction.
-            if self.interrupt.load(std::sync::atomic::Ordering::Relaxed) {
-                // max_execution_time ran out (zend_timeout): the fatal error
-                // comes where a jump lands or a user function starts.
-                if builtins::zend::timeout::timed_out() {
-                    if !proto.is_internal() {
-                        let landed = match self.timeout_prev {
-                            Some((d, p)) if d == top => pc != p + 1,
-                            Some((d, _)) => d < top && pc == 0,
-                            None => false,
-                        };
-                        let mut at_check = self.timeout_wait == Some((top, pc));
-                        if landed && !at_check {
-                            match loop_body_start(&proto.code, pc) {
-                                Some(body) if body != pc => {
-                                    self.timeout_wait = Some((top, body));
-                                }
-                                _ => at_check = true,
-                            }
-                        }
-                        if at_check {
-                            self.timeout_wait = None;
-                            if let Some(msg) = builtins::zend::timeout::take_timed_out() {
-                                self.timeout_prev = None;
-                                // Located at this instruction (pc + 1, as
-                                // when it runs).
-                                self.stack[top].pc = pc + 1;
-                                return Err(self.fatal_error_here(1, msg.as_bytes()));
-                            }
-                        }
-                        self.timeout_prev = Some((top, pc));
-                    }
-                } else {
-                    // A throwing handler raises at this (not yet run)
-                    // instruction; otherwise the instruction then runs as
-                    // usual.
-                    self.dispatch_interrupt()?;
-                    self.stack[top].pc = pc;
-                    continue;
-                }
+            if self.interrupt.load(std::sync::atomic::Ordering::Relaxed)
+                && self.vm_interrupt(top, pc, &proto)?
+            {
+                continue;
             }
 
             match instr {

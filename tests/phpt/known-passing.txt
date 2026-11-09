@@ -10878,6 +10878,7 @@ ext/session/tests/session_name_variation1.phpt
 ext/session/tests/session_name_variation2.phpt
 ext/session/tests/session_name_variation_null_byte.phpt
 ext/session/tests/session_regenerate_id_basic.phpt
+ext/session/tests/session_regenerate_id_cookie.phpt
 ext/session/tests/session_regenerate_id_fastshutdown.phpt
 ext/session/tests/session_regenerate_id_variation1.phpt
 ext/session/tests/session_reset_basic.phpt
@@ -11755,6 +11756,7 @@ ext/spl/tests/iterator_003.phpt
 ext/spl/tests/iterator_004.phpt
 ext/spl/tests/iterator_005.phpt
 ext/spl/tests/iterator_006.phpt
+ext/spl/tests/iterator_008.phpt
 ext/spl/tests/iterator_009.phpt
 ext/spl/tests/iterator_010.phpt
 ext/spl/tests/iterator_011.phpt
@@ -15947,6 +15949,7 @@ sapi/cli/tests/gh12363.phpt
 sapi/cli/tests/gh13113.phpt
 sapi/cli/tests/gh16137.phpt
 sapi/cli/tests/gh18582.phpt
+sapi/cli/tests/gh23425.phpt
 sapi/cli/tests/ghsa-4w77-75f9-2c8w.phpt
 sapi/cli/tests/oom_request_parsing_next_request.phpt
 sapi/cli/tests/oom_shutdown_function_next_request.phpt

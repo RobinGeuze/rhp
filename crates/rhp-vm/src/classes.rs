@@ -21,7 +21,7 @@ use rhp_values::{
 use rhp_builtins::zend::object_handlers::{CloneObj, ObjectHandlers};
 
 use crate::calls::Args;
-use crate::{DeclSlot, Frame, UnitFn, UnitId, Vm};
+use crate::{DeclSlot, UnitFn, UnitId, Vm};
 
 /// A linked class's method table.
 pub type MethodTable = IndexMap<Vec<u8>, ResolvedMethod, FxBuildHasher>;
@@ -339,10 +339,14 @@ pub(crate) fn resolve_prop_at(
     name: &PhpStr,
 ) -> (PropRes, usize) {
     let entry = &classes[cls as usize];
-    if let Some(at) = entry.cache.prop(name, scope) {
-        if let Some((k, pe)) = entry.props.get_index(at) {
+    if let Some(hit) = entry.cache.prop(name, scope) {
+        if let Some((k, pe)) = entry.props.get_index(hit.at) {
+            if hit.same_key {
+                return (PropRes::Slot(k.clone()), hit.at);
+            }
             if pe.name == *name {
-                return (PropRes::Slot(k.clone()), at);
+                entry.cache.refresh_prop(name, scope);
+                return (PropRes::Slot(k.clone()), hit.at);
             }
         }
     }
@@ -2419,24 +2423,26 @@ impl Vm {
     /// VM's class-name cache (php's FETCH_CLASS run-time cache slot).
     #[inline]
     pub(crate) fn resolve_class_by_str(&self, name: &PhpStr) -> Result<ClassId, Thrown> {
-        if let Some(id) = self.class_names.get(name) {
-            // A removed class's id may belong to another class now.
+        if let Some(hit) = self.class_names.get(name) {
+            let id = hit.at as ClassId;
+            // The string that last found it (removing a class empties the
+            // cache), else a hit whose class has the name.
+            if hit.same_key {
+                return Ok(id);
+            }
             if self
                 .classes
                 .get(id as usize)
                 .is_some_and(|c| c.name.as_bytes().eq_ignore_ascii_case(name.as_bytes()))
             {
+                self.class_names.refresh(name);
                 return Ok(id);
             }
         }
+        // Cached whatever the class is named (an alias, a leading `\\`):
+        // a hit by another string with the same hash is checked above.
         let id = self.resolve_class_by_name(name.as_bytes())?;
-        if self.classes[id as usize]
-            .name
-            .as_bytes()
-            .eq_ignore_ascii_case(name.as_bytes())
-        {
-            self.class_names.put(name, id);
-        }
+        self.class_names.put(name, id);
         Ok(id)
     }
 
@@ -2638,15 +2644,19 @@ impl Vm {
         name: &PhpStr,
     ) -> Option<ResolvedMethod> {
         let e = &self.classes[class_id as usize];
-        if let Some(i) = e.cache.method(name) {
-            if let Some((k, m)) = e.methods.get_index(i) {
+        if let Some(hit) = e.cache.method(name) {
+            if let Some((k, m)) = e.methods.get_index(hit.at) {
+                if hit.same_key {
+                    return Some(m.clone());
+                }
                 if k.eq_ignore_ascii_case(name.as_bytes()) {
+                    e.cache.refresh_method(name);
                     return Some(m.clone());
                 }
             }
         }
         let (i, _, m) = with_lc(name.as_bytes(), |k| e.methods.get_full(k))?;
-        e.cache.put_method(name, i);
+        e.cache.put_method(name, i, e.methods.len());
         Some(m.clone())
     }
 
@@ -2662,9 +2672,6 @@ impl Vm {
         base: Reg,
         argc: u16,
     ) -> Result<(), Thrown> {
-        if self.stack.len() >= self.max_depth {
-            return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
-        }
         let args = Args::Window { top, base, argc };
         self.push_method_frame(method, this, called_class, args, dst)
     }
@@ -2678,11 +2685,8 @@ impl Vm {
         args: Args<'_>,
         dst: Reg,
     ) -> Result<(), Thrown> {
-        if self.stack.len() >= self.max_depth {
-            return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
-        }
         let callee = method.proto.clone();
-        let mut frame = Frame::new(callee.clone(), method.unit, dst);
+        let mut frame = self.new_frame(callee.clone(), method.unit, dst);
         if let (Some(this_cv), Some(obj)) = (callee.this_cv, this) {
             frame.regs[this_cv as usize] = Value::Object(obj);
         }

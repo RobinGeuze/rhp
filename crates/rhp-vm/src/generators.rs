@@ -422,9 +422,6 @@ impl Vm {
     /// Run generator `id`'s frame (resumed through leaf `orig`) until it
     /// yields, delegates, returns or an exception leaves it.
     fn gen_run(&mut self, id: u32, orig: u32) -> Result<Step, Thrown> {
-        if self.stack.len() >= self.max_depth {
-            return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
-        }
         rhp_builtins::zend::call_stack::check()?;
         let g = self.gen(id);
         let Some(mut frame) = g.frame.take() else {
@@ -1220,7 +1217,7 @@ impl Frame {
     pub(crate) fn gc_children(&self, out: &mut Vec<Value>) {
         out.extend(self.regs.iter().map(Value::copy_slot));
         out.extend(self.extra_args.iter().cloned());
-        out.extend(self.dyn_vars.values().map(|r| Value::Ref(r.clone())));
+        out.extend(self.dyn_vars.iter().map(|(_, r)| Value::Ref(r.clone())));
         if let Some(c) = &self.closure {
             out.push(Value::Closure(c.clone()));
         }

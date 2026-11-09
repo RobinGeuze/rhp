@@ -1964,11 +1964,7 @@ impl Vm {
                 Err(cell) => cell,
             });
         }
-        Err(self.stack[top]
-            .dyn_vars
-            .entry(name.to_vec())
-            .or_insert_with(|| Rc::new(RefCell::new(Value::Undef)))
-            .clone())
+        Err(self.stack[top].dyn_vars.cell(name))
     }
 
     /// An ArrayAccess element fetched for writing below it (php's

@@ -649,16 +649,20 @@ protos. Each linked `ClassEntry` has a small table for
 property lookups, keyed by the name's hash (`PhpStr` keeps it) and the
 calling scope, one for static properties and one for method lookups by
 name; the VM has one for class names. An entry holds only an index (the
-property slot, the static or method table entry, the class id) and a
-hit is confirmed against the name the class's own table stores, so
-nothing in it can outlive what it names and memory_get_usage() does not
-see it (the tables are allocated uncounted). The tables are two-way (a
-key whose slot is taken goes to the neighbouring slot), so a property
-read from inside and outside its class in one loop can't evict itself on
-every pass when the two keys share a slot.
-Property entries name a scope class, so they are flushed when a class
-whose linking failed is removed and its id is reused; class-name entries
-check the class's name on every hit. `resolve_prop_at` and
+property slot, the static or method table entry, the class id) and the
+address of the name string that last hit it. A lookup with that same
+string (the same call site, whose proto holds the name) is taken as is,
+like php's per-opline slot; another string with the same hash is
+confirmed against the name the class's own table stores, and then becomes
+the entry's string. So nothing in it can outlive what it names, and
+memory_get_usage() does not see it (the tables are allocated uncounted).
+The tables are two-way (a key whose slot is taken goes to the
+neighbouring slot), so a property read from inside and outside its class
+in one loop can't evict itself on every pass when the two keys share a
+slot. A class's method table has room for all its methods (twice their
+number, up to 1024 slots), as php caches per call site.
+Property and class-name entries name other classes, so they are flushed
+when a class whose linking failed is removed and its id is reused. `resolve_prop_at` and
 `lookup_method_str` go through them, so every caller does.
 
 On a hit the property instructions take a direct slot path
@@ -773,18 +777,17 @@ the scope's classes and an instance method of `$this`'s class binds
 ```rust
 pub struct Vm {
     out: Vec<u8>,                               // the single output sink; SAPI flushes it
-    stack: Vec<Frame>,                          // explicit PHP call stack (§3.3), NOT native recursion
+    stack: FrameStack,                          // explicit PHP call stack (§3.3), NOT native recursion
     functions: Vec<Rc<FunctionProto>>,          // FnIdx-indexed, installed from the Program
     fn_names: HashMap<Vec<u8>, FnIdx>,          // lowercase name → FnIdx (case-insensitive)
     constants: HashMap<Vec<u8>, Value>,         // engine+user constants, seeded from builtins::constants()
     // classes: Vec<ClassEntry>, class_ids: HashMap<...>   — phase 7
-    max_depth: usize,                           // recursion guard → catchable Error, not a native overflow
 }
 
 impl Host for Vm { fn write_out(&mut self, bytes: &[u8]) { self.out.extend_from_slice(bytes); } }
 
 impl Vm {
-    pub fn new() -> Self { /* seed constants from builtins::constants(); max_depth = 1<<16 */ }
+    pub fn new() -> Self { /* seed constants from builtins::constants() */ }
     pub fn output(&self) -> &[u8] { &self.out }
 
     /// Execute a compiled program; returns the process exit code.
@@ -816,9 +819,18 @@ pub struct Frame {
 
 ### 3.3 Explicit call stack + dispatch skeleton
 
-Explicit `Vec<Frame>` (not native recursion): deep PHP recursion raises a
-catchable `Error` via the `max_depth` length check instead of aborting the
-process; a suspended generator (phase, reserved) is just a detached `Frame`; and
+Explicit frame stack (not native recursion): deep PHP recursion takes no
+machine stack. Frames count toward `memory_limit` as php's VM stack pages
+do (`frame_stack.rs`, zend_vm_stack_extend): a frame takes
+`(5 + registers + extra args)` zvals of a 256 KiB page, a frame that does
+not fit charges a new page, and its return gives the page back. So
+runaway recursion ends in php's "Allowed memory size ... exhausted (tried
+to allocate 2097152 bytes)", and there is no depth limit. The `Vec<Frame>`
+and the register files are not counted themselves; a returning frame's
+register file goes to a pool (`RegPool`) the next call takes it from, so
+a call does no malloc or free. Re-entrant calls (callbacks, magic methods)
+do take machine stack: php 8.5's stack guard (`zend.max_allowed_stack_size`,
+`call_stack::check`) raises its Error before it runs out. A suspended generator (phase, reserved) is just a detached `Frame`; and
 it is the natural interop boundary for JIT-ted frames. A `CallUser` **pushes** a
 frame and lets the single top-level loop continue; `Ret` pops. The only native
 recursion is the outer driver restarting the loop after an exception unwinds past
@@ -1264,8 +1276,9 @@ unaffected); 5–10 build the VM path and wire the runner.
    `fmt::float_echo` (precision-14); `var_dump`/`var_export` use
    `fmt::float_serialize` (−1). The compiler routes to the right one; the opcode
    does not choose.
-8. **Stack-depth guard, not native overflow.** Check `stack.len() < max_depth` on
-   every `CallUser` → catchable `Error`, never a Rust stack abort.
+8. **No native overflow.** User calls push frames (counted toward
+   `memory_limit` as VM stack pages); re-entrant calls check the machine
+   stack (`call_stack::check`) → catchable `Error`, never a Rust stack abort.
 9. **Keep it JIT-lowerable.** Fixed-shape `Copy` operands, instruction-index PCs,
    side-table constants/caches, exception table (not `?`-only control flow), and
    one explicit terminator per basic block. Never bury an opcode's semantics in

@@ -102,7 +102,7 @@ class DOMDocumentFragment extends DOMNode implements DOMParentNode {
 class DOMNodeList implements IteratorAggregate, Countable, ArrayAccess {
     public int $length { get => __dom_prop(0, $this, 'length'); set(mixed $value) { __dom_prop(1, $this, 'length', $value); } }
     public function count(): int { return __dom('DOMNodeList::count', $this); }
-    public function getIterator(): Iterator { $i = 0; $c = null; while (($p = __dom_iter($this, $c, $i)) !== null) { $c = $p[1]; yield $p[0] => $c; $i++; } }
+    public function getIterator(): Iterator { return __dom('DOMNodeList::getIterator', $this); }
     public function item(int $index) { return __dom('DOMNodeList::item', $this, $index); }
     public function offsetGet($offset): mixed { return __dom('DOMNodeList::offsetGet', $this, $offset); }
     public function offsetExists($offset): bool { return __dom('DOMNodeList::offsetExists', $this, $offset); }
@@ -116,7 +116,7 @@ class DOMNamedNodeMap implements IteratorAggregate, Countable, ArrayAccess {
     public function getNamedItemNS(?string $namespace, string $localName): ?DOMNode { return __dom('DOMNamedNodeMap::getNamedItemNS', $this, $namespace, $localName); }
     public function item(int $index): ?DOMNode { return __dom('DOMNamedNodeMap::item', $this, $index); }
     public function count(): int { return __dom('DOMNamedNodeMap::count', $this); }
-    public function getIterator(): Iterator { $i = 0; $c = null; while (($p = __dom_iter($this, $c, $i)) !== null) { $c = $p[1]; yield $p[0] => $c; $i++; } }
+    public function getIterator(): Iterator { return __dom('DOMNamedNodeMap::getIterator', $this); }
     public function offsetGet($offset): mixed { return __dom('DOMNamedNodeMap::offsetGet', $this, $offset); }
     public function offsetExists($offset): bool { return __dom('DOMNamedNodeMap::offsetExists', $this, $offset); }
     public function offsetSet($offset, $value): void { throw new Error('Cannot use object of type ' . static::class . ' as array'); }

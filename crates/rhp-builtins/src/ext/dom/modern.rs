@@ -364,17 +364,26 @@ fn write_file(cx: &mut Cx, file: &[u8], data: &[u8]) -> Result<Option<i64>, Thro
 }
 
 /// Open `path` for reading through php's streams and read it all; the
-/// data and, for a plain file, the path opened.
-type FileData = (Vec<u8>, Option<Vec<u8>>);
+/// data, for a plain file the path opened, and the charset its transport
+/// gives (php_libxml_sniff_charset_from_stream).
+type FileData = (Vec<u8>, Option<Vec<u8>>, Option<Vec<u8>>);
 
 fn read_file(cx: &mut Cx, path: &[u8]) -> Result<Option<FileData>, Thrown> {
+    // php_stream_open_wrapper_ex refuses an empty path.
+    if path.is_empty() {
+        return Err(Thrown::error("ValueError", "Path must not be empty"));
+    }
     let fname = cx.fname();
     let ctx = crate::ext::libxml::stream_context().unwrap_or(Value::Null);
-    let Some(h) =
+    let opened = if crate::ext::standard::file::builtin_http(cx.host, path) {
+        crate::ext::standard::http_fopen_wrapper::open(cx.host, &fname, path, b"rb", &ctx, false)?
+    } else {
         crate::ext::standard::file::open_stream(cx.host, &fname, path, b"rb", &ctx, false)?
-    else {
+    };
+    let Some(h) = opened else {
         return Ok(None);
     };
+    let charset = crate::ext::libxml::mime_sniff::charset_from_stream(cx.host, &h);
     let mut data = Vec::new();
     while let Some(chunk) = cx.host.stream_read(&h, 4096) {
         if chunk.is_empty() {
@@ -397,7 +406,7 @@ fn read_file(cx: &mut Cx, path: &[u8]) -> Result<Option<FileData>, Thrown> {
     } else {
         None
     };
-    Ok(Some((data, opened)))
+    Ok(Some((data, opened, charset)))
 }
 
 /// Dom\XMLDocument::saveXmlFile and Dom\HTMLDocument::saveXmlFile
@@ -639,12 +648,17 @@ pub fn html_create_from_file(cx: &mut Cx, _: &Value, args: &[Value]) -> Result<V
             ));
         }
     }
-    let Some((data, opened)) = read_file(cx, &path)? else {
+    let Some((data, opened, charset)) = read_file(cx, &path)? else {
         return Err(Thrown::error(
             "Exception",
             format!("Cannot open file '{}'", String::from_utf8_lossy(&path)),
         ));
     };
+    // A charset from the transport (an http Content-Type) when no
+    // encoding was given; an unknown one is ignored.
+    if let (None, Some(cs)) = (&override_encoding, &charset) {
+        p.set_encoding(None, cs);
+    }
     for chunk in data.chunks(4096) {
         if !p.parse_file_chunk(chunk) {
             return Err(dom_err(cx, INVALID_STATE_ERR));
@@ -674,7 +688,7 @@ pub fn html_create_from_file(cx: &mut Cx, _: &Value, args: &[Value]) -> Result<V
 /// (dom_common_save).
 fn html_save(d: &DomObject, docp: *mut XmlDoc, node: *mut XmlNode) -> Vec<u8> {
     rhp_csrc::lexbor::setup();
-    let mut utf8 = Vec::new();
+    let mut utf8 = super::html5_serializer::Out::default();
     super::html5_serializer::serialize_outer(&mut utf8, private(d).map(|p| &*p), node);
     let enc = unsafe { b((*docp).encoding) }.to_vec();
     super::html5::encode_output(&enc, &utf8)
@@ -710,12 +724,39 @@ pub fn save_html_file(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value
     if file.is_empty() {
         return Err(value_error(cx, 1, "filename", "must not be empty"));
     }
-    let (intern, docn) = get_obj(cx, this)?;
-    let data = html_save(&intern, docn.cast(), docn);
-    Ok(match write_file(cx, file, &data)? {
-        Some(n) => Value::Int(n),
-        None => Value::Bool(false),
-    })
+    let fname = cx.fname();
+    let ctx = crate::ext::libxml::stream_context().unwrap_or(Value::Null);
+    let Some(stream) =
+        crate::ext::standard::file::open_stream(cx.host, &fname, file, b"wb", &ctx, false)?
+    else {
+        return Ok(Value::Bool(false));
+    };
+    let (intern, docn) = match get_obj(cx, this) {
+        Ok(v) => v,
+        Err(e) => {
+            cx.host.stream_close(&stream);
+            return Err(e);
+        }
+    };
+    // dom_common_save: each of the serializer's writes goes to the stream
+    // as it is made (encoded), and a failed write stops the save.
+    rhp_csrc::lexbor::setup();
+    let mut utf8 = super::html5_serializer::Out::default();
+    super::html5_serializer::serialize_outer(&mut utf8, private(&intern).map(|p| &*p), docn);
+    let enc = unsafe { b((*docn.cast::<XmlDoc>()).encoding) }.to_vec();
+    for piece in super::html5::encode_output_pieces(&enc, &utf8) {
+        // php_stream_write of nothing writes nothing.
+        if piece.is_empty() {
+            continue;
+        }
+        if cx.host.stream_write(&stream, &piece).is_none() {
+            cx.host.stream_close(&stream);
+            return Ok(Value::Bool(false));
+        }
+    }
+    let bytes = cx.host.stream_tell(&stream).unwrap_or(0);
+    cx.host.stream_close(&stream);
+    Ok(Value::Int(bytes))
 }
 
 // ---- Dom\Implementation ----

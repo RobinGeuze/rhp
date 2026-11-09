@@ -10,6 +10,7 @@
 
 pub mod ffi;
 pub mod io;
+pub mod mime_sniff;
 pub(crate) mod node;
 pub mod sys;
 

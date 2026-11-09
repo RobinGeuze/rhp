@@ -4191,9 +4191,10 @@ static int rhp_html5_sink_write(void *ctx, const char *buf, size_t len)
 	return 0;
 }
 
-/* dom_common_save's encoding half: `utf8` (the serializer's output) in the
- * document's encoding, written to `sink`. */
-void rhp_html5_encode_output(const char *encoding, const char *utf8, size_t len, rhp_html5_sink sink, void *sink_ctx)
+/* dom_common_save's encoding half: `utf8` (the serializer's output, one
+ * write_string call ending at each of `ends`) in the document's encoding,
+ * written to `sink` one write_output at a time. */
+void rhp_html5_encode_output(const char *encoding, const char *utf8, const size_t *ends, size_t nends, rhp_html5_sink sink, void *sink_ctx)
 {
 	void *pair[2] = { (void *) sink, sink_ctx };
 	const lxb_encoding_data_t *decoding_data = lxb_encoding_data(LXB_ENCODING_UTF_8);
@@ -4224,10 +4225,14 @@ void rhp_html5_encode_output(const char *encoding, const char *utf8, size_t len,
 	output_ctx.output_data = pair;
 	output_ctx.write_output = rhp_html5_sink_write;
 
-	if (encoding_data->encoding == LXB_ENCODING_UTF_8) {
-		dom_saveHTML_write_string_len_utf8_output(&output_ctx, utf8, len);
-	} else {
-		dom_saveHTML_write_string_len(&output_ctx, utf8, len);
+	size_t start = 0;
+	for (size_t i = 0; i < nends; i++) {
+		if (encoding_data->encoding == LXB_ENCODING_UTF_8) {
+			dom_saveHTML_write_string_len_utf8_output(&output_ctx, utf8 + start, ends[i] - start);
+		} else {
+			dom_saveHTML_write_string_len(&output_ctx, utf8 + start, ends[i] - start);
+		}
+		start = ends[i];
 	}
 
 	(void) lxb_encoding_decode_finish(&decode);

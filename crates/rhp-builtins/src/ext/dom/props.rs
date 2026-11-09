@@ -2098,9 +2098,9 @@ fn fragment_serialize(
     let private = super::modern::private(d).map(|p| &*p);
     unsafe {
         if (*(*node).doc).type_ == sys::XML_HTML_DOCUMENT_NODE {
-            let mut out = Vec::new();
+            let mut out = super::html5_serializer::Out::default();
             super::html5_serializer::serialize(&mut out, private, node);
-            return some(Value::str(out));
+            return some(Value::str(out.buf));
         }
     }
     match super::xml_serializer::fragment_to_str(node, private)? {

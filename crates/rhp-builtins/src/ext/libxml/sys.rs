@@ -356,6 +356,7 @@ unsafe extern "C" {
     pub fn xmlOutputBufferCreateFilenameDefault(
         f: Option<xmlOutputBufferCreateFilenameFunc>,
     ) -> Option<xmlOutputBufferCreateFilenameFunc>;
+    pub fn xmlParseCharEncoding(name: *const c_char) -> c_int;
     pub fn xmlParserInputBufferCreateIO(
         ioread: Option<xmlInputReadCallback>,
         ioclose: Option<xmlInputCloseCallback>,

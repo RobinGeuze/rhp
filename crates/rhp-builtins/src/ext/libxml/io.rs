@@ -187,8 +187,16 @@ pub unsafe extern "C" fn input_buffer_create(
         let Some(res) = open_read(unsafe { cstr(uri) }) else {
             return ptr::null_mut();
         };
-        // php sniffs a charset from http response headers here; rhp's
-        // streams do not expose them yet.
+        // An external transport's encoding information (http headers).
+        let mut enc = enc;
+        if enc == 0 {
+            if let Some(cs) =
+                call_host(|h| Ok(super::mime_sniff::charset_from_stream(h, &res))).flatten()
+            {
+                let cs = std::ffi::CString::new(cs).unwrap_or_default();
+                enc = unsafe { sys::xmlParseCharEncoding(cs.as_ptr()) }.max(0);
+            }
+        }
         let ctx = Io { res }.into_raw();
         let ret =
             unsafe { sys::xmlParserInputBufferCreateIO(Some(io_read), Some(io_close), ctx, enc) };

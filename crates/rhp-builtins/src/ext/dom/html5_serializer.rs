@@ -6,15 +6,30 @@ use super::nscompat::{self, DomPrivate};
 use super::util::b;
 use crate::ext::libxml::sys::{self, XmlDtd, XmlNode};
 
-fn escape(out: &mut Vec<u8>, content: &[u8], attribute_mode: bool) {
+/// The serializer's output, with where each of php's `write_string`
+/// calls ended (saveHtmlFile writes them to the stream one by one).
+#[derive(Default)]
+pub struct Out {
+    pub buf: Vec<u8>,
+    pub marks: Vec<usize>,
+}
+
+impl Out {
+    fn put(&mut self, s: &[u8]) {
+        self.buf.extend_from_slice(s);
+        self.marks.push(self.buf.len());
+    }
+}
+
+fn escape(out: &mut Out, content: &[u8], attribute_mode: bool) {
     let mut i = 0;
     let mut last = 0;
     while i < content.len() {
         let rep: Option<&[u8]> = match content[i] {
             b'&' => Some(b"&amp;"),
             0xC2 if content.get(i + 1) == Some(&0xA0) => {
-                out.extend_from_slice(&content[last..i]);
-                out.extend_from_slice(b"&nbsp;");
+                out.put(&content[last..i]);
+                out.put(b"&nbsp;");
                 i += 2;
                 last = i;
                 continue;
@@ -25,13 +40,13 @@ fn escape(out: &mut Vec<u8>, content: &[u8], attribute_mode: bool) {
             _ => None,
         };
         if let Some(r) = rep {
-            out.extend_from_slice(&content[last..i]);
-            out.extend_from_slice(r);
+            out.put(&content[last..i]);
+            out.put(r);
             last = i + 1;
         }
         i += 1;
     }
-    out.extend_from_slice(&content[last..]);
+    out.put(&content[last..]);
 }
 
 const RAW_TEXT_PARENTS: &[&[u8]] = &[
@@ -44,7 +59,7 @@ const RAW_TEXT_PARENTS: &[&[u8]] = &[
     b"plaintext",
 ];
 
-fn text_node(out: &mut Vec<u8>, node: *const XmlNode) {
+fn text_node(out: &mut Out, node: *const XmlNode) {
     unsafe {
         if (*node).content.is_null() {
             return;
@@ -56,14 +71,14 @@ fn text_node(out: &mut Vec<u8>, node: *const XmlNode) {
             && nscompat::ns_is_fast(parent, &nscompat::HTML)
             && RAW_TEXT_PARENTS.contains(&b((*parent).name))
         {
-            out.extend_from_slice(content);
+            out.put(content);
             return;
         }
         escape(out, content, false);
     }
 }
 
-fn tag_name(out: &mut Vec<u8>, node: *const XmlNode) {
+fn tag_name(out: &mut Out, node: *const XmlNode) {
     unsafe {
         let ns = (*node).ns;
         if !ns.is_null()
@@ -72,45 +87,45 @@ fn tag_name(out: &mut Vec<u8>, node: *const XmlNode) {
                 || nscompat::ns_is_fast(node, &nscompat::MATHML)
                 || nscompat::ns_is_fast(node, &nscompat::SVG))
         {
-            out.extend_from_slice(b((*ns).prefix));
-            out.push(b':');
+            out.put(b((*ns).prefix));
+            out.put(b":");
         }
-        out.extend_from_slice(b((*node).name));
+        out.put(b((*node).name));
     }
 }
 
-fn element_start(out: &mut Vec<u8>, node: *const XmlNode) {
-    out.push(b'<');
+fn element_start(out: &mut Out, node: *const XmlNode) {
+    out.put(b"<");
     tag_name(out, node);
     unsafe {
         let mut attr = (*node).properties;
         while !attr.is_null() {
-            out.push(b' ');
+            out.put(b" ");
             let name = b((*attr).name);
             let an = attr as *const XmlNode;
             if (*attr).ns.is_null() {
-                out.extend_from_slice(name);
+                out.put(name);
             } else if nscompat::ns_is_fast(an, &nscompat::XML) {
-                out.extend_from_slice(b"xml:");
-                out.extend_from_slice(name);
+                out.put(b"xml:");
+                out.put(name);
             } else if nscompat::ns_is_fast(an, &nscompat::XMLNS) {
                 if name == b"xmlns" {
-                    out.extend_from_slice(b"xmlns");
+                    out.put(b"xmlns");
                 } else {
-                    out.extend_from_slice(b"xmlns:");
-                    out.extend_from_slice(name);
+                    out.put(b"xmlns:");
+                    out.put(name);
                 }
             } else if nscompat::ns_is_fast(an, &nscompat::XLINK) {
-                out.extend_from_slice(b"xlink:");
-                out.extend_from_slice(name);
+                out.put(b"xlink:");
+                out.put(name);
             } else if (*(*attr).ns).prefix.is_null() {
-                out.extend_from_slice(name);
+                out.put(name);
             } else {
-                out.extend_from_slice(b((*(*attr).ns).prefix));
-                out.push(b':');
-                out.extend_from_slice(name);
+                out.put(b((*(*attr).ns).prefix));
+                out.put(b":");
+                out.put(name);
             }
-            out.extend_from_slice(b"=\"");
+            out.put(b"=\"");
             let mut child = (*attr).children;
             while !child.is_null() {
                 if (*child).type_ == sys::XML_TEXT_NODE {
@@ -118,17 +133,17 @@ fn element_start(out: &mut Vec<u8>, node: *const XmlNode) {
                         escape(out, b((*child).content), true);
                     }
                 } else if (*child).type_ == sys::XML_ENTITY_REF_NODE {
-                    out.push(b'&');
+                    out.put(b"&");
                     escape(out, b((*child).name), true);
-                    out.push(b';');
+                    out.put(b";");
                 }
                 child = (*child).next;
             }
-            out.push(b'"');
+            out.put(b"\"");
             attr = (*attr).next;
         }
     }
-    out.push(b'>');
+    out.put(b">");
 }
 
 const VOID: &[&[u8]] = &[
@@ -157,11 +172,11 @@ pub fn serializes_as_void(node: *const XmlNode) -> bool {
     nscompat::ns_is_fast(node, &nscompat::HTML) && VOID.contains(&unsafe { b((*node).name) })
 }
 
-fn element_end(out: &mut Vec<u8>, node: *const XmlNode) {
+fn element_end(out: &mut Out, node: *const XmlNode) {
     if !serializes_as_void(node) {
-        out.extend_from_slice(b"</");
+        out.put(b"</");
         tag_name(out, node);
-        out.push(b'>');
+        out.put(b">");
     }
 }
 
@@ -174,7 +189,7 @@ fn template_content(p: Option<&DomPrivate>, node: *const XmlNode) -> *mut XmlNod
 
 /// dom_html5_serialize_node
 fn serialize_node(
-    out: &mut Vec<u8>,
+    out: &mut Out,
     p: Option<&DomPrivate>,
     mut node: *const XmlNode,
     bound: *const XmlNode,
@@ -183,26 +198,26 @@ fn serialize_node(
         while !node.is_null() {
             match (*node).type_ {
                 sys::XML_DTD_NODE => {
-                    out.extend_from_slice(b"<!DOCTYPE ");
-                    out.extend_from_slice(b((*(node as *const XmlDtd)).name));
-                    out.push(b'>');
+                    out.put(b"<!DOCTYPE ");
+                    out.put(b((*(node as *const XmlDtd)).name));
+                    out.put(b">");
                 }
                 sys::XML_CDATA_SECTION_NODE | sys::XML_TEXT_NODE => text_node(out, node),
                 sys::XML_PI_NODE => {
-                    out.extend_from_slice(b"<?");
-                    out.extend_from_slice(b((*node).name));
-                    out.push(b' ');
+                    out.put(b"<?");
+                    out.put(b((*node).name));
+                    out.put(b" ");
                     if !(*node).content.is_null() {
-                        out.extend_from_slice(b((*node).content));
+                        out.put(b((*node).content));
                     }
-                    out.push(b'>');
+                    out.put(b">");
                 }
                 sys::XML_COMMENT_NODE => {
-                    out.extend_from_slice(b"<!--");
+                    out.put(b"<!--");
                     if !(*node).content.is_null() {
-                        out.extend_from_slice(b((*node).content));
+                        out.put(b((*node).content));
                     }
-                    out.extend_from_slice(b"-->");
+                    out.put(b"-->");
                 }
                 sys::XML_ELEMENT_NODE => {
                     element_start(out, node);
@@ -227,9 +242,9 @@ fn serialize_node(
                     }
                 }
                 sys::XML_ENTITY_REF_NODE => {
-                    out.push(b'&');
-                    out.extend_from_slice(b((*node).name));
-                    out.push(b';');
+                    out.put(b"&");
+                    out.put(b((*node).name));
+                    out.put(b";");
                 }
                 _ => {}
             }
@@ -255,7 +270,7 @@ fn serialize_node(
 }
 
 /// dom_html5_serialize: the node's children.
-pub fn serialize(out: &mut Vec<u8>, p: Option<&DomPrivate>, node: *const XmlNode) {
+pub fn serialize(out: &mut Out, p: Option<&DomPrivate>, node: *const XmlNode) {
     unsafe {
         let t = (*node).type_;
         if !matches!(
@@ -279,7 +294,7 @@ pub fn serialize(out: &mut Vec<u8>, p: Option<&DomPrivate>, node: *const XmlNode
 }
 
 /// dom_html5_serialize_outer
-pub fn serialize_outer(out: &mut Vec<u8>, p: Option<&DomPrivate>, node: *mut XmlNode) {
+pub fn serialize_outer(out: &mut Out, p: Option<&DomPrivate>, node: *mut XmlNode) {
     unsafe {
         let t = (*node).type_;
         if matches!(

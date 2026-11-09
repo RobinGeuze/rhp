@@ -41,9 +41,12 @@ pub trait Sapi {
     fn name(&self) -> &str;
 
     /// The SAPI's ini defaults (`sapi_module.ini_defaults`): applied over the
-    /// built-in defaults, below `-d` settings and `ini_set`.
+    /// built-in defaults, below `-d` settings and `ini_set`. rhp's built-in
+    /// table holds php-cli's values; the default here restores php's own
+    /// ([`WEB_INI_DEFAULTS`]), so an embedding server runs with what php
+    /// gives every SAPI but the CLI.
     fn ini_defaults(&self) -> Vec<(&'static str, &'static str)> {
-        Vec::new()
+        WEB_INI_DEFAULTS.to_vec()
     }
 
     /// The SAPI's own ini settings (`sapi_module.ini_entries`, php-cli's
@@ -130,6 +133,22 @@ pub trait Sapi {
     fn additional_functions(&self) -> bool {
         true
     }
+
+    /// An embedding server's SAPI (one rhp has no module for) that wants
+    /// php-fpm's functions, as FrankenPHP has them:
+    /// `fastcgi_finish_request()` (which calls [`Sapi::end_response`]),
+    /// `apache_request_headers()` / `getallheaders()` and
+    /// `apache_response_headers()`.
+    fn server_functions(&self) -> bool {
+        false
+    }
+
+    /// `fastcgi_finish_request()`: every output buffer was flushed and the
+    /// headers were sent; the response is complete, so the server can hand
+    /// it to the client now. The script runs on (kernel.terminate,
+    /// terminable middleware); what it outputs from here on is discarded
+    /// and [`Sapi::flush`] is not called again.
+    fn end_response(&mut self) {}
 
     /// Whether running past the hard memory limit
     /// (`memory_hard_limit_percent`) ends the process, as php does (message
@@ -307,6 +326,15 @@ impl Response {
     }
 }
 
+/// php's built-in defaults (main.c) where php-cli's `HARDCODED_INI`, which
+/// rhp's built-in table holds, differs: what a SAPI other than the CLI
+/// starts from.
+pub const WEB_INI_DEFAULTS: &[(&str, &str)] = &[
+    ("html_errors", "1"),
+    ("implicit_flush", "0"),
+    ("max_execution_time", "30"),
+];
+
 /// php's `SG(request_info)` plus the server variables: what a SAPI hands the
 /// engine about the request. Byte strings throughout (php is binary-safe).
 #[derive(Default)]
@@ -386,6 +414,16 @@ pub fn set_sapi(name: &str, ini_defaults: &[(&str, &str)]) {
         m.clear();
         for (k, v) in ini_defaults {
             m.insert((*k).to_string(), v.as_bytes().to_vec());
+        }
+    });
+}
+
+/// [`Sapi::server_functions`]: a SAPI rhp has no module for gets the
+/// embedding server's (call after [`set_sapi`]).
+pub fn set_server_functions(on: bool) {
+    SAPI_DEF.with(|d| {
+        if on && d.get().is_none() {
+            d.set(Some(crate::sapi::server_def()));
         }
     });
 }

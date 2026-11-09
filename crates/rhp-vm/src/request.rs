@@ -36,6 +36,9 @@ pub(crate) struct SapiState {
     /// What has been read of the request body, and this request's uploads
     /// (deleted when the request ends).
     pub(crate) body: BodyState,
+    /// `fastcgi_finish_request()` completed the response: later output is
+    /// discarded.
+    pub(crate) response_ended: bool,
 }
 
 impl SapiState {
@@ -57,6 +60,7 @@ impl SapiState {
             exit_status: 0,
             startup_failed: false,
             body: BodyState::default(),
+            response_ended: false,
         }
     }
 }
@@ -304,7 +308,7 @@ impl Vm {
         self.sapi_send_headers();
         // sapi_deactivate: the SAPI's last flush (a failure only marks the
         // connection aborted now).
-        if !self.sapi.sapi.flush() {
+        if !self.sapi.response_ended && !self.sapi.sapi.flush() {
             builtins::main::set_connection_aborted();
         }
         // sapi_deactivate_destroy: uploads not moved away are deleted.
@@ -341,6 +345,9 @@ impl Vm {
         if data.is_empty() {
             return;
         }
+        if self.sapi.response_ended {
+            return;
+        }
         if !self.sapi.response.sent {
             self.php_output_header();
         }
@@ -354,12 +361,29 @@ impl Vm {
 
     /// `sapi_flush`: the SAPI's `flush`; a failure is a client abort.
     pub(crate) fn sapi_flush(&mut self) {
+        if self.sapi.response_ended {
+            return;
+        }
         if self.sapi.sapi.flush_sends_headers() && !self.sapi.response.sent {
             self.sapi_send_headers();
         }
         if !self.sapi.sapi.flush() {
             self.handle_aborted_connection();
         }
+    }
+
+    /// fpm's `fastcgi_finish_request` (FrankenPHP's
+    /// `frankenphp_finish_request`): php_output_end_all, php_header, then
+    /// the SAPI completes the response. False when it already did.
+    pub(crate) fn finish_response(&mut self) -> bool {
+        if self.sapi.response_ended {
+            return false;
+        }
+        self.output_end_all();
+        self.sapi_send_headers();
+        self.sapi.sapi.end_response();
+        self.sapi.response_ended = true;
+        true
     }
 
     /// php_handle_aborted_connection: the status becomes aborted, output

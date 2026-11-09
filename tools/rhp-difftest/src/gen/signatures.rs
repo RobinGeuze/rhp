@@ -79,6 +79,8 @@ const SOURCES: &[(&str, &str)] = &[
     ("ext/zlib", "zlib"),
     ("sapi/cgi/cgi_main.stub.php", "standard"),
     ("sapi/cli/php_cli_process_title.stub.php", "standard"),
+    // fastcgi_finish_request, for an embedding server's SAPI.
+    ("sapi/fpm/fpm/fpm_main.stub.php", "standard"),
 ];
 
 /// The generated file, relative to the workspace root.
@@ -502,7 +504,13 @@ fn walk_stmts(
                     frameless: frameless_arities(doc).map_err(|e| format!("{name}: {e}"))?,
                     params,
                 };
-                if out.funcs.insert(name.to_ascii_lowercase(), row).is_some() {
+                let shown = format!("{row:?}");
+                if let Some(prev) = out.funcs.insert(name.to_ascii_lowercase(), row) {
+                    // SAPIs share functions (php-cgi's and php-fpm's
+                    // apache_request_headers): the same declaration twice.
+                    if format!("{prev:?}") == shown {
+                        continue;
+                    }
                     return Err(format!("function {name} declared twice"));
                 }
             }

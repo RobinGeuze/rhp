@@ -359,6 +359,10 @@ impl Host for Vm {
         Some(&mut self.sapi.response)
     }
 
+    fn finish_response(&mut self) -> bool {
+        Vm::finish_response(self)
+    }
+
     fn log_message(&mut self, msg: &[u8]) {
         self.sapi.sapi.log_message(msg);
     }

@@ -16,6 +16,8 @@ struct Recorder {
     events: Rc<RefCell<Vec<String>>>,
     /// The client goes away after this many body writes.
     writes_left: Option<usize>,
+    /// Ask for php-fpm's functions ([`Sapi::server_functions`]).
+    server: bool,
 }
 
 impl Sapi for Recorder {
@@ -48,6 +50,21 @@ impl Sapi for Recorder {
     fn log_message(&mut self, msg: &[u8]) {
         let s = String::from_utf8_lossy(msg).into_owned();
         self.events.borrow_mut().push(format!("log:{s}"));
+    }
+
+    fn flush(&mut self) -> bool {
+        if self.server {
+            self.events.borrow_mut().push("flush".to_string());
+        }
+        true
+    }
+
+    fn server_functions(&self) -> bool {
+        self.server
+    }
+
+    fn end_response(&mut self) {
+        self.events.borrow_mut().push("end".to_string());
     }
 }
 
@@ -119,7 +136,7 @@ fn a_header_callback_throw_without_output_is_uncaught() {
 #[test]
 fn compile_errors_reach_the_sapi_not_the_process() {
     // php's E_COMPILE_ERROR, displayed through the SAPI.
-    let (ev, o) = run("break;", &[], get());
+    let (ev, o) = run("break;", &[("html_errors", "0")], get());
     assert_eq!(o, Outcome::Exit(255));
     assert!(
         ev.iter()
@@ -312,7 +329,11 @@ fn multipart_body_longer_than_content_length_stops_at_post_max_size() {
 /// (`sapi_error`) does not.
 #[test]
 fn request_parse_body_stops_at_post_max_size() {
-    let ini = [("enable_post_data_reading", "0"), ("display_errors", "1")];
+    let ini = [
+        ("enable_post_data_reading", "0"),
+        ("display_errors", "1"),
+        ("html_errors", "0"),
+    ];
     let (ev, _) = run(
         "[$p] = request_parse_body(['post_max_size' => '100K']); var_dump(strlen($p['a']));",
         &ini,
@@ -385,4 +406,147 @@ fn ignore_user_abort_keeps_the_script_running() {
             "log:i=2 1"
         ]
     );
+}
+
+const TIMEOUT_INI: [(&str, &str); 2] = [("max_execution_time", "1"), ("html_errors", "0")];
+
+/// max_execution_time under an embedding SAPI: each thread has its own
+/// wall-clock timer (php's ZTS timers), so a request that runs out ends
+/// with the fatal error while a request on another thread runs on.
+#[test]
+fn max_execution_time_is_per_thread() {
+    let slow = std::thread::spawn(|| {
+        // No limit: busy for 1.5 s while the other thread times out.
+        run(
+            "$t = microtime(true); while (microtime(true) - $t < 1.5) {} echo 'done';",
+            &[("max_execution_time", "0")],
+            get(),
+        )
+    });
+    let (ev, o) = run("echo 'start'; while (true) {}", &TIMEOUT_INI, get());
+    assert_eq!(o, Outcome::Exit(255));
+    let b = body(&ev);
+    assert!(b.starts_with("start\nFatal error: Maximum execution time of 1 second exceeded in Command line code on line 1"), "{b}");
+    let (ev, o) = slow.join().expect("worker panicked");
+    assert_eq!((body(&ev), o), ("done".to_string(), Outcome::Exit(0)));
+}
+
+/// A request that ends before its deadline leaves nothing armed for the
+/// next one on the thread; set_time_limit re-arms from now.
+#[test]
+fn a_timer_ends_with_its_request() {
+    let (ev, o) = run("echo 'quick';", &TIMEOUT_INI, get());
+    assert_eq!((body(&ev), o), ("quick".to_string(), Outcome::Exit(0)));
+    let (ev, o) = run(
+        "$t = microtime(true); while (microtime(true) - $t < 1.3) {} echo 'ok';",
+        &[("max_execution_time", "0")],
+        get(),
+    );
+    assert_eq!((body(&ev), o), ("ok".to_string(), Outcome::Exit(0)));
+    let (ev, o) = run(
+        "set_time_limit(0); $t = microtime(true); while (microtime(true) - $t < 1.3) {} echo 'unlimited';",
+        &TIMEOUT_INI,
+        get(),
+    );
+    assert_eq!((body(&ev), o), ("unlimited".to_string(), Outcome::Exit(0)));
+}
+
+/// max_input_time covers request startup only: the script then runs
+/// under max_execution_time (php_execute_script re-arms the timer). As in
+/// php, a max_execution_time of 0 leaves the input timer running
+/// (zend_set_timeout(0) doesn't disarm), so it fires naming 0 seconds.
+#[test]
+fn max_input_time_gives_way_to_max_execution_time() {
+    let busy = "$t = microtime(true); while (microtime(true) - $t < 1.3) {} echo 'ok';";
+    let (ev, o) = run(
+        busy,
+        &[("max_input_time", "1"), ("max_execution_time", "5")],
+        get(),
+    );
+    assert_eq!((body(&ev), o), ("ok".to_string(), Outcome::Exit(0)));
+    let (ev, o) = run(
+        busy,
+        &[
+            ("max_input_time", "1"),
+            ("max_execution_time", "0"),
+            ("html_errors", "0"),
+        ],
+        get(),
+    );
+    assert_eq!(o, Outcome::Exit(255));
+    assert!(
+        body(&ev).contains("Maximum execution time of 0 seconds"),
+        "{ev:?}"
+    );
+    let (ev, o) = run(
+        "while (true) {}",
+        &[
+            ("max_input_time", "60"),
+            ("max_execution_time", "1"),
+            ("html_errors", "0"),
+        ],
+        get(),
+    );
+    assert_eq!(o, Outcome::Exit(255));
+    assert!(
+        body(&ev).contains("Maximum execution time of 1 second"),
+        "{ev:?}"
+    );
+}
+
+fn server() -> Recorder {
+    Recorder {
+        server: true,
+        ..Recorder::default()
+    }
+}
+
+/// php-fpm's functions exist only for a SAPI that asks for them.
+#[test]
+fn server_functions_are_opt_in() {
+    let code = "var_dump(function_exists('fastcgi_finish_request'), function_exists('getallheaders'), php_sapi_name());";
+    let (ev, _) = run(code, &[], get());
+    assert_eq!(
+        body(&ev),
+        "bool(false)\nbool(false)\nstring(10) \"embed-test\"\n"
+    );
+    let (ev, _) = run_with(server(), code, &[], get());
+    assert_eq!(
+        body(&ev),
+        "bool(true)\nbool(true)\nstring(10) \"embed-test\"\n"
+    );
+}
+
+/// fastcgi_finish_request(): the output buffers are flushed, the headers
+/// sent and the response completed; the script and its shutdown functions
+/// run on with their output discarded, and the final flush is skipped.
+#[test]
+fn fastcgi_finish_request_completes_the_response_early() {
+    let code = "register_shutdown_function(function () { echo 'gone'; error_log('shutdown'); }); \
+                ob_start(); echo 'a'; header('X-A: 1'); \
+                $r = fastcgi_finish_request(); echo 'lost'; flush(); \
+                error_log('after ' . var_export($r, true) . ' ' . var_export(fastcgi_finish_request(), true) . ' ' . ob_get_level());";
+    let (ev, o) = run_with(server(), code, &[("log_errors", "1")], get());
+    assert_eq!(o, Outcome::Exit(0));
+    assert_eq!(
+        ev,
+        [
+            "headers:200",
+            "body:a",
+            "end",
+            "log:after true false 0",
+            "log:shutdown"
+        ]
+    );
+}
+
+/// An embedding SAPI starts from php's defaults, not php-cli's.
+#[test]
+fn an_embedding_sapi_gets_php_defaults() {
+    let (ev, _) = run(
+        "echo ini_get('html_errors'), ini_get('implicit_flush'), ini_get('max_execution_time'), ini_get('display_errors');",
+        &[],
+        get(),
+    );
+    assert_eq!(body(&ev), "10301");
 }

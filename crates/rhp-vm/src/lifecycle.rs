@@ -50,6 +50,7 @@ impl Vm {
         let name = sapi.name().to_string();
         builtins::main::sapi::set_sapi(&name, &sapi.ini_defaults());
         builtins::main::sapi::set_additional_functions(sapi.additional_functions());
+        builtins::main::sapi::set_server_functions(sapi.server_functions());
         let mut constants = rustc_hash::FxHashMap::default();
         for (name, value) in builtins::constants() {
             constants.insert(name.as_bytes().to_vec(), value);

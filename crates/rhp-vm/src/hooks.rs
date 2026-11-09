@@ -230,6 +230,9 @@ impl Vm {
         let got = self.prop_fetch_raw(top, h, name)?;
         match &got {
             Value::Ref(_) | Value::Object(_) => Ok(got),
+            // An internal class's virtual property (DOM): get_property_ptr_ptr
+            // gives NULL, so the write lands in a temporary copy, silently.
+            _ if self.internal_virtual_prop(top, h, name) => Ok(got),
             _ => {
                 let cls = h.borrow().class;
                 Err(err(format!(
@@ -238,6 +241,18 @@ impl Vm {
                     String::from_utf8_lossy(name.as_bytes())
                 )))
             }
+        }
+    }
+
+    /// Whether `$h->name` is a hooked property an internal class declares.
+    fn internal_virtual_prop(&self, top: usize, h: &ObjectHandle, name: &PhpStr) -> bool {
+        let cls = h.borrow().class;
+        let scope = self.stack[top].defining_class;
+        match classes::resolve_prop(&self.classes, cls, scope, name) {
+            PropRes::Slot(k) => self
+                .hooked_entry(cls, &k)
+                .is_some_and(|pe| self.is_internal_class(pe.declaring_class)),
+            _ => false,
         }
     }
 

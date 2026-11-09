@@ -494,6 +494,24 @@ impl Vm {
         }
     }
 
+    /// php -l: the first top-level function of `prog` whose name an
+    /// internal function has (zend_begin_func_decl's compile error), as
+    /// (message, line).
+    pub fn internal_redeclaration(&self, prog: &Program) -> Option<(String, u32)> {
+        prog.functions
+            .iter()
+            .skip(prog.num_prelude_functions)
+            .find_map(|proto| {
+                let lc = proto.name.as_bytes().to_ascii_lowercase();
+                self.function_declared(&lc).then(|| {
+                    (
+                        self.redeclare_function_msg(&lc, &proto.name),
+                        proto.meta.start_line,
+                    )
+                })
+            })
+    }
+
     /// Whether declaring user function `lc` (lowercase) clashes with one
     /// in the function table: a user function, or an internal one (a
     /// builtin left after disable_functions, or a prelude function).
@@ -902,9 +920,15 @@ impl Vm {
             }
         };
         self.emit_compile_diags(&prog);
-        let r = self
-            .install_file(b"", &prog)
-            .and_then(|(main, unit)| self.run_as_primary(main, unit));
+        let mut main_ptr = 0;
+        let r = self.install_file(b"", &prog).and_then(|(main, unit)| {
+            main_ptr = Rc::as_ptr(&main) as usize;
+            self.run_as_primary(main, unit)
+        });
+        // Each run's statics start fresh (its proto's address may be reused).
+        if main_ptr != 0 && !self.statics.is_empty() {
+            self.statics.retain(|k, _| k.0 != main_ptr);
+        }
         let mut bailed = false;
         if r.is_err() && !self.stack.is_empty() {
             // The global scope survives the unwound frames.

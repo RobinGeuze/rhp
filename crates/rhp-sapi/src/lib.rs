@@ -1103,7 +1103,13 @@ pub(crate) fn lint_source(
     let ok = match compile_file(compiled_as, source, Mode::Include) {
         Ok(prog) => {
             vm.emit_compile_diags(&prog);
-            true
+            match vm.internal_redeclaration(&prog) {
+                Some((message, line)) => {
+                    vm.compile_failed(&message, compiled_as.as_bytes(), line, &[], false);
+                    false
+                }
+                None => true,
+            }
         }
         Err(IncludeError::Parse {
             class,

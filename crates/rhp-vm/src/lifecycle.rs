@@ -910,19 +910,19 @@ impl Vm {
             // error at its declaration.
             // Raised after auto_prepend_file, as php compiles the main
             // script after running it.
+            // The compile stops there: later functions are never declared
+            // (and the function table keeps its indices).
             if idx >= prog.num_prelude_functions && self.function_declared(&lc) {
-                if redeclared.is_none() {
-                    let msg = self.redeclare_function_msg(&lc, &proto.name);
-                    let line = proto.meta.start_line;
-                    let file = proto.debug.file.as_bytes().to_vec();
-                    let e = IncludeError::Compile {
-                        message: msg,
-                        line,
-                        diags: Vec::new(),
-                    };
-                    redeclared = Some((file, e));
-                }
-                continue;
+                let msg = self.redeclare_function_msg(&lc, &proto.name);
+                let line = proto.meta.start_line;
+                let file = proto.debug.file.as_bytes().to_vec();
+                let e = IncludeError::Compile {
+                    message: msg,
+                    line,
+                    diags: Vec::new(),
+                };
+                redeclared = Some((file, e));
+                break;
             }
             self.functions.push(UnitFn {
                 proto: proto.clone(),

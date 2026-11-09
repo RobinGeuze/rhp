@@ -3174,16 +3174,21 @@ impl Vm {
             // php's ftell(): false while the stream position is -1.
             StreamState::Fd(f) => Some(f.tell()).filter(|&p| p != -1),
             StreamState::Ops(s) => Some(s.tell()).filter(|&p| p != -1),
-            // php's position is -1 (ftell false) on a pipe or a terminal:
-            // the lseek at open failed.
-            StreamState::Stdin => builtins::main::streams::plain_wrapper::fd_seekable(0)
-                .then(|| self.stdin_reader.as_ref().map_or(0, |f| f.tell())),
-            StreamState::Stdout => {
-                builtins::main::streams::plain_wrapper::fd_seekable(1).then_some(0)
-            }
-            StreamState::Stderr => {
-                builtins::main::streams::plain_wrapper::fd_seekable(2).then_some(0)
-            }
+            // php's position starts at -1 on a pipe or a terminal (ftell
+            // false), where the lseek at open failed; reads still add to it.
+            StreamState::Stdin => Some(self.stdin_reader.as_ref().map_or_else(
+                || builtins::main::streams::plain_wrapper::fd_initial_position(0),
+                |f| f.tell(),
+            ))
+            .filter(|&p| p != -1),
+            StreamState::Stdout => Some(
+                builtins::main::streams::plain_wrapper::fd_initial_position(1),
+            )
+            .filter(|&p| p != -1),
+            StreamState::Stderr => Some(
+                builtins::main::streams::plain_wrapper::fd_initial_position(2),
+            )
+            .filter(|&p| p != -1),
             StreamState::Mem { pos, skew, .. } => {
                 // ftell() is false while php's position is -1 (failed seek).
                 let t = *pos as i64 + *skew;

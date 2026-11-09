@@ -1175,22 +1175,17 @@ pub fn fopen_tmpfile() -> Option<crate::main::streams::LocalFile> {
     f
 }
 
-/// Whether `fd` can seek as php's plain-files stream sees it
-/// (detect_is_seekable): not a FIFO or character device (a pipe, a
-/// terminal, /dev/null), and lseek works. Otherwise its position is -1 and
-/// ftell() is false.
-#[allow(clippy::unnecessary_cast)]
-pub fn fd_seekable(fd: i32) -> bool {
+/// php's starting `stream->position` for a stream on `fd`
+/// (_php_stream_fopen_from_fd): the fd's offset when detect_is_seekable
+/// allows it and lseek works, else -1 (a pipe, a terminal; ftell() is
+/// then false).
+pub fn fd_initial_position(fd: i32) -> i64 {
     // SAFETY: fstat fills a zeroed stat; lseek only queries the offset.
     unsafe {
         let mut st: libc::stat = std::mem::zeroed();
-        if libc::fstat(fd, &mut st) != 0 {
-            return false;
+        if libc::fstat(fd, &mut st) != 0 || !detect_is_seekable(&st) {
+            return -1;
         }
-        let fmt = (st.st_mode as u32) & (libc::S_IFMT as u32);
-        if fmt == libc::S_IFIFO as u32 || fmt == libc::S_IFCHR as u32 {
-            return false;
-        }
-        libc::lseek(fd, 0, libc::SEEK_CUR) >= 0
+        libc::lseek(fd, 0, libc::SEEK_CUR).max(-1) as i64
     }
 }

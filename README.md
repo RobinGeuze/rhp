@@ -46,7 +46,7 @@ passing, so the percentages are of all php-src tests.
 |---|---:|---:|---:|---|
 | Zend/tests | 5,272 | 5,396 | 97.7% | no Fiber (0/113); lazy objects 215/229 (no typed reference sources); the pipe operator `\|>` is refused |
 | tests | 854 | 895 | 95.4% | php-src's tests of the language, functions, classes and output |
-| sapi/cli | 97 | 117 | 82.9% | tests that spawn the php binary run rhp, the `-S` server tests included |
+| sapi/cli | 98 | 117 | 83.8% | tests that spawn the php binary run rhp, the `-S` server tests included |
 | sapi/cgi | 23 | 24 | 95.8% | `rhp --cgi` against php-cgi |
 | ext/standard | 3,415 | 3,880 | 88.0% | user stream wrappers carry no filters |
 | ext/bcmath | 64 | 170 | 37.6% | the `bc*` functions; no `BcMath\Number` |
@@ -92,7 +92,7 @@ passing, so the percentages are of all php-src tests.
 | ext/zlib | 133 | 161 | 82.6% | system zlib; no incremental deflate/inflate contexts |
 | other ext/ | 1 | 2,858 | 0.0% | the 1 passing is an ext/uri test that needs none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **16,842** | **22,219** | **75.8%** | |
+| **total** | **16,843** | **22,219** | **75.8%** | |
 
 Not implemented, so counted under other ext/: com_dotnet, dba, dl_test, enchant, exif, ffi, ftp, imap, ldap, mysqli, odbc, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pgsql, shmop, skeleton, snmp, soap, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->

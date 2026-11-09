@@ -15995,6 +15995,7 @@ sapi/cli/tests/php_cli_server_021.phpt
 sapi/cli/tests/php_cli_server_022.phpt
 sapi/cli/tests/php_cli_server_ipv6_error_message.phpt
 sapi/cli/tests/php_cli_server_reset_before_accept.phpt
+sapi/cli/tests/std_streams.phpt
 tests/basic/001.phpt
 tests/basic/002.phpt
 tests/basic/003.phpt

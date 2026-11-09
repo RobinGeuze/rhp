@@ -528,7 +528,8 @@ fn tick_points(cx: &FileCtx, program: &AstProgram) -> Vec<(u32, u32)> {
 /// What [`FileCtx::may_alias`] scans for in the source text.
 #[derive(Default)]
 struct AliasMarks {
-    /// Names (with `$`) after a `&` or in a `global` statement.
+    /// Names (with `$`) after a `&`, assigned by `= &`, or in a `global`
+    /// statement.
     names: std::collections::HashSet<Vec<u8>>,
     /// `$$`, `eval(` or `extract(`: any variable may change.
     dynamic: bool,
@@ -537,7 +538,8 @@ struct AliasMarks {
 impl FileCtx<'_> {
     /// Whether the variable `name` (with `$`) may be written through
     /// another name somewhere in this file: a reference (`&$name` anywhere:
-    /// a by-reference parameter, assignment, closure use or foreach), a
+    /// a by-reference parameter, assignment, closure use or foreach; or
+    /// `$name = &…`), a
     /// `global`, or a scope written dynamically (`$$`, eval, extract). A
     /// text scan, so it over-approximates (`$a & $b`, comments).
     pub(crate) fn may_alias(&self, name: &[u8]) -> bool {
@@ -586,6 +588,10 @@ fn scan_alias_marks(src: &[u8]) -> AliasMarks {
                 if let Some((name, _)) = var_at(skip_ws(i + 1)) {
                     m.names.insert(name);
                 }
+                // `$b = &...`: the variable assigned by reference too.
+                if let Some(name) = assigned_var_before(src, i) {
+                    m.names.insert(name);
+                }
             }
             b'$' if src.get(i + 1) == Some(&b'$') => m.dynamic = true,
             b'e' | b'E' => {
@@ -611,6 +617,36 @@ fn scan_alias_marks(src: &[u8]) -> AliasMarks {
         i += 1;
     }
     m
+}
+
+/// The variable (with `$`) a `=` right before `src[amp]` (`&`) assigns:
+/// `$b` in `$b = &$a`.
+fn assigned_var_before(src: &[u8], amp: usize) -> Option<Vec<u8>> {
+    let mut j = amp;
+    while j > 0 && src[j - 1].is_ascii_whitespace() {
+        j -= 1;
+    }
+    if j == 0 || src[j - 1] != b'=' {
+        return None;
+    }
+    j -= 1;
+    // not `==`, `!=`, `<=`, `>=`, `.=` and the other compound assignments
+    if j > 0
+        && !src[j - 1].is_ascii_whitespace()
+        && !src[j - 1].is_ascii_alphanumeric()
+        && src[j - 1] != b'_'
+    {
+        return None;
+    }
+    while j > 0 && src[j - 1].is_ascii_whitespace() {
+        j -= 1;
+    }
+    let end = j;
+    while j > 0 && (src[j - 1].is_ascii_alphanumeric() || src[j - 1] == b'_' || src[j - 1] >= 0x80)
+    {
+        j -= 1;
+    }
+    (j < end && j > 0 && src[j - 1] == b'$').then(|| src[j - 1..end].to_vec())
 }
 
 /// Sorted byte offsets of line starts (offset 0, then after each '\n').

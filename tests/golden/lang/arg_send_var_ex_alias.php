@@ -23,3 +23,11 @@ $o2 = new class { function m($a, $b, $c) { var_dump($a); } };
 function viaArg(&$x) { $x = 'byref'; return 1; }
 function outer($o2) { $p = 1; $o2->m($p, 0, viaArg($p)); $k = 1; $o2->m($k, $k++, 0); }
 outer($o2);
+// The variable on the left of `= &` aliases too.
+class P { public $x = 'o'; function set() { $this->x = 'm'; return 1; } }
+function lhsRef($o2) {
+    $a = 'o'; $b = &$a; $o2->m($b, $a = 'n', 0);
+    $arr = ['o']; $e = &$arr[0]; $o2->m($e, $arr[0] = 'w', 0);
+    $p = new P; $x = &$p->x; $o2->m($x, $p->set(), 0);
+}
+lhsRef($o2);

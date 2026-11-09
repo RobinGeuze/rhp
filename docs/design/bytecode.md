@@ -621,7 +621,7 @@ as it is sent (SEND_VAR_EX), so a by-value parameter gets the value from
 before the assignment. So does a variable a later call, assignment,
 increment, include or eval could write through another name: any variable
 of the main script (a global), and one the file may alias
-(`FileCtx::may_alias`, a text scan for `&$p`, `global $p`, `$$`, `eval(`,
+(`FileCtx::may_alias`, a text scan for `&$p`, `$p = &`, `global $p`, `$$`, `eval(`,
 `extract(`). An unpack of a plain variable to a callee only the run time
 knows (`$o->m(...$a)`, `new $c(...$a)`) asks it the same way
 (`ArgSpreadRefDyn`), so its by-reference parameters write back into the

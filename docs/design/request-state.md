@@ -65,6 +65,7 @@ Kinds:
 | `ext/standard/url_scanner_ex.rs` | `STATE`, `SESSION_STATE` (the URL rewriters of `output_add_rewrite_var` and of trans-sid) | request | `url_scanner_ex::reset_state` |
 | `ext/standard/browscap.rs` | `DATA` (the parsed browscap file) | thread (php: process) | — |
 | `main/sapi.rs` | `SAPI_NAME`, `SAPI_DEF` (its `SapiDef` and bit), `SAPI_INI` | request | `sapi::reset_state`, then `set_sapi` in `Vm::new` |
+| `zend/timeout.rs` | `THREAD_TIMER` (the thread's interrupt and timed-out flags, shared with the watchdog), `THREAD_SECONDS` (`EG(timeout_seconds)`) | thread (flags); request (seconds) | `timeout::request_startup` re-arms or clears them; `request_shutdown` disarms (from `finish_request`, a worker's request end) |
 | `ext/bcmath` | `DEFAULT_SCALE` | request | `bcmath::reset_state` |
 | `ext/bz2` | `BZ_ERRORS` | request | `bz2::reset_state` |
 | `ext/curl/mod.rs` | `EASY`, `MULTI`, `SHARE` (handle tables) | request | `curl::reset_state` |
@@ -128,6 +129,11 @@ Not per thread, so shared by every engine in the process:
 - pcntl's signal queue and flags (`ext/pcntl`, atomics written from the
   signal handler). Signal handlers belong to the process; pcntl exists
   only under the CLI and CGI (`main::sapi::is_command_line`).
+- The command-line SAPIs' max_execution_time timer (`zend/timeout.rs`:
+  `TIMED_OUT`, `SECONDS`, `HARD`, the hard timeout's locator; a process
+  interval timer), and the watchdog thread with the deadlines of every
+  other SAPI's threads (`WATCHDOG`); a thread's timer flags are never
+  freed, and an exited thread's go to the next thread (`FREE_TIMERS`).
 - `OnceLock`s and `Once`s that compute something once: the module list,
   the builtin registry, signatures, the process's umask (`virtual_cwd`),
   libxml2's process init and default entity loader, curl's and OpenSSL's

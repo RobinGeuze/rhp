@@ -61,6 +61,11 @@ pub fn connection_status() -> i64 {
     CONNECTION_STATUS.with(|c| c.get())
 }
 
+/// A new request (a worker's next one): `PHP_CONNECTION_NORMAL`.
+pub fn reset_connection_status() {
+    CONNECTION_STATUS.with(|c| c.set(0));
+}
+
 /// php_handle_aborted_connection's first step: the status becomes
 /// aborted (php assigns, dropping a timeout bit).
 pub fn set_connection_aborted() {

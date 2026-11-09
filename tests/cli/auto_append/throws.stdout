@@ -1,0 +1,9 @@
+main
+appended
+
+Fatal error: Uncaught Exception: from the appended file in {DIR}/throw.inc:2
+Stack trace:
+#0 {DIR}/throw.inc(4): g()
+#1 {main}
+  thrown in {DIR}/throw.inc on line 2
+shutdown

@@ -111,7 +111,7 @@ let outcome = run_request(
 | method | php | default |
 |---|---|---|
 | `name` | `sapi_module.name` → `php_sapi_name()`, `PHP_SAPI` | required |
-| `ini_defaults` | `sapi_module.ini_defaults` (below `-d` and `ini_set`) | none |
+| `ini_defaults` | `sapi_module.ini_defaults` (below `-d` and `ini_set`) | php's own defaults where php-cli's differ (`WEB_INI_DEFAULTS`: html_errors=1, implicit_flush=0, max_execution_time=30), as for every php SAPI but the CLI |
 | `ini_entries` | `sapi_module.ini_entries`: set after php.ini, before `-d` (php-cli's `HARDCODED_INI`: html_errors, implicit_flush, output_buffering, max_execution_time, max_input_time) | none |
 | `stores_headers` | `header_handler`: false keeps `headers_list()` empty (php-cli) | `true` |
 | `initial_response_code` | status before any `header()`: 0 for cli, 200 for web | `200` |
@@ -120,6 +120,10 @@ let outcome = run_request(
 | `aborted_exit_status` | the exit status a failed write sets (`EG(exit_status)`: php-cli's 255) | `None` |
 | `send_headers` | called **once**: right before the first body byte, or at request end when there is no body. Not called for `no_headers` (`php-cgi -q`). The `Response` holds the final status code, an explicit status line if `header("HTTP/1.1 …")` set one, and the header lines in order (default `Content-type` and `X-Powered-By` included). Returns false when the write failed (`SAPI_HEADER_SEND_FAILED`): the headers then count as unsent and output is turned off | no-op, `true` |
 | `flush_sends_headers` | a flush sends the headers first when nothing has (php's cli-server) | `false` |
+| `server_functions` | php-fpm's functions, as FrankenPHP has them, for a SAPI rhp has no module for: `fastcgi_finish_request()`, `apache_request_headers()` / `getallheaders()`, `apache_response_headers()` | `false` |
+| `end_response` | `fastcgi_finish_request()` ran: the output buffers were flushed and the headers sent, so the response is complete and can go to the client; the script (kernel.terminate, terminable middleware, shutdown functions) runs on with its output discarded, and `flush` is not called again | no-op |
+| `worker` | FrankenPHP's worker mode (below) | `false` |
+| `next_request` | a worker's next request: block until it arrives; `None` stops the worker | `None` |
 | `script_done` | the primary script returned (php_execute_script), before the shutdown functions: its return value, the response and `error_get_last()`. The SAPI may name a file to run next as another primary script in the same request (the cli-server's router declining a `.php` request) | `None` |
 | `log_message` | one `error_log` / `log_errors` line, no newline | stderr |
 | `write_stderr` | `display_errors=stderr` output | stderr |
@@ -134,6 +138,38 @@ a failed write (EPIPE, a closed client) as an abort; an HTTP server
 writes a status line and headers to its connection; a FrankenPHP-style
 embedding hands them to the host server's response writer.
 
+### Worker mode (FrankenPHP's)
+
+A SAPI with `worker()` and `server_functions()` runs a worker script:
+it boots the application once, then serves request after request in the
+same engine, keeping its globals, classes, objects and statics:
+
+```php
+$kernel = boot();
+while (frankenphp_handle_request(function () use ($kernel) {
+    echo $kernel->handle($_GET, $_POST, $_SERVER);
+})) {
+    $kernel->terminate();
+}
+```
+
+`frankenphp_handle_request($handler)` (the name FrankenPHP gives it, so
+Symfony Runtime's and Laravel Octane's FrankenPHP runners work unchanged)
+completes what the worker served so far, asks `Sapi::next_request` for
+the next request (false when it returns `None`), sets it up as
+`frankenphp_worker_request_startup` does (a fresh response, body and
+output layer, the superglobals, the session's RINIT, max_execution_time
+armed for the request), calls the handler, and completes the request
+(output buffers ended, the session written, headers sent, `flush`,
+`end_response`, uploads deleted) before it returns, so the client has its
+response while the worker runs on. Waiting for a request runs no timer.
+An uncaught throwable from the handler is a fatal error that ends the
+worker, as FrankenPHP bails out; `exit` ends it too. The host runs the
+worker with `run_request` on a thread of its own and starts a new one
+when it ends. Outside worker mode the function throws a
+RuntimeException. Memory accounting and `memory_limit` span the whole
+worker, not each request.
+
 ### `RequestInfo` (php's `SG(request_info)` + server variables)
 
 Byte strings throughout (PHP is binary-safe). Everything is optional:
@@ -146,7 +182,8 @@ Byte strings throughout (PHP is binary-safe). Everything is optional:
 | `method` | `REQUEST_METHOD`: POST parsing, HEAD (body discarded), the Location → 302/303 rule |
 | `query_string` | `$_GET` (`arg_separator.input`, `max_input_vars`, `max_input_nesting_level`) |
 | `cookie` | `$_COOKIE` |
-| `content_type`, `content_length`, `body` | `$_POST`, `$_FILES`, `php://input`, `request_parse_body()`. The body must be fully read before the call (see *Gaps*) |
+| `content_type`, `content_length`, `body` | `$_POST`, `$_FILES`, `php://input`, `request_parse_body()`, from a body already read |
+| `body_reader` | instead of `body`: a `std::io::Read` the engine pulls the body from as it needs it (php's `sapi_module.read_post`), so a server can start the request before the body arrived. The urlencoded reader and `php://input` buffer what they read (as php's `request_body` does); the multipart parser reads 5 KiB at a time straight into the upload files. Give `content_length` from the request header (`None` counts as 0, a chunked body). php-cgi streams its stdin this way |
 | `authorization` | the `Authorization` header: `PHP_AUTH_USER` / `PHP_AUTH_PW` (Basic) or `PHP_AUTH_DIGEST` |
 | `headers` | `getallheaders()` / `apache_request_headers()` |
 | `request_time` | `REQUEST_TIME_FLOAT` (seconds since the epoch) |
@@ -314,7 +351,11 @@ What happens inside one `run_request`, in php's order:
    in `upload_tmp_dir`.
 4. **Compile and run.** A parse or compile error is reported per
    `display_errors` / `log_errors` (`html_errors` is on for web SAPIs) with
-   exit status 255.
+   exit status 255. `auto_prepend_file` runs first; `auto_append_file`
+   runs once the script returned (or the exception handler took its
+   uncaught throwable), as a primary script of its own, never after
+   `exit` or a fatal error. A script the SAPI names next
+   (`script_done`) runs between the two files as well.
 5. **Output.** `echo` goes through the output-buffer stack. Whatever leaves
    the bottom goes to `Sapi::ub_write`, and the first byte triggers
    `send_headers` (after `header_register_callback`'s callback runs). A
@@ -339,8 +380,8 @@ threads, never from sharing an engine:
 - Every request gets a **fresh `Vm`**: nothing a script defines (globals,
   functions, classes, constants, statics, ini changes, output buffers,
   headers) survives into the next request. This matches php-fpm and
-  FrankenPHP's classic mode. Worker mode (one bootstrapped app serving many
-  requests) can come later as a separate API.
+  FrankenPHP's classic mode. Worker mode (above) is the exception the
+  script asks for: one `Vm` serves the worker's requests in turn.
 - The per-thread state outside the `Vm` (SAPI name and ini defaults,
   request-scoped builtin state) is in `thread_local!`s, like php's ZTS
   module globals. `Vm::new` resets it, and so does dropping the `Vm`
@@ -402,6 +443,21 @@ threads, never from sharing an engine:
   process-wide signal handlers or `fork` from a script. This differs
   from php only for embed: php's static build adds a `cli`-class
   extension to the cli, cgi, phpdbg and embed SAPIs (not php-fpm).
+- **max_execution_time per thread.** The command-line SAPIs keep php's
+  NTS timer: one process-wide interval timer whose signal sets the
+  timed-out flags, with a hard timeout (`hard_timeout`) that kills the
+  process. Every other SAPI gets php's ZTS behaviour
+  (zend_max_execution_timer.c): a wall-clock timer per thread, here one
+  watchdog thread (`rhp-timeout`) that sets the timed-out thread's own
+  flags; the VM polls its own interrupt flag (`Vm::interrupt`), so a
+  timeout on one thread never touches another. As in ZTS builds there is
+  no hard timeout, and a blocking builtin (sleep, a socket read) is not
+  interrupted: the error comes when it returns. `max_input_time` covers
+  request startup, then the script runs under `max_execution_time`; a
+  limit of 0 leaves an armed input timer running, in both builds
+  (zend_set_timeout_ex arms only for a positive limit), so it fires as
+  "0 seconds". A thread's timer is disarmed when its request ends
+  (rhp_builtins `zend::timeout`).
 - **Process-wide state.** `putenv()` changes stay in the request (an
   overlay its child processes get); the process's environment never
   changes. What belongs to the OS process: signal handlers (`pcntl`, CLI
@@ -507,13 +563,14 @@ Limits of the model:
 
 - **Embedding in a server (FrankenPHP-like).** The production target:
   Caddy (through a C ABI shim over `run_request`) or a Rust server (hyper /
-  axum, calling `run_request` directly from a worker pool). The pieces
-  needed beyond today's API: a streaming body reader (`Sapi::read_body`,
-  so uploads don't have to be buffered first) and per-thread
-  `max_execution_time` enforcement. A client that disconnects is reported
-  by the next `ub_write`/`flush` returning false, as php's SAPIs do; a
-  server that learns of it earlier has no way to interrupt the script
-  yet.
+  axum, calling `run_request` directly from a worker pool). In place: the
+  streamed body (`RequestInfo::body_reader`), a per-thread
+  `max_execution_time` (below), php's web defaults and
+  `fastcgi_finish_request()` (`Sapi::server_functions`) and worker mode.
+  Still to come: the C ABI shim, and interrupting a
+  script when the server learns early that the client went away (today
+  the next `ub_write`/`flush` returning false reports it, as in php's
+  SAPIs).
 - **FastCGI.** A `cgi-fcgi` front end that reads FastCGI records, builds a
   `RequestInfo` from the params, and writes stdout records through a
   `Sapi`. It reuses `cgi::CgiSapi`'s header logic and `php_sapi_name()`
@@ -521,16 +578,16 @@ Limits of the model:
 
 ## Gaps
 
-- The request body is read completely before `run_request`; there is no
-  streaming reader yet.
-- `max_execution_time` is enforced only under the command-line SAPIs
-  (php-cli, php-cgi): like php's NTS build it uses one process-wide
-  interval timer (`rhp_builtins::zend::timeout`), so threaded embedders
-  get no timeout yet. `max_input_time` is not enforced.
-- `auto_append_file` is ignored (`auto_prepend_file` runs).
-- php.ini: php-cli loads the `-c` file (or `$PHPRC`'s) and the `.ini`
-  files in `$PHP_INI_SCAN_DIR` (`Request::ini_files`); rhp has no built-in
-  search path or scan directory, and php-cgi and embedders load none.
+- `php://input` and the urlencoded reader keep a streamed body in memory
+  (php's `request_body` spills to a temporary file past 2 MB; rhp writes
+  the file but reads from memory).
+- php.ini: php-cli and php-cgi load the `-c` file (or `$PHPRC`'s) and
+  the `.ini` files in `$PHP_INI_SCAN_DIR` unless `-n`
+  (`Request::ini_files`); rhp has no built-in search path or scan
+  directory, and embedders pass their settings as `Request::ini`.
+  php-cgi's own checks before the request (`cgi.force_redirect`,
+  `cgi.redirect_status_env`) read only `-d`, and `.user.ini` files are
+  not read.
 - The php-cgi front end cannot read the script from stdin and doesn't
   support `-v -i -m -l -s -w -a`. `-T [warmup,]count` runs the request
   that many times in one process and prints php's `Elapsed time` line;

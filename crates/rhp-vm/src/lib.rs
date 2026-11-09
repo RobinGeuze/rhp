@@ -272,8 +272,9 @@ pub struct Vm {
     user_wrappers: Vec<(Vec<u8>, Rc<builtins::main::streams::userspace::UserWrapper>)>,
     // Filesystem path of the top-level script (for `Phar::mapPhar`).
     main_script_path: Option<Vec<u8>>,
-    /// Whether auto_prepend_file runs before the main script (not for
-    /// `-r` code, which php evaluates without php_execute_script).
+    /// Whether auto_prepend_file and auto_append_file run around the main
+    /// script (not for `-r` code, which php evaluates without
+    /// php_execute_script).
     auto_prepend: bool,
     /// Open stream resources (fopen family), one record per resource id.
     streams: StreamTable,
@@ -425,6 +426,12 @@ pub struct Vm {
     gc: &'static rhp_values::gc::State,
     /// This thread's memory accounting (checked between instructions).
     mem: &'static rhp_values::mem::MemState,
+    /// `EG(vm_interrupt)`, polled between instructions: the process-wide
+    /// flag under the command-line SAPIs (pcntl signals, the interval
+    /// timer), else this thread's (its max_execution_time timer).
+    interrupt: &'static std::sync::atomic::AtomicBool,
+    /// Whether [`Vm::interrupt`] is the process-wide flag.
+    interrupt_is_process: bool,
     /// A memory_limit crossing waiting for an interrupt point.
     delayed_oom: Option<Box<memory::DelayedOom>>,
     /// EG(active_fiber): the running Fiber object.

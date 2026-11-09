@@ -492,6 +492,19 @@ pub trait Host {
     /// The request a SAPI handed the engine (`SG(request_info)`), if any.
     fn request_info(&self) -> Option<&sapi::RequestInfo>;
 
+    /// `fastcgi_finish_request()`: end every output buffer, send the
+    /// headers and complete the response ([`sapi::Sapi::end_response`]).
+    /// False when it was already complete.
+    fn finish_response(&mut self) -> bool {
+        false
+    }
+
+    /// `frankenphp_handle_request($handler)`: serve the worker's next
+    /// request with `handler`. False: no more requests.
+    fn worker_handle_request(&mut self, _handler: &Value) -> Result<bool, Thrown> {
+        Ok(false)
+    }
+
     /// The request body's read state and uploads (`request_parse_body`,
     /// `is_uploaded_file`, `move_uploaded_file`).
     fn body_state(&mut self) -> Option<&mut rfc1867::BodyState>;

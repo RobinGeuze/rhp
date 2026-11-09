@@ -41,9 +41,12 @@ pub trait Sapi {
     fn name(&self) -> &str;
 
     /// The SAPI's ini defaults (`sapi_module.ini_defaults`): applied over the
-    /// built-in defaults, below `-d` settings and `ini_set`.
+    /// built-in defaults, below `-d` settings and `ini_set`. rhp's built-in
+    /// table holds php-cli's values; the default here restores php's own
+    /// ([`WEB_INI_DEFAULTS`]), so an embedding server runs with what php
+    /// gives every SAPI but the CLI.
     fn ini_defaults(&self) -> Vec<(&'static str, &'static str)> {
-        Vec::new()
+        WEB_INI_DEFAULTS.to_vec()
     }
 
     /// The SAPI's own ini settings (`sapi_module.ini_entries`, php-cli's
@@ -129,6 +132,39 @@ pub trait Sapi {
     /// registered: php-cgi leaves them out when it serves a CGI request.
     fn additional_functions(&self) -> bool {
         true
+    }
+
+    /// An embedding server's SAPI (one rhp has no module for) that wants
+    /// php-fpm's functions, as FrankenPHP has them:
+    /// `fastcgi_finish_request()` (which calls [`Sapi::end_response`]),
+    /// `apache_request_headers()` / `getallheaders()` and
+    /// `apache_response_headers()`.
+    fn server_functions(&self) -> bool {
+        false
+    }
+
+    /// `fastcgi_finish_request()`: every output buffer was flushed and the
+    /// headers were sent; the response is complete, so the server can hand
+    /// it to the client now. The script runs on (kernel.terminate,
+    /// terminable middleware); what it outputs from here on is discarded
+    /// and [`Sapi::flush`] is not called again.
+    fn end_response(&mut self) {}
+
+    /// FrankenPHP's worker mode: the script boots once and then serves
+    /// request after request through `frankenphp_handle_request($handler)`
+    /// (a [`Sapi::server_functions`] function), keeping its globals,
+    /// classes and objects between them.
+    fn worker(&self) -> bool {
+        false
+    }
+
+    /// A worker's next request: block until one arrives and return its
+    /// input; from then on `send_headers`, `ub_write`, `flush` and
+    /// `end_response` are that request's, until `end_response` completes
+    /// it. `None`: the worker should stop (`frankenphp_handle_request()`
+    /// returns false).
+    fn next_request(&mut self) -> Option<RequestInfo> {
+        None
     }
 
     /// Whether running past the hard memory limit
@@ -307,6 +343,15 @@ impl Response {
     }
 }
 
+/// php's built-in defaults (main.c) where php-cli's `HARDCODED_INI`, which
+/// rhp's built-in table holds, differs: what a SAPI other than the CLI
+/// starts from.
+pub const WEB_INI_DEFAULTS: &[(&str, &str)] = &[
+    ("html_errors", "1"),
+    ("implicit_flush", "0"),
+    ("max_execution_time", "30"),
+];
+
 /// php's `SG(request_info)` plus the server variables: what a SAPI hands the
 /// engine about the request. Byte strings throughout (php is binary-safe).
 #[derive(Default)]
@@ -325,8 +370,15 @@ pub struct RequestInfo {
     pub cookie: Option<Vec<u8>>,
     /// `CONTENT_TYPE` (empty when absent, as php's CGI SAPI leaves it).
     pub content_type: Option<Vec<u8>>,
-    /// The request body (`php://input`, `$_POST`), already read.
+    /// The request body (`php://input`, `$_POST`), already read; unused
+    /// when [`RequestInfo::body_reader`] is set.
     pub body: Vec<u8>,
+    /// A body read as the engine needs it, instead of `body` (php's
+    /// `sapi_module.read_post`): a server can start the request before the
+    /// body arrived, and multipart uploads go to their temporary files
+    /// without being held in memory. Set `content_length` from the
+    /// request's header (`None` counts as 0, as a chunked body).
+    pub body_reader: Option<Box<dyn std::io::Read>>,
     /// The declared `Content-Length` (`post_max_size` is checked against
     /// it); `None`: the body's length. A body longer than this (a chunked
     /// request: `Some(0)`) is read only until more than `post_max_size`
@@ -349,6 +401,19 @@ pub struct RequestInfo {
     pub response_code: i64,
     /// `SG(request_info).proto_num` (php's CGI SAPI leaves it at 1000).
     pub proto_num: i64,
+}
+
+impl RequestInfo {
+    /// The body's declared length (`SG(request_info).content_length`):
+    /// `content_length`, else the in-memory body's length (0 for a
+    /// streamed body).
+    pub fn declared_length(&self) -> i64 {
+        match (self.content_length, &self.body_reader) {
+            (Some(n), _) => n,
+            (None, Some(_)) => 0,
+            (None, None) => self.body.len() as i64,
+        }
+    }
 }
 
 thread_local! {
@@ -387,6 +452,16 @@ pub fn set_sapi(name: &str, ini_defaults: &[(&str, &str)]) {
         m.clear();
         for (k, v) in ini_defaults {
             m.insert((*k).to_string(), v.as_bytes().to_vec());
+        }
+    });
+}
+
+/// [`Sapi::server_functions`]: a SAPI rhp has no module for gets the
+/// embedding server's (call after [`set_sapi`]).
+pub fn set_server_functions(on: bool) {
+    SAPI_DEF.with(|d| {
+        if on && d.get().is_none() {
+            d.set(Some(crate::sapi::server_def()));
         }
     });
 }

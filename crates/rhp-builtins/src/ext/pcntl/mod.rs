@@ -101,6 +101,12 @@ pub fn interrupt_pending() -> bool {
     INTERRUPT.load(Ordering::Relaxed)
 }
 
+/// The process-wide interrupt flag (the command-line SAPIs' engines poll
+/// it: zend/timeout.rs's `interrupt_flag`).
+pub(crate) fn process_interrupt() -> &'static AtomicBool {
+    &INTERRUPT
+}
+
 /// Ask the VM to stop at the next instruction (`EG(vm_interrupt) = 1`);
 /// async-signal-safe.
 pub(crate) fn raise_interrupt() {

@@ -26,7 +26,8 @@ The crates are in `crates/`, the test tooling in `tools/`.
 - **rhp-vm**: runs the bytecode: calls, classes and objects, generators, exceptions, include and eval,
   streams. Also an opcache-style compiled-script cache (no optimizer or JIT) and a request's engine state.
 - **rhp-sapi**: the request layer: `run_request` runs one PHP request through a `Sapi` trait that
-  the embedding server implements. Contains the CLI SAPI, the built-in web server (`rhp -S`) and a php-cgi compatible CGI SAPI.
+  the embedding server implements (streamed bodies, per-thread timeouts, `fastcgi_finish_request`,
+  FrankenPHP-style worker mode). Contains the CLI SAPI, the built-in web server (`rhp -S`) and a php-cgi compatible CGI SAPI.
 - **rhp-cli**: the `rhp` binary: php's command line (a script, `-r`, `-d`, `-n`, `-f`, ...) on top
   of rhp-sapi. With `--cgi`, or when the binary is named `php-cgi`, it behaves as php-cgi.
 - **rhp-difftest** (`tools/`): differential tests against a real php and php-cgi: php-src's .phpt suite,

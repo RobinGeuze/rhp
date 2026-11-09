@@ -348,14 +348,9 @@ fn fn_request_parse_body(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
         }
     };
     let info = host.request_info().and_then(|r| {
-        r.content_type.clone().map(|ct| {
-            (
-                ct,
-                r.method.clone(),
-                r.content_length.unwrap_or(r.body.len() as i64),
-                r.body.clone(),
-            )
-        })
+        r.content_type
+            .clone()
+            .map(|ct| (ct, r.method.clone(), r.declared_length(), r.body.clone()))
     });
     let Some((ct, method, content_length, body)) = info else {
         return Err(parse_body_exception(
@@ -424,22 +419,31 @@ fn fn_request_parse_body(host: &mut dyn Host, args: &[Value]) -> Result<Value, T
             }
         }
         b"multipart/form-data" => {
-            let (rest, read_before) = match host.body_state() {
-                Some(s) => (s.remaining(&body).to_vec(), s.read_bytes()),
-                None => (Vec::new(), 0),
+            let out = match host.body_state() {
+                Some(s) => {
+                    let read_before = s.read_bytes();
+                    let mut out = parse(
+                        &mut s.reader(&body),
+                        read_before,
+                        &content_type_dup(&ct),
+                        content_length,
+                        &lim,
+                        &mut post,
+                        &mut files,
+                    );
+                    s.apply(&mut out);
+                    out
+                }
+                None => parse(
+                    &mut |_: &mut [u8]| 0,
+                    0,
+                    &content_type_dup(&ct),
+                    content_length,
+                    &lim,
+                    &mut post,
+                    &mut files,
+                ),
             };
-            let mut out = parse(
-                &rest,
-                read_before,
-                &content_type_dup(&ct),
-                content_length,
-                &lim,
-                &mut post,
-                &mut files,
-            );
-            if let Some(s) = host.body_state() {
-                s.apply(&mut out);
-            }
             let mut thrown: Option<Thrown> = None;
             for d in out.diags {
                 match d {

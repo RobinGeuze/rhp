@@ -8,7 +8,7 @@
 //! command-line mode (`php-cgi script.php a=1 b=2`: a query string from
 //! the arguments, no headers with `-q`).
 
-use std::io::{Read, Write};
+use std::io::Write;
 
 use rhp_builtins::main::sapi::{cgi_request_headers, RequestInfo, Response, Sapi};
 
@@ -41,11 +41,49 @@ impl CgiSapi {
     }
 
     fn put(&mut self, data: &[u8]) -> bool {
-        if !self.failed && !crate::write_fd(1, data) {
+        if !self.failed && !write_stdout(data) {
             self.failed = true;
         }
         !self.failed
     }
+}
+
+/// `sapi_cgi_read_post`: the body from stdin, at most CONTENT_LENGTH bytes
+/// in all; a read that returns 0 or fails ends it.
+struct CgiStdin {
+    left: u64,
+}
+
+impl std::io::Read for CgiStdin {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let want = (buf.len() as u64).min(self.left) as usize;
+        if want == 0 {
+            return Ok(0);
+        }
+        // SAFETY: reads into a live slice of at least `want` bytes.
+        let n = unsafe { libc::read(0, buf.as_mut_ptr().cast(), want) };
+        if n <= 0 {
+            self.left = 0;
+            return Ok(0);
+        }
+        self.left -= n as u64;
+        Ok(n as usize)
+    }
+}
+
+/// `sapi_cgi_ub_write` / `sapi_cgi_single_write`: write(2) on descriptor
+/// 1 until done; any write that returns 0 or fails (EINTR and EAGAIN
+/// included, unlike php-cli's writer) is a client abort.
+fn write_stdout(mut data: &[u8]) -> bool {
+    while !data.is_empty() {
+        // SAFETY: writes from a live slice.
+        let n = unsafe { libc::write(1, data.as_ptr().cast(), data.len()) };
+        if n <= 0 {
+            return false;
+        }
+        data = &data[n as usize..];
+    }
+    true
 }
 
 /// php-cgi's ini overrides of php's built-in defaults: the core defaults
@@ -462,6 +500,8 @@ struct Opts {
     optind: usize,
     /// `-b`: FastCGI bind path.
     bindpath: Option<String>,
+    /// `-c` / `-n`: which php.ini to load.
+    ini_files: crate::IniFiles,
     /// `-T [warmup,]count`: (warmup runs, timed runs).
     benchmark: Option<(i64, i64)>,
 }
@@ -479,6 +519,8 @@ fn parse_options(args: &[String], cgi: bool, skip: bool) -> Result<Opts, (String
                 Opt::End => break,
                 Opt::Char(b'd', Some(kv)) => o.ini.push(crate::ini_define(&kv)),
                 Opt::Char(b'b', Some(path)) => o.bindpath = Some(path),
+                Opt::Char(b'c', Some(path)) => o.ini_files.path_override = Some(path),
+                Opt::Char(b'n', _) => o.ini_files.ignore = true,
                 _ => {}
             }
         }
@@ -681,17 +723,14 @@ pub fn main(args: &[String], env: CgiEnv) -> i32 {
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or(script);
 
-    // The request body: CONTENT_LENGTH bytes from stdin.
+    // The request body: CONTENT_LENGTH bytes from stdin, read as the
+    // engine needs them.
     let content_length = from_env("CONTENT_LENGTH")
         .map(|v| rhp_builtins::c_atol(&v))
         .unwrap_or(0);
-    let mut body = Vec::new();
-    if content_length > 0 {
-        let _ = std::io::stdin()
-            .lock()
-            .take(content_length as u64)
-            .read_to_end(&mut body);
-    }
+    let mut stdin = Some(CgiStdin {
+        left: content_length.max(0) as u64,
+    });
     let server_self = php_self(&env, info.request_uri.as_deref(), fix_pathinfo);
     // php_execute_script: chdir to the script's directory (unless -C).
     let cwd = match std::path::Path::new(&script).parent() {
@@ -723,8 +762,9 @@ pub fn main(args: &[String], env: CgiEnv) -> i32 {
             content_type: info
                 .from_env
                 .then(|| env.get("CONTENT_TYPE").unwrap_or_default()),
+            body: Vec::new(),
             // A later run finds stdin already read.
-            body: std::mem::take(&mut body),
+            body_reader: stdin.take().map(|r| Box::new(r) as Box<dyn std::io::Read>),
             content_length: Some(content_length),
             authorization: from_env("HTTP_AUTHORIZATION"),
             request_time,
@@ -740,7 +780,7 @@ pub fn main(args: &[String], env: CgiEnv) -> i32 {
             info: Some(request),
             php_binary: None,
             cwd: cwd.clone(),
-            ini_files: None,
+            ini_files: Some(opts.ini_files.clone()),
         };
         let sapi = if cgi {
             CgiSapi::for_request()

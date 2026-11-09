@@ -82,6 +82,12 @@ pub struct BodyState {
     /// The temporary files `request_body` spilled into (a body of 16 KiB
     /// or more), deleted at request end.
     spills: RefCell<Vec<Vec<u8>>>,
+    /// A body the SAPI streams ([`RequestInfo::body_reader`]): read from
+    /// here, as php's `sapi_module.read_post`, instead of the in-memory
+    /// body.
+    ///
+    /// [`RequestInfo::body_reader`]: crate::main::sapi::RequestInfo::body_reader
+    stream: RefCell<Option<Box<dyn std::io::Read>>>,
 }
 
 impl BodyState {
@@ -94,16 +100,57 @@ impl BodyState {
         self.buffered.borrow().clone().unwrap_or_default()
     }
 
-    /// The body bytes the SAPI has not delivered yet.
-    pub fn remaining<'a>(&self, body: &'a [u8]) -> &'a [u8] {
-        body.get(self.consumed.get()..).unwrap_or_default()
+    /// Read the body from `reader` instead of the in-memory body.
+    pub fn set_stream(&mut self, reader: Box<dyn std::io::Read>) {
+        *self.stream.get_mut() = Some(reader);
+    }
+
+    /// A reader of the body bytes the SAPI has not delivered yet, from
+    /// `body` (the in-memory body) or the stream. It fills the buffer
+    /// unless the body ends (php's SAPIs' `read_post` loop so). The bytes
+    /// it hands out still count as unread until [`BodyState::apply`].
+    pub fn reader<'a>(&'a self, body: &'a [u8]) -> impl FnMut(&mut [u8]) -> usize + 'a {
+        let mut pos = self.consumed.get();
+        move |buf: &mut [u8]| {
+            let n = match self.stream.borrow_mut().as_mut() {
+                Some(r) => read_full(r.as_mut(), buf),
+                None => {
+                    let rest = body.get(pos..).unwrap_or_default();
+                    let n = buf.len().min(rest.len());
+                    buf[..n].copy_from_slice(&rest[..n]);
+                    n
+                }
+            };
+            pos += n;
+            n
+        }
+    }
+
+    /// `sapi_read_post_block`: up to `buf.len()` body bytes, counted read.
+    fn read_block(&self, body: &[u8], buf: &mut [u8]) -> usize {
+        let n = self.reader(body)(buf);
+        self.consumed.set(self.consumed.get() + n);
+        n
+    }
+
+    /// The rest of the body, read.
+    pub fn read_rest(&self, body: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut buf = vec![0; SAPI_POST_BLOCK_SIZE];
+        loop {
+            let n = self.read_block(body, &mut buf);
+            out.extend_from_slice(&buf[..n]);
+            if n < buf.len() {
+                return out;
+            }
+        }
     }
 
     /// `sapi_read_standard_form_data` (within `post_max_size`): the rest of
     /// the body becomes `request_body`.
     pub fn buffer_rest(&self, body: &[u8]) {
-        *self.buffered.borrow_mut() = Some(self.remaining(body).to_vec());
-        self.consumed.set(body.len());
+        let rest = self.read_rest(body);
+        *self.buffered.borrow_mut() = Some(rest);
     }
 
     /// `SG(read_post_bytes)`: body bytes read from the SAPI so far.
@@ -124,22 +171,21 @@ impl BodyState {
     /// `upload_tmp_dir` (else the system's). When none can be created the
     /// body is discarded, with php's warnings (`diags`).
     pub fn read_standard(&self, body: &[u8], post_max_size: i64, diags: &mut Vec<Diag>) -> bool {
-        let rest = self.remaining(body);
-        let mut off = 0;
+        let mut data = Vec::new();
+        let mut block = vec![0; SAPI_POST_BLOCK_SIZE];
         let mut over = false;
         let mut spilled = false;
         loop {
-            let n = SAPI_POST_BLOCK_SIZE.min(rest.len() - off);
+            let n = self.read_block(body, &mut block);
             // php_stream_temp_write: the write that reaches the memory
             // limit moves the stream to a file.
-            if n > 0 && !spilled && off + n >= SAPI_POST_BLOCK_SIZE {
+            if n > 0 && !spilled && data.len() + n >= SAPI_POST_BLOCK_SIZE {
                 match self.spill(diags) {
                     Some(path) => {
                         spilled = true;
                         self.spills.borrow_mut().push(path);
                     }
                     None => {
-                        self.consumed.set(self.consumed.get() + n);
                         diags.push(Diag::Warning(
                             "Unable to create temporary file, Check permissions in temporary files directory.".into(),
                         ));
@@ -151,8 +197,7 @@ impl BodyState {
                     }
                 }
             }
-            off += n;
-            self.consumed.set(self.consumed.get() + n);
+            data.extend_from_slice(&block[..n]);
             if post_max_size > 0 && self.consumed.get() as i64 > post_max_size {
                 over = true;
                 break;
@@ -161,7 +206,6 @@ impl BodyState {
                 break;
             }
         }
-        let data = rest[..off].to_vec();
         if let Some(path) = self.spills.borrow().last().filter(|_| spilled) {
             // The file holds what php's stream holds; reads come from memory.
             let _ = std::fs::write(os_path(path), &data);
@@ -361,7 +405,7 @@ fn char_bytes(enc: Option<InEnc>, b: u8) -> usize {
 
 /// `multipart_buffer`, reading from the body.
 struct MBuf<'a> {
-    src: &'a [u8],
+    src: &'a mut dyn FnMut(&mut [u8]) -> usize,
     src_pos: usize,
     buffer: Vec<u8>,
     begin: usize,
@@ -380,7 +424,7 @@ struct MBuf<'a> {
 }
 
 impl<'a> MBuf<'a> {
-    fn new(src: &'a [u8], boundary: &[u8]) -> MBuf<'a> {
+    fn new(src: &'a mut dyn FnMut(&mut [u8]) -> usize, boundary: &[u8]) -> MBuf<'a> {
         let bufsize = (boundary.len() + 6).max(FILLUNIT);
         let mut b = b"--".to_vec();
         b.extend_from_slice(boundary);
@@ -425,9 +469,7 @@ impl<'a> MBuf<'a> {
             return 0;
         }
         let want = self.bufsize - self.bytes;
-        let n = want.min(self.src.len() - self.src_pos);
-        self.buffer[self.bytes..self.bytes + n]
-            .copy_from_slice(&self.src[self.src_pos..self.src_pos + n]);
+        let n = (self.src)(&mut self.buffer[self.bytes..self.bytes + want]);
         self.src_pos += n;
         self.bytes += n;
         n
@@ -780,11 +822,12 @@ fn open_upload_temp(dir: &[u8], diags: &mut Vec<Diag>) -> Option<Vec<u8>> {
     crate::ext::standard::file::open_temp(&crate::ext::standard::file::temp_dir(), b"php")
 }
 
-/// `rfc1867_post_handler`: parse a multipart body (`src`, what is left of
-/// the request body; `read_before`: the body bytes read before it, php's
-/// `SG(read_post_bytes)`) into `post` / `files`.
+/// `rfc1867_post_handler`: parse a multipart body (`src` reads what is
+/// left of the request body, [`BodyState::reader`]; `read_before`: the body
+/// bytes read before it, php's `SG(read_post_bytes)`) into `post` /
+/// `files`.
 pub fn parse(
-    src: &[u8],
+    src: &mut dyn FnMut(&mut [u8]) -> usize,
     read_before: usize,
     content_type_dup: &[u8],
     content_length: i64,
@@ -1158,6 +1201,20 @@ pub fn parse(
     out.consumed = mb.src_pos;
     out.uploaded = Some(uploaded);
     out
+}
+
+/// Read until `buf` is full or the reader ends (an error ends it too).
+fn read_full(r: &mut dyn std::io::Read, buf: &mut [u8]) -> usize {
+    let mut n = 0;
+    while n < buf.len() {
+        match r.read(&mut buf[n..]) {
+            Ok(0) => break,
+            Ok(k) => n += k,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    n
 }
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {

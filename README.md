@@ -49,13 +49,13 @@ passing, so the percentages are of all php-src tests.
 | tests | 854 | 895 | 95.4% | php-src's tests of the language, functions, classes and output |
 | sapi/cli | 98 | 117 | 83.8% | tests that spawn the php binary run rhp, the `-S` server tests included |
 | sapi/cgi | 23 | 24 | 95.8% | `rhp --cgi` against php-cgi |
-| ext/standard | 3,416 | 3,880 | 88.0% | user stream wrappers carry no filters |
+| ext/standard | 3,417 | 3,880 | 88.1% | user stream wrappers carry no filters |
 | ext/bcmath | 64 | 170 | 37.6% | the `bc*` functions; no `BcMath\Number` |
 | ext/bz2 | 16 | 27 | 59.3% | libbz2 1.0.8, linked statically |
 | ext/calendar | 48 | 54 | 88.9% | php-src's calendar conversions, compiled in (rhp-csrc); the 6 others skip (32-bit) |
 | ext/ctype | 38 | 49 | 77.6% | |
 | ext/curl | 157 | 180 | 87.2% | on libcurl |
-| ext/date | 690 | 705 | 97.9% | on timelib, compiled in (rhp-csrc) |
+| ext/date | 692 | 705 | 98.2% | on timelib, compiled in (rhp-csrc) |
 | ext/dom | 882 | 901 | 97.9% | the `DOMDocument` API and the `Dom\` API on libxml2, HTML5 parsing and CSS selectors on lexbor (rhp-csrc) |
 | ext/exif | 106 | 106 | 100.0% | a port of exif.c, reading through the stream layer |
 | ext/fileinfo | 60 | 64 | 93.8% | php's bundled libmagic and magic database, compiled in (rhp-csrc); the 4 others skip |
@@ -63,11 +63,11 @@ passing, so the percentages are of all php-src tests.
 | ext/gd | 278 | 336 | 82.7% | on libgd; php skips the others (bundled libgd, GD formats, 32-bit) |
 | ext/gettext | 19 | 19 | 100.0% | on libintl (glibc's on Linux) |
 | ext/gmp | 96 | 99 | 97.0% | on libgmp |
-| ext/hash | 66 | 83 | 79.5% | all 60 algorithms; no `mhash`, `hash_hkdf` |
+| ext/hash | 72 | 83 | 86.7% | all 60 algorithms; no `mhash`, `hash_hkdf` |
 | ext/iconv | 80 | 82 | 97.6% | the system iconv |
 | ext/intl | 464 | 511 | 90.8% | on ICU: every class and function, reported as loaded |
 | ext/json | 94 | 94 | 100.0% | |
-| ext/libxml | 21 | 32 | 65.6% | on libxml2 |
+| ext/libxml | 22 | 32 | 68.8% | on libxml2 |
 | ext/mbstring | 319 | 446 | 71.5% | on php-src's libmbfl (rhp-mbfl-sys); mb_ereg* on oniguruma |
 | ext/opcache | 815 | 876 | 93.0% | the compiled-script cache only; no optimizer, JIT or file cache |
 | ext/openssl | 215 | 236 | 91.1% | on OpenSSL |
@@ -76,15 +76,15 @@ passing, so the percentages are of all php-src tests.
 | ext/pdo | 128 | 132 | 97.0% | PDO core; the driver tests run against pdo_sqlite through its `--REDIRECTTEST--` |
 | ext/pdo_sqlite | 82 | 89 | 92.1% | `Pdo\Sqlite` on libsqlite3, linked statically |
 | ext/phar | 19 | 574 | 3.3% | reads and runs phars (composer.phar); no write API |
-| ext/posix | 32 | 61 | 52.5% | |
+| ext/posix | 48 | 61 | 78.7% | |
 | ext/random | 68 | 69 | 98.6% | the functions, `Random\Randomizer` and the engines |
 | ext/readline | 16 | 28 | 57.1% | on libedit: the functions, history, the callback interface and the interactive shell (`php -a`) |
-| ext/reflection | 483 | 540 | 89.4% | |
+| ext/reflection | 484 | 540 | 89.6% | |
 | ext/session | 250 | 269 | 92.9% | |
 | ext/simplexml | 162 | 165 | 98.2% | on libxml2 |
 | ext/sockets | 58 | 119 | 48.7% | the socket calls, `AddressInfo` and the constants; no `socket_sendmsg`/`socket_recvmsg`, no multicast options |
 | ext/sodium | 31 | 31 | 100.0% | on libsodium, linked statically |
-| ext/spl | 646 | 796 | 81.2% | |
+| ext/spl | 656 | 796 | 82.4% | |
 | ext/sqlite3 | 93 | 101 | 92.1% | `SQLite3` on the libsqlite3 pdo_sqlite links |
 | ext/tokenizer | 51 | 54 | 94.4% | a port of the Zend scanner |
 | ext/xml | 61 | 71 | 85.9% | on libxml2 |
@@ -92,9 +92,9 @@ passing, so the percentages are of all php-src tests.
 | ext/xmlwriter | 50 | 51 | 98.0% | on libxml2 |
 | ext/zip | 120 | 125 | 96.0% | `ZipArchive` on libzip |
 | ext/zlib | 133 | 161 | 82.6% | system zlib; no incremental deflate/inflate contexts |
-| other ext/ | 1 | 2,752 | 0.0% | the 1 passing is an ext/uri test that needs none of its code |
+| other ext/ | 22 | 2,752 | 0.8% | the 1 passing is an ext/uri test that needs none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **17,050** | **22,219** | **76.7%** | |
+| **total** | **17,108** | **22,219** | **77.0%** | |
 
 Not implemented, so counted under other ext/: com_dotnet, dba, dl_test, enchant, ffi, ftp, imap, ldap, mysqli, odbc, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pgsql, shmop, skeleton, snmp, soap, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->

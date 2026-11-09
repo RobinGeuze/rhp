@@ -643,6 +643,7 @@ pub(crate) const LOADED_EXTS: &[&str] = &[
     "random",
     "readline",
     "Reflection",
+    "exif",
     "SimpleXML",
     "sockets",
     "sodium",

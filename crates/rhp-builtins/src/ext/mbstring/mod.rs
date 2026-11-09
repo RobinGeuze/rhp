@@ -304,6 +304,21 @@ pub(crate) fn convert_script(src: &[u8], to: Enc, from: Enc) -> Vec<u8> {
     mbfl::fast_convert(src, from, to, subst, mode).0
 }
 
+/// zend_multibyte_encoding_converter between the encodings `to` and
+/// `from` (zend_multibyte_fetch_encoding: libmbfl's names); `None` when
+/// either is unknown.
+pub(crate) fn zend_convert(src: &[u8], to: &[u8], from: &[u8]) -> Option<Vec<u8>> {
+    let to = Encoding::by_name(to)?;
+    let from = Encoding::by_name(from)?;
+    Some(convert_script(src, to, from))
+}
+
+/// zend_multibyte_parse_encoding_list (php_mb_parse_encoding_list with
+/// no argument number): the entry it refuses, if any.
+pub(crate) fn encoding_list_error(list: &[u8]) -> Option<Vec<u8>> {
+    parse_encoding_list_raw(list).err()
+}
+
 /// An encoding rfc1867 detected for a multipart part
 /// (mbstring.encoding_translation, php_rfc1867_set_multibyte_callbacks).
 #[derive(Clone, Copy)]

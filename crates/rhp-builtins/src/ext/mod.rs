@@ -11,6 +11,7 @@ pub mod ctype;
 pub mod curl;
 pub mod date;
 pub mod dom;
+pub mod exif;
 pub mod fileinfo;
 pub mod filter;
 pub mod gd;
@@ -178,6 +179,16 @@ pub(crate) fn modules() -> Vec<ModuleDef> {
             functions: spl::register,
             constants: no_constants,
             prelude_php: spl::PRELUDE_PHP,
+            wrappers: no_wrappers,
+            reset: no_state,
+            object_freed: None,
+        },
+        ModuleDef {
+            name: "exif",
+            cli_only: false,
+            functions: exif::register,
+            constants: exif::constants,
+            prelude_php: "",
             wrappers: no_wrappers,
             reset: no_state,
             object_freed: None,

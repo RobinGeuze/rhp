@@ -56,6 +56,7 @@ passing, so the percentages are of all php-src tests.
 | ext/curl | 157 | 180 | 87.2% | on libcurl |
 | ext/date | 690 | 705 | 97.9% | on timelib, compiled in (rhp-csrc) |
 | ext/dom | 870 | 901 | 96.6% | the `DOMDocument` API and the `Dom\` API on libxml2, HTML5 parsing and CSS selectors on lexbor (rhp-csrc) |
+| ext/exif | 106 | 106 | 100.0% | a port of exif.c, reading through the stream layer |
 | ext/fileinfo | 60 | 64 | 93.8% | php's bundled libmagic and magic database, compiled in (rhp-csrc); the 4 others skip |
 | ext/filter | 125 | 129 | 96.9% | all functions and filters; `uri_parser_class` knows only `parse_url` (no ext/uri) |
 | ext/gd | 278 | 336 | 82.7% | on libgd; php skips the others (bundled libgd, GD formats, 32-bit) |
@@ -66,7 +67,7 @@ passing, so the percentages are of all php-src tests.
 | ext/intl | 464 | 511 | 90.8% | on ICU: every class and function, reported as loaded |
 | ext/json | 94 | 94 | 100.0% | |
 | ext/libxml | 21 | 32 | 65.6% | on libxml2 |
-| ext/mbstring | 319 | 446 | 71.5% | on php-src's libmbfl (rhp-mbfl-sys) |
+| ext/mbstring | 319 | 446 | 71.5% | on php-src's libmbfl (rhp-mbfl-sys); mb_ereg* on oniguruma |
 | ext/opcache | 815 | 876 | 93.0% | the compiled-script cache only; no optimizer, JIT or file cache |
 | ext/openssl | 215 | 236 | 91.1% | on OpenSSL |
 | ext/pcntl | 24 | 66 | 36.4% | |
@@ -90,11 +91,11 @@ passing, so the percentages are of all php-src tests.
 | ext/xmlwriter | 50 | 51 | 98.0% | on libxml2 |
 | ext/zip | 120 | 125 | 96.0% | `ZipArchive` on libzip |
 | ext/zlib | 133 | 161 | 82.6% | system zlib; no incremental deflate/inflate contexts |
-| other ext/ | 1 | 2,858 | 0.0% | the 1 passing is an ext/uri test that needs none of its code |
+| other ext/ | 1 | 2,752 | 0.0% | the 1 passing is an ext/uri test that needs none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **16,906** | **22,219** | **76.1%** | |
+| **total** | **17,012** | **22,219** | **76.6%** | |
 
-Not implemented, so counted under other ext/: com_dotnet, dba, dl_test, enchant, exif, ffi, ftp, imap, ldap, mysqli, odbc, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pgsql, shmop, skeleton, snmp, soap, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
+Not implemented, so counted under other ext/: com_dotnet, dba, dl_test, enchant, ffi, ftp, imap, ldap, mysqli, odbc, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pgsql, shmop, skeleton, snmp, soap, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->
 
 ## Application support

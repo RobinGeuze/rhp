@@ -605,6 +605,11 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
     } else if v.is_empty() && STRING_UNEMPTY.contains(&name) {
         // OnUpdateStringUnempty refuses an empty value: the default stays.
         (Vec::new(), None)
+    } else if let Some(msgs) = crate::ext::exif::ini_refused(name, v) {
+        (
+            msgs.iter().map(|m| format!("PHP Startup: {m}")).collect(),
+            None,
+        )
     } else if name == b"date.timezone" && !tz_valid(v) {
         (vec![invalid_timezone(v, "PHP Startup")], None)
     } else if name == b"openssl.libctx" && !matches!(v, b"default" | b"custom") {
@@ -966,6 +971,13 @@ pub(crate) fn alter_ini_entry_ex(
         && !newv.is_empty()
         && !crate::main::fopen_wrappers::check(host, func, &newv, true)?
     {
+        return Ok(None);
+    }
+    // ext/exif's OnUpdateEncode / OnUpdateDecode.
+    if let Some(msgs) = crate::ext::exif::ini_refused(name, &newv) {
+        for m in msgs {
+            host.emit_diagnostic(crate::E_WARNING, format!("{func}(): {m}").as_bytes())?;
+        }
         return Ok(None);
     }
     let (warnings, stored) = on_modify_check(name, &newv);

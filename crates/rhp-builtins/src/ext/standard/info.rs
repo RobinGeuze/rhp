@@ -691,6 +691,14 @@ fn print_module(o: &mut Info, e: &str) {
         "bcmath" => &["bcmath.scale"],
         "filter" => &["filter.default", "filter.default_flags"],
         "readline" => &["cli.pager", "cli.prompt"],
+        "exif" => &[
+            "exif.decode_jis_intel",
+            "exif.decode_jis_motorola",
+            "exif.decode_unicode_intel",
+            "exif.decode_unicode_motorola",
+            "exif.encode_jis",
+            "exif.encode_unicode",
+        ],
         _ => &[],
     };
     if !ini.is_empty() {
@@ -711,6 +719,7 @@ fn static_minfo(e: &str) -> Option<Vec<(&'static str, String)>> {
         "gettext" => vec![("GetText Support", s("enabled"))],
         "sockets" => vec![("Sockets Support", s("enabled"))],
         "sodium" => crate::ext::sodium::info_rows(),
+        "exif" => crate::ext::exif::info_rows(),
         "ctype" => vec![("ctype functions", s("enabled"))],
         "filter" => vec![("Input Validation and Filtering", s("enabled"))],
         "posix" => vec![("POSIX support", s("enabled"))],

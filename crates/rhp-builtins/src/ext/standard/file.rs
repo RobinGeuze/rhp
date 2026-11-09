@@ -2194,9 +2194,11 @@ fn rename(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     {
         return Ok(Value::Bool(false));
     }
-    let from = crate::zend::virtual_cwd::os_path(&from_b);
-    let to = crate::zend::virtual_cwd::os_path(&to_b);
-    let both = [&from_b[..], b",", &to_b[..]].concat();
+    // php_plain_files_rename takes a leading `file://` off both.
+    let (from_b, to_b) = (strip_file_scheme(&from_b), strip_file_scheme(&to_b));
+    let from = crate::zend::virtual_cwd::os_path(from_b);
+    let to = crate::zend::virtual_cwd::os_path(to_b);
+    let both = [from_b, b",", to_b].concat();
     match std::fs::rename(&from, &to) {
         Ok(()) => Ok(Value::Bool(true)),
         // php_plain_files_rename: across devices a file is copied (keeping

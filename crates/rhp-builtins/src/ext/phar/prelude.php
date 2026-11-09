@@ -17,6 +17,8 @@ class Phar {
     final public static function mapPhar($alias = null, $dataoffset = 0) { return __phar_mapphar($alias); }
     final public static function loadPhar($filename, $alias = null) { return __phar_loadphar($filename, $alias); }
     final public static function running($retphar = true) { return __phar_running($retphar); }
+    // !PHAR_G(readonly): phar.readonly as zend_ini_parse_bool reads it.
+    final public static function canWrite(): bool { $v = strtolower((string) ini_get('phar.readonly')); return !(in_array($v, ['true', 'yes', 'on'], true) || (int) $v !== 0); }
     final public static function canCompress($type = 0) { return $type === self::GZ || $type === self::BZ2 || $type === 0; }
     final public static function isValidPharFilename($filename, $executable = true) { return true; }
     final public static function interceptFileFuncs() {}

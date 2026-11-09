@@ -1,5 +1,6 @@
 //! The `posix` extension (php-src `ext/posix/posix.c`): process ids, user and
-//! group database lookups, `posix_kill`, `posix_isatty`, `posix_uname`, and the
+//! group database lookups, the id setters, `posix_kill`, `posix_isatty`,
+//! `posix_uname`, `posix_times`, `posix_sysconf`, and the
 //! `posix_get_last_error`/`posix_strerror` error channel — thin wrappers over
 //! the real libc calls.
 
@@ -127,6 +128,80 @@ fn fn_getpgid(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         return Ok(Value::Bool(false));
     }
     Ok(Value::Int(r as i64))
+}
+
+/// PHP_POSIX_SINGLE_ARG_FUNC: `f(int)`, true or false with the errno kept.
+macro_rules! set_id_fn {
+    ($name:ident, $php:literal, $param:literal, $call:path) => {
+        fn $name(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+            let v = zpp_long(host, args, 0, $php, $param)?;
+            #[allow(clippy::unnecessary_cast)]
+            let r = unsafe { $call(v as _) };
+            if r < 0 {
+                set_last_error(host, errno());
+                return Ok(Value::Bool(false));
+            }
+            Ok(Value::Bool(true))
+        }
+    };
+}
+
+set_id_fn!(fn_setuid, "posix_setuid", "user_id", libc::setuid);
+set_id_fn!(fn_setgid, "posix_setgid", "group_id", libc::setgid);
+set_id_fn!(fn_seteuid, "posix_seteuid", "user_id", libc::seteuid);
+set_id_fn!(fn_setegid, "posix_setegid", "group_id", libc::setegid);
+
+fn fn_setsid(_: &mut dyn Host, _: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Int(unsafe { libc::setsid() } as i64))
+}
+
+fn fn_setpgid(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let pid = zpp_long(host, args, 0, "posix_setpgid", "process_id")?;
+    let pgid = zpp_long(host, args, 1, "posix_setpgid", "process_group_id")?;
+    check_pid(pid, 1, "posix_setpgid", "process_id", 0)?;
+    check_pid(pgid, 2, "posix_setpgid", "process_group_id", 0)?;
+    if unsafe { libc::setpgid(pid as libc::pid_t, pgid as libc::pid_t) } < 0 {
+        set_last_error(host, errno());
+        return Ok(Value::Bool(false));
+    }
+    Ok(Value::Bool(true))
+}
+
+fn fn_times(host: &mut dyn Host, _: &[Value]) -> Result<Value, Thrown> {
+    let mut t: libc::tms = unsafe { std::mem::zeroed() };
+    let ticks = unsafe { libc::times(&mut t) };
+    if ticks == (-1i64) as libc::clock_t {
+        set_last_error(host, errno());
+        return Ok(Value::Bool(false));
+    }
+    Ok(assoc(vec![
+        ("ticks", Value::Int(ticks as i64)),
+        ("utime", Value::Int(t.tms_utime as i64)),
+        ("stime", Value::Int(t.tms_stime as i64)),
+        ("cutime", Value::Int(t.tms_cutime as i64)),
+        ("cstime", Value::Int(t.tms_cstime as i64)),
+    ]))
+}
+
+fn fn_ctermid(host: &mut dyn Host, _: &[Value]) -> Result<Value, Thrown> {
+    let mut buf = [0 as libc::c_char; 1024];
+    extern "C" {
+        fn ctermid(s: *mut libc::c_char) -> *mut libc::c_char;
+    }
+    let p = unsafe { ctermid(buf.as_mut_ptr()) };
+    if p.is_null() {
+        set_last_error(host, errno());
+        return Ok(Value::Bool(false));
+    }
+    let s = unsafe { CStr::from_ptr(buf.as_ptr()) };
+    Ok(Value::str(s.to_bytes().to_vec()))
+}
+
+fn fn_sysconf(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let id = zpp_long(host, args, 0, "posix_sysconf", "conf_id")?;
+    Ok(Value::Int(
+        unsafe { libc::sysconf(id as libc::c_int) } as i64
+    ))
 }
 
 fn fn_kill(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
@@ -432,6 +507,15 @@ pub fn register(m: &mut crate::Registry) {
             ("posix_getsid", fn_getsid),
             ("posix_getpgid", fn_getpgid),
             ("posix_kill", fn_kill),
+            ("posix_setuid", fn_setuid),
+            ("posix_setgid", fn_setgid),
+            ("posix_seteuid", fn_seteuid),
+            ("posix_setegid", fn_setegid),
+            ("posix_setsid", fn_setsid),
+            ("posix_setpgid", fn_setpgid),
+            ("posix_times", fn_times),
+            ("posix_ctermid", fn_ctermid),
+            ("posix_sysconf", fn_sysconf),
             ("posix_isatty", fn_isatty),
             ("posix_ttyname", fn_ttyname),
             ("posix_getpwuid", fn_getpwuid),

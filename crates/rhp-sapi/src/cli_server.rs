@@ -1242,6 +1242,7 @@ impl Server {
             cookie: r.header(b"cookie").map(<[u8]>::to_vec),
             content_type: r.header(b"content-type").map(<[u8]>::to_vec),
             body: r.content.clone().unwrap_or_default(),
+            body_reader: None,
             content_length: Some(r.content.as_ref().map_or(0, Vec::len) as i64),
             authorization: r.header(b"authorization").map(<[u8]>::to_vec),
             request_time: now,

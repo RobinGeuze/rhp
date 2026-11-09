@@ -359,6 +359,14 @@ impl Host for Vm {
         Some(&mut self.sapi.response)
     }
 
+    fn finish_response(&mut self) -> bool {
+        Vm::finish_response(self)
+    }
+
+    fn worker_handle_request(&mut self, handler: &Value) -> Result<bool, Thrown> {
+        Vm::worker_handle_request(self, handler)
+    }
+
     fn log_message(&mut self, msg: &[u8]) {
         self.sapi.sapi.log_message(msg);
     }
@@ -780,6 +788,13 @@ impl Host for Vm {
             }
             return Some(v);
         } else if path.eq_ignore_ascii_case(b"php://input") {
+            // php-cli has no request body stream until the first open
+            // creates an empty php://temp (a temp and a memory stream).
+            if !std::mem::replace(&mut self.input_body, true)
+                && builtins::main::sapi::sapi_name() == "cli"
+            {
+                self.next_resource_id += 2;
+            }
             // The request body: a read-only buffer, re-readable per open.
             let v = self.make_stream(
                 StreamState::Mem {
@@ -2205,7 +2220,7 @@ impl Host for Vm {
         let entry = self.class(o.class);
         let mut out = Vec::new();
         let mut before = 0usize;
-        for (key, pe) in &entry.props {
+        for (key, pe) in entry.props.iter() {
             // A virtual property has no slot to dump.
             if self.internal_slot(o.class, key) || pe.virt {
                 continue;
@@ -2241,6 +2256,21 @@ impl Host for Vm {
             PropRes::Slot(k) => b.props().contains_key(&k),
             PropRes::Dynamic => b.props().contains_key(&name),
             PropRes::Denied(_) => false,
+        }
+    }
+
+    fn object_prop_hooked(&mut self, obj: &Value, name: &[u8]) -> Option<Result<Value, Thrown>> {
+        let Value::Object(h) = deref(obj) else {
+            return None;
+        };
+        let cls = h.borrow().class;
+        if !self.classes[cls as usize].hooked {
+            return None;
+        }
+        let scope = self.stack.last().and_then(|f| f.defining_class);
+        match classes::resolve_prop(&self.classes, cls, scope, &PhpStr::from_bytes(name)) {
+            PropRes::Slot(k) => self.hooked_read(&h, cls, &k),
+            _ => None,
         }
     }
 
@@ -2963,8 +2993,8 @@ impl Vm {
         };
         match act {
             Act::Out if self.streams.record(id).is_some_and(|s| s.output) => self.write_out(data),
-            Act::Out => self.emit_raw_stdout(data),
-            Act::Err => self.write_stderr(data),
+            Act::Out => return Some(self.emit_raw_stdout(data)),
+            Act::Err => return Some(self.sapi.sapi.write_stderr_stream(data)),
             Act::Buf => match self.streams.get_mut(&id)? {
                 StreamState::Mem {
                     mode: MemMode::ReadOnly,
@@ -3167,7 +3197,21 @@ impl Vm {
             // php's ftell(): false while the stream position is -1.
             StreamState::Fd(f) => Some(f.tell()).filter(|&p| p != -1),
             StreamState::Ops(s) => Some(s.tell()).filter(|&p| p != -1),
-            StreamState::Stdin => Some(self.stdin_reader.as_ref().map_or(0, |f| f.tell())),
+            // php's position starts at -1 on a pipe or a terminal (ftell
+            // false), where the lseek at open failed; reads still add to it.
+            StreamState::Stdin => Some(self.stdin_reader.as_ref().map_or_else(
+                || builtins::main::streams::plain_wrapper::fd_initial_position(0),
+                |f| f.tell(),
+            ))
+            .filter(|&p| p != -1),
+            StreamState::Stdout => Some(
+                builtins::main::streams::plain_wrapper::fd_initial_position(1),
+            )
+            .filter(|&p| p != -1),
+            StreamState::Stderr => Some(
+                builtins::main::streams::plain_wrapper::fd_initial_position(2),
+            )
+            .filter(|&p| p != -1),
             StreamState::Mem { pos, skew, .. } => {
                 // ftell() is false while php's position is -1 (failed seek).
                 let t = *pos as i64 + *skew;

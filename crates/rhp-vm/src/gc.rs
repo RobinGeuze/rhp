@@ -268,7 +268,7 @@ impl Vm {
     /// holds.
     fn gc_root_tmpvars(&self) -> Vec<Value> {
         let mut out = Vec::new();
-        for f in &self.stack {
+        for f in self.stack.iter() {
             for &(pos, _, by_ref, _) in f.fe_live.iter().flat_map(|l| l.iter()) {
                 if let (true, Some(Value::Ref(r))) = (by_ref, f.regs.get(pos as usize + 1)) {
                     if let Ok(v) = r.try_borrow() {
@@ -366,6 +366,7 @@ impl Vm {
                 }
                 if let Some(l) = o.lazy() {
                     out.push(l.initializer.clone());
+                    out.extend(l.call.clone());
                     if let Some(i) = &l.instance {
                         out.push(Value::Object(i.clone()));
                     }

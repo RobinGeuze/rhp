@@ -163,7 +163,7 @@ exposed to Rust via maintained `-sys` crates (or is trivially bindgen-able):
 |---|---|---|
 | `preg_*` | **PCRE2** (`libpcre2-8`) | none: rhp links the system library and declares what it calls (`src/pcre/sys.rs`) |
 | `intl`, parts of `mbstring` (casing, collation, normalization), `IntlDateFormatter` | **ICU** (`libicui18n`/`libicuuc`) | `icu`/`rust_icu_*` (bindgen over system ICU), or ICU4X (pure Rust, *different data*) |
-| `mb_ereg*` | **Oniguruma** (`libonig`) | `onig` crate |
+| `mb_ereg*` | **Oniguruma** (`libonig`) | none: rhp links it and calls it through a small C shim (`ext/mbstring/onig_shim.c`) |
 | `dom`, `simplexml`, `xml` | **libxml2** | `libxml`/bindgen |
 | `openssl`, `hash` (some), `sodium` | **OpenSSL**, **libsodium** | `openssl`/`openssl-sys`; libsodium through rhp's own declarations (`ext/sodium/sys.rs`) |
 | `zlib`, `gzencode`, `gzip` streams | **zlib** | `libz-sys`/`flate2` (zlib backend) |

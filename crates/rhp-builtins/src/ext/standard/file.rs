@@ -95,7 +95,7 @@ pub(crate) fn touch_ctx(host: &mut dyn Host, args: &[Value], idx: usize) {
 
 /// An http(s) or ftp(s) URL a built-in wrapper serves (no user wrapper
 /// replaced it).
-fn builtin_http(host: &dyn Host, path: &[u8]) -> bool {
+pub(crate) fn builtin_http(host: &dyn Host, path: &[u8]) -> bool {
     crate::ext::standard::http_fopen_wrapper::is_url_stream(path)
         && !(host.has_user_wrappers()
             && crate::main::streams::userspace::locate(host, path).is_some())
@@ -1647,7 +1647,9 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         return stdin_contents(host, offset, maxlen);
     }
     let scheme = crate::main::streams::split_scheme(&url).0.to_vec();
+    // php://input too: opening it takes resource ids, as in php.
     if crate::main::streams::is_filter_url(&url)
+        || url.eq_ignore_ascii_case(b"php://input")
         || host
             .stream_wrapper(&scheme)
             .is_some_and(|w| w.has_stream_opener())
@@ -2194,9 +2196,11 @@ fn rename(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     {
         return Ok(Value::Bool(false));
     }
-    let from = crate::zend::virtual_cwd::os_path(&from_b);
-    let to = crate::zend::virtual_cwd::os_path(&to_b);
-    let both = [&from_b[..], b",", &to_b[..]].concat();
+    // php_plain_files_rename takes a leading `file://` off both.
+    let (from_b, to_b) = (strip_file_scheme(&from_b), strip_file_scheme(&to_b));
+    let from = crate::zend::virtual_cwd::os_path(from_b);
+    let to = crate::zend::virtual_cwd::os_path(to_b);
+    let both = [from_b, b",", to_b].concat();
     match std::fs::rename(&from, &to) {
         Ok(()) => Ok(Value::Bool(true)),
         // php_plain_files_rename: across devices a file is copied (keeping

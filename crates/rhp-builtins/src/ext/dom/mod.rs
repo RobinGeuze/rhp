@@ -596,6 +596,7 @@ fn method(name: &[u8]) -> Option<Method> {
         | b"DOMElement::replaceChildren"
         | b"DOMDocument::replaceChildren" => e::replace_children,
         b"DOMNodeList::count" => l::nodelist_count,
+        b"DOMNodeList::getIterator" | b"DOMNamedNodeMap::getIterator" => l::get_iterator_m,
         b"DOMNodeList::item" => l::nodelist_item,
         b"DOMNodeList::offsetGet" => l::nodelist_offset_get,
         b"DOMNodeList::offsetExists" => l::nodelist_offset_exists,
@@ -746,7 +747,8 @@ fn modern_method(name: &[u8]) -> Option<Method> {
         b"Document::getElementsByTagNameNS" | b"Element::getElementsByTagNameNS" => {
             m::get_elements_by_tag_name_ns
         }
-        b"Document::importLegacyNode" | b"Document::importNode" => m::doc_import_node,
+        b"Document::importLegacyNode" => m::doc_import_legacy_node,
+        b"Document::importNode" => m::doc_import_node,
         b"Document::registerNodeClass" => document::register_node_class,
         b"Document::relaxNgValidate" => document::relaxng_validate,
         b"Document::relaxNgValidateSource" => document::relaxng_validate_source,
@@ -794,6 +796,10 @@ fn modern_method(name: &[u8]) -> Option<Method> {
         b"Element::setIdAttributeNS" => e::set_id_attribute_ns,
         b"Element::toggleAttribute" => m::el_toggle_attribute,
         b"HTMLCollection::count" | b"NodeList::count" => l::nodelist_count,
+        b"HTMLCollection::getIterator"
+        | b"NodeList::getIterator"
+        | b"NamedNodeMap::getIterator"
+        | b"DtdNamedNodeMap::getIterator" => l::get_iterator_m,
         b"HTMLCollection::item" | b"NodeList::item" => l::nodelist_item,
         b"HTMLCollection::namedItem" => co::html_collection_named_item,
         b"HTMLDocument::createEmpty" => m::html_create_empty,
@@ -842,7 +848,7 @@ fn modern_method(name: &[u8]) -> Option<Method> {
         b"XMLDocument::createFromFile" => m::xml_create_from_file,
         b"XMLDocument::createFromString" => m::xml_create_from_string,
         b"XMLDocument::validate" => document::validate,
-        b"XMLDocument::xinclude" => document::xinclude,
+        b"XMLDocument::xinclude" => document::xinclude_modern,
         b"XPath::__construct" => x::construct,
         b"XPath::evaluate" => x::evaluate,
         b"XPath::query" => x::query,
@@ -890,22 +896,6 @@ fn fn_dom_prop(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         lazy_fname: true,
     };
     props::dispatch(&mut cx, op, &this, &name, args.get(3).map(deref))
-}
-
-/// `__dom_iter($list, $current, $index)`: php's DOMNodeList and
-/// DOMNamedNodeMap iterator, one step: `[key, node]` for the item at
-/// `$index` (the first item when `$current` is null), or null at the end.
-fn fn_dom_iter(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let this = arg(args, 0);
-    let cur = arg(args, 1);
-    let index = int(args, 2);
-    let mut cx = Cx {
-        host,
-        fname: String::new(),
-        quiet: false,
-        lazy_fname: false,
-    };
-    lists::iterate(&mut cx, &this, &cur, index)
 }
 
 /// php_dom_export_node: the node a DOMNode stands for (for
@@ -1061,24 +1051,36 @@ fn clone_ns_obj(host: &mut dyn Host, src: &ObjectHandle, dst: &ObjectHandle) -> 
 
 static NODE_HANDLERS: ObjectHandlers = ObjectHandlers {
     get_properties_for: Some(get_properties_for),
+    unset_property: Some(unset_property),
     clone_obj: CloneObj::Custom(clone_node_obj),
     ..ObjectHandlers::STD
 };
 
 static NS_NODE_HANDLERS: ObjectHandlers = ObjectHandlers {
     get_properties_for: Some(get_properties_for),
+    unset_property: Some(unset_property),
     clone_obj: CloneObj::Custom(clone_ns_obj),
     ..ObjectHandlers::STD
 };
 
 static MAP_HANDLERS: ObjectHandlers = ObjectHandlers {
     get_properties_for: Some(get_properties_for),
+    unset_property: Some(unset_property),
+    clone_obj: CloneObj::None,
+    ..ObjectHandlers::STD
+};
+
+static LIST_HANDLERS: ObjectHandlers = ObjectHandlers {
+    get_properties_for: Some(get_properties_for),
+    unset_property: Some(unset_property),
+    get_iterator: Some(lists::get_iterator),
     clone_obj: CloneObj::None,
     ..ObjectHandlers::STD
 };
 
 static PLAIN_HANDLERS: ObjectHandlers = ObjectHandlers {
     get_properties_for: Some(get_properties_for),
+    unset_property: Some(unset_property),
     ..ObjectHandlers::STD
 };
 
@@ -1115,6 +1117,7 @@ static MODERN_PLAIN_HANDLERS: ObjectHandlers = ObjectHandlers {
 
 static MODERN_LIST_HANDLERS: ObjectHandlers = ObjectHandlers {
     get_properties_for: Some(get_properties_for),
+    get_iterator: Some(lists::get_iterator),
     clone_obj: CloneObj::None,
     unset_property: Some(unset_property),
     dimension: Some(&collections::LIST_DIMENSION),
@@ -1123,6 +1126,7 @@ static MODERN_LIST_HANDLERS: ObjectHandlers = ObjectHandlers {
 
 static MODERN_MAP_HANDLERS: ObjectHandlers = ObjectHandlers {
     get_properties_for: Some(get_properties_for),
+    get_iterator: Some(lists::get_iterator),
     clone_obj: CloneObj::None,
     unset_property: Some(unset_property),
     dimension: Some(&collections::MAP_DIMENSION),
@@ -1137,6 +1141,9 @@ static TOKEN_LIST_HANDLERS: ObjectHandlers = ObjectHandlers {
     dimension: Some(&collections::TOKEN_LIST_DIMENSION),
     ..ObjectHandlers::STD
 };
+
+/// zend_register_class_alias of php_dom_arginfo.h: (alias, class).
+pub(crate) const CLASS_ALIASES: &[(&str, &str)] = &[("Dom\\DOMException", "DOMException")];
 
 pub(crate) static CLASSES: &[ClassHandlers] = &[
     ClassHandlers {
@@ -1196,12 +1203,12 @@ pub(crate) static CLASSES: &[ClassHandlers] = &[
     },
     ClassHandlers {
         class: "DOMNodeList",
-        handlers: &MAP_HANDLERS,
+        handlers: &LIST_HANDLERS,
         create_object: true,
     },
     ClassHandlers {
         class: "DOMNamedNodeMap",
-        handlers: &MAP_HANDLERS,
+        handlers: &LIST_HANDLERS,
         create_object: true,
     },
     ClassHandlers {
@@ -1228,7 +1235,6 @@ pub fn register(m: &mut crate::Registry) {
         &[
             ("__dom", fn_dom, 2, None),
             ("__dom_prop", fn_dom_prop, 3, Some(4)),
-            ("__dom_iter", fn_dom_iter, 3, Some(3)),
         ],
     );
 }
@@ -1309,7 +1315,7 @@ pub fn modern_dump_to_str(
     format: bool,
     encoding: *const u8,
 ) -> Result<Option<Vec<u8>>, Thrown> {
-    let p = nscompat::of(document).map(|p| &*p);
+    let p = unsafe { nscompat::of(document) }.map(|p| &*p);
     xml_serializer::dump_to_str(node, options, format, encoding, false, p)
 }
 

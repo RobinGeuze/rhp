@@ -624,6 +624,58 @@ impl Vm {
         }
     }
 
+    /// The interrupt flag was set before the instruction at `pc`: a
+    /// max_execution_time timeout (raised where a jump lands or a user
+    /// function starts) or queued async signals. True when the instruction
+    /// is to be fetched again. Out of line to keep the dispatch loop small.
+    #[cold]
+    #[inline(never)]
+    fn vm_interrupt(
+        &mut self,
+        top: usize,
+        pc: usize,
+        proto: &Rc<FunctionProto>,
+    ) -> Result<bool, Thrown> {
+        // max_execution_time ran out (zend_timeout): the fatal error comes
+        // where a jump lands or a user function starts.
+        if builtins::zend::timeout::timed_out() {
+            if !proto.is_internal() {
+                let landed = match self.timeout_prev {
+                    Some((d, p)) if d == top => pc != p + 1,
+                    Some((d, _)) => d < top && pc == 0,
+                    None => false,
+                };
+                let mut at_check = self.timeout_wait == Some((top, pc));
+                if landed && !at_check {
+                    match loop_body_start(&proto.code, pc) {
+                        Some(body) if body != pc => {
+                            self.timeout_wait = Some((top, body));
+                        }
+                        _ => at_check = true,
+                    }
+                }
+                if at_check {
+                    self.timeout_wait = None;
+                    if let Some(msg) = builtins::zend::timeout::take_timed_out() {
+                        self.timeout_prev = None;
+                        // Located at this instruction (pc + 1, as when it
+                        // runs).
+                        self.stack[top].pc = pc + 1;
+                        return Err(self.fatal_error_here(1, msg.as_bytes()));
+                    }
+                }
+                self.timeout_prev = Some((top, pc));
+            }
+            return Ok(false);
+        }
+        // pcntl async signals (php's `EG(vm_interrupt)` check): a throwing
+        // handler raises at this (not yet run) instruction; otherwise the
+        // instruction then runs as usual.
+        self.dispatch_interrupt()?;
+        self.stack[top].pc = pc;
+        Ok(true)
+    }
+
     pub(crate) fn run_frames(&mut self) -> Result<Value, Thrown> {
         // The running frame and its proto, taken again only when an
         // instruction pushed or popped a frame (a call, a return): within
@@ -683,45 +735,10 @@ impl Vm {
 
             // pcntl async signals (php's `EG(vm_interrupt)` check): run queued
             // PHP signal handlers before the next instruction.
-            if builtins::pcntl_interrupt_pending() {
-                // max_execution_time ran out (zend_timeout): the fatal error
-                // comes where a jump lands or a user function starts.
-                if builtins::zend::timeout::timed_out() {
-                    if !proto.is_internal() {
-                        let landed = match self.timeout_prev {
-                            Some((d, p)) if d == top => pc != p + 1,
-                            Some((d, _)) => d < top && pc == 0,
-                            None => false,
-                        };
-                        let mut at_check = self.timeout_wait == Some((top, pc));
-                        if landed && !at_check {
-                            match loop_body_start(&proto.code, pc) {
-                                Some(body) if body != pc => {
-                                    self.timeout_wait = Some((top, body));
-                                }
-                                _ => at_check = true,
-                            }
-                        }
-                        if at_check {
-                            self.timeout_wait = None;
-                            if let Some(msg) = builtins::zend::timeout::take_timed_out() {
-                                self.timeout_prev = None;
-                                // Located at this instruction (pc + 1, as
-                                // when it runs).
-                                self.stack[top].pc = pc + 1;
-                                return Err(self.fatal_error_here(1, msg.as_bytes()));
-                            }
-                        }
-                        self.timeout_prev = Some((top, pc));
-                    }
-                } else {
-                    // A throwing handler raises at this (not yet run)
-                    // instruction; otherwise the instruction then runs as
-                    // usual.
-                    builtins::pcntl_dispatch(self)?;
-                    self.stack[top].pc = pc;
-                    continue;
-                }
+            if self.interrupt.load(std::sync::atomic::Ordering::Relaxed)
+                && self.vm_interrupt(top, pc, &proto)?
+            {
+                continue;
             }
 
             match instr {
@@ -1032,6 +1049,12 @@ impl Vm {
                     }
                 }
                 Instr::RecvInitCheck { index } => self.recv_init_check(top, index)?,
+                Instr::RecvInitCached { index, target } => {
+                    self.recv_init_cached(top, index, target)
+                }
+                Instr::RecvInitStore { index, strings } => {
+                    self.recv_init_store(top, index, strings)
+                }
                 Instr::JmpTrue { cond, target } => {
                     let f = &mut self.stack[top];
                     if let Value::Bool(b) = f.regs[cond as usize] {
@@ -1136,6 +1159,9 @@ impl Vm {
                 }
                 Instr::ArgSpreadRef { arr, src, sig } => {
                     self.arg_spread_ref(top, &proto, arr, src, sig)?
+                }
+                Instr::ArgSpreadRefDyn { arr, src, callee } => {
+                    self.arg_spread_ref_dyn(top, arr, src, callee)?
                 }
                 Instr::ArgSpread { arr, src } => {
                     let entries = self.unpack_entries(top, src, true)?;
@@ -1348,6 +1374,10 @@ impl Vm {
                         Value::Null => Value::Null,
                         _ => self.dim_read(&a, &k, DimMode::Read)?,
                     };
+                    self.reg_set(top, dst, r);
+                }
+                Instr::DimAppendW { dst, arr } => {
+                    let r = self.dim_append_w(top, arr)?;
                     self.reg_set(top, dst, r);
                 }
                 Instr::DimFetchUnset { dst, arr, key } => {
@@ -2622,7 +2652,7 @@ impl Vm {
                     // The proto is stored in the closures table (file-local index).
                     let f = self.closures[(self.unit_base(top).closures + idx) as usize].clone();
                     let lc = f.proto.name.as_bytes().to_ascii_lowercase();
-                    if self.fn_names.contains_key(&lc) {
+                    if self.function_declared(&lc) {
                         // A preloaded file's declaration of a preloaded function
                         // was removed by preloading.
                         if self.preloaded.as_ref().is_some_and(|p| p.has_function(&lc)) {
@@ -2999,18 +3029,56 @@ impl Vm {
             Value::Array(a) => a.values().cloned().collect(),
             _ => Vec::new(),
         };
-        let flags: Vec<Value> = list(&sig[2]);
-        let names: Vec<Value> = list(&sig[3]);
+        let flags: Vec<bool> = list(&sig[2])
+            .iter()
+            .map(|b| matches!(b, Value::Bool(true)))
+            .collect();
+        let names: Vec<Vec<u8>> = list(&sig[3]).iter().map(conv::to_string_bytes).collect();
+        self.spread_by_ref(top, arr, src, &fname, variadic, &flags, &names)
+    }
+
+    /// [`Instr::ArgSpreadRefDyn`]: the callee's parameters, asked now.
+    #[cold]
+    fn arg_spread_ref_dyn(
+        &mut self,
+        top: usize,
+        arr: Reg,
+        src: Reg,
+        callee: Reg,
+    ) -> Result<(), Thrown> {
+        let c = self.reg_get(top, callee);
+        let (fname, variadic, flags, names) = match self.callable_proto(&c) {
+            Some((p, scope)) if p.params.iter().any(|q| q.by_ref) => (
+                self.func_c_name(&p, scope).into_bytes(),
+                p.params.last().is_some_and(|q| q.variadic),
+                p.params.iter().map(|q| q.by_ref).collect::<Vec<_>>(),
+                p.params
+                    .iter()
+                    .map(|q| p.names[q.name as usize].as_bytes().to_vec())
+                    .collect::<Vec<_>>(),
+            ),
+            _ => (Vec::new(), false, Vec::new(), Vec::new()),
+        };
+        self.spread_by_ref(top, arr, src, &fname, variadic, &flags, &names)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spread_by_ref(
+        &mut self,
+        top: usize,
+        arr: Reg,
+        src: Reg,
+        fname: &[u8],
+        variadic: bool,
+        flags: &[bool],
+        names: &[Vec<u8>],
+    ) -> Result<(), Thrown> {
         let by_ref = |p: usize| match flags.get(p) {
-            Some(b) => matches!(b, Value::Bool(true)),
-            None => variadic && matches!(flags.last(), Some(Value::Bool(true))),
+            Some(b) => *b,
+            None => variadic && flags.last() == Some(&true),
         };
         // a named element's position
-        let named_pos = |s: &[u8]| {
-            names
-                .iter()
-                .position(|n| matches!(n, Value::Str(n) if n.as_bytes() == s))
-        };
+        let named_pos = |s: &[u8]| names.iter().position(|n| n.as_slice() == s);
         let source = match &self.stack[top].regs[src as usize] {
             Value::Ref(rc) if matches!(*rc.borrow(), Value::Array(_)) => Some(rc.clone()),
             _ => None,
@@ -3068,7 +3136,7 @@ impl Vm {
                     let msg = format!(
                         "Cannot pass by-reference argument {} of {}() by unpacking a Traversable, passing by-value instead",
                         at + 1,
-                        String::from_utf8_lossy(&fname)
+                        String::from_utf8_lossy(fname)
                     );
                     self.diag(builtins::E_WARNING, &msg)?;
                 }
@@ -3337,16 +3405,29 @@ impl Vm {
 
     /// The class's native `ce->get_iterator`, unless a user class overrode
     /// `getIterator()` (zend_implement_aggregate then switches to
-    /// zend_user_it_get_new_iterator).
+    /// zend_user_it_get_new_iterator), or, for an Iterator, one of its
+    /// methods (zend_implement_iterator: zend_user_it_get_iterator).
     fn native_get_iterator(
         &self,
         h: &ObjectHandle,
     ) -> Option<rhp_builtins::zend::object_handlers::GetIteratorFn> {
         let f = self.handlers_of(h).and_then(|t| t.get_iterator)?;
-        match self.lookup_method(h.borrow().class, b"getiterator") {
-            Some(m) if !self.is_internal_class(m.defining_class) => None,
-            _ => Some(f),
+        let cls = h.borrow().class;
+        let user = |name: &[u8]| {
+            self.lookup_method(cls, name)
+                .is_some_and(|m| !self.is_internal_class(m.defining_class))
+        };
+        if user(b"getiterator") {
+            return None;
         }
+        if self.class_implements(cls, b"Iterator")
+            && [&b"rewind"[..], b"valid", b"key", b"current", b"next"]
+                .into_iter()
+                .any(user)
+        {
+            return None;
+        }
+        Some(f)
     }
 
     /// zend_user_it_get_new_iterator: follow `getIterator()` until an object
@@ -3415,10 +3496,16 @@ impl Vm {
                     self.gen_rewind(oid)?;
                     self.reg_set(top, arr_reg, Value::Object(obj));
                     self.reg_set(top, pos_reg, Value::Int(0));
+                } else if internal {
+                    // ce->get_iterator's iterator, which no PHP code can
+                    // reach: FE_FETCH runs its funcs directly. `pos_reg`
+                    // is the fetched-once flag.
+                    use builtins::zend::internal_iterator::{step, Step};
+                    step(self, &obj, Step::Rewind)?;
+                    self.reg_set(top, arr_reg, Value::Object(obj));
+                    self.reg_set(top, pos_reg, Value::Bool(false));
                 } else if self.class_implements(ocls, b"Iterator") {
-                    if !internal {
-                        self.fe_iter_handle(top, pos_reg, ocls);
-                    }
+                    self.fe_iter_handle(top, pos_reg, ocls);
                     self.call_iter_method(&obj, b"rewind")?;
                     self.reg_set(top, arr_reg, Value::Object(obj));
                     self.reg_set(top, pos_reg, Value::Int(0));
@@ -3550,6 +3637,10 @@ impl Vm {
                     None => self.stack[top].pc = end as usize,
                 }
                 return Ok(());
+            }
+            // A get_iterator iterator (see FeReset).
+            if let Value::Bool(fetched) = self.reg_get(top, pos_reg) {
+                return self.fe_fetch_internal(top, pos_reg, key_cv, val_cv, end, &h, fetched);
             }
             // User Iterator object: rewind()/valid()/current()/key()/next().
             if self.class_implements(h.borrow().class, b"Iterator") {
@@ -3763,6 +3854,37 @@ impl Vm {
                 self.stack[top].pc = end as usize;
             }
         }
+        Ok(())
+    }
+
+    /// `FeFetch` over a class's get_iterator iterator (see FeReset): its
+    /// funcs, with no InternalIterator method frames.
+    #[allow(clippy::too_many_arguments)]
+    fn fe_fetch_internal(
+        &mut self,
+        top: usize,
+        pos_reg: Reg,
+        key_cv: Reg,
+        val_cv: Reg,
+        end: Pc,
+        it: &ObjectHandle,
+        fetched: bool,
+    ) -> Result<(), Thrown> {
+        use builtins::zend::internal_iterator::{current, step, Step};
+        if fetched {
+            step(self, it, Step::Next)?;
+        }
+        if !conv::to_bool(&step(self, it, Step::Valid)?) {
+            self.stack[top].pc = end as usize;
+            return Ok(());
+        }
+        let v = current(self, it)?;
+        self.cv_assign(top, val_cv, v)?;
+        if key_cv != Reg::MAX {
+            let k = step(self, it, Step::Key)?;
+            self.cv_assign(top, key_cv, k)?;
+        }
+        self.reg_set(top, pos_reg, Value::Bool(true));
         Ok(())
     }
 

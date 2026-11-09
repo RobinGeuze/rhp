@@ -40,6 +40,7 @@ const SOURCES: &[(&str, &str)] = &[
     ("ext/curl", "curl"),
     ("ext/date", "date"),
     ("ext/dom", "dom"),
+    ("ext/exif", "exif"),
     ("ext/fileinfo", "fileinfo"),
     ("ext/filter", "filter"),
     ("ext/gd", "gd"),
@@ -79,7 +80,13 @@ const SOURCES: &[(&str, &str)] = &[
     ("ext/zlib", "zlib"),
     ("sapi/cgi/cgi_main.stub.php", "standard"),
     ("sapi/cli/php_cli_process_title.stub.php", "standard"),
+    // fastcgi_finish_request, for an embedding server's SAPI.
+    ("sapi/fpm/fpm/fpm_main.stub.php", "standard"),
 ];
+
+/// Stubs in this repository (relative to the workspace root), for
+/// builtins php-src has no stub of.
+const LOCAL_STUBS: &[&str] = &["crates/rhp-builtins/src/sapi/server.stub.php"];
 
 /// The generated file, relative to the workspace root.
 const OUT: &str = "crates/rhp-bytecode/src/signatures/table.rs";
@@ -305,6 +312,11 @@ fn generate(php_src: &Path) -> Result<String, String> {
             .to_string();
         parse_stub(&rel, &src, ext, &mut out).map_err(|e| format!("{rel}: {e}"))?;
     }
+    // rhp's own stubs, for functions php-src has none of.
+    for rel in LOCAL_STUBS {
+        let src = std::fs::read(rel).map_err(|e| format!("{rel}: {e}"))?;
+        parse_stub(rel, &src, "standard", &mut out).map_err(|e| format!("{rel}: {e}"))?;
+    }
     let mut dirs: Vec<&str> = SOURCES.iter().map(|&(rel, _)| rel).collect();
     dirs.push("main");
     let parses = zpp::scan(php_src, &dirs)?;
@@ -502,7 +514,13 @@ fn walk_stmts(
                     frameless: frameless_arities(doc).map_err(|e| format!("{name}: {e}"))?,
                     params,
                 };
-                if out.funcs.insert(name.to_ascii_lowercase(), row).is_some() {
+                let shown = format!("{row:?}");
+                if let Some(prev) = out.funcs.insert(name.to_ascii_lowercase(), row) {
+                    // SAPIs share functions (php-cgi's and php-fpm's
+                    // apache_request_headers): the same declaration twice.
+                    if format!("{prev:?}") == shown {
+                        continue;
+                    }
                     return Err(format!("function {name} declared twice"));
                 }
             }

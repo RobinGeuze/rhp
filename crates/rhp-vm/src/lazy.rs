@@ -105,7 +105,7 @@ impl Vm {
                 let props = self.blank_props(cls);
                 let h: ObjectHandle = Rc::new(RefCell::new(ObjectData::new(cls, id, props)));
                 self.track_destructible(&h);
-                for (k, pe) in &self.classes[cls as usize].props {
+                for (k, pe) in self.classes[cls as usize].props.iter() {
                     if !pe.virt {
                         lazy_props.push(k.clone());
                     }
@@ -200,6 +200,7 @@ impl Vm {
             obj_flags,
             flags,
             initializer,
+            call: None,
             instance: None,
             lazy_props,
         });
@@ -290,7 +291,8 @@ impl Vm {
             let mut b = h.borrow_mut();
             let l = b.lazy_mut().expect("lazy");
             l.obj_flags &= !LazyInfo::UNINIT;
-            (l.initializer.clone(), std::mem::take(&mut l.lazy_props))
+            let init = l.call.clone().unwrap_or_else(|| l.initializer.clone());
+            (init, std::mem::take(&mut l.lazy_props))
         };
         let snapshot = h.borrow().props().clone();
         let unset_snapshot = self.unset_typed_props.get(&id).cloned();
@@ -336,7 +338,7 @@ impl Vm {
             let mut b = h.borrow_mut();
             let l = b.lazy_mut().expect("lazy");
             l.obj_flags = 0;
-            l.initializer.clone()
+            l.call.clone().unwrap_or_else(|| l.initializer.clone())
         };
         let restore = |h: &ObjectHandle| {
             if let Some(l) = h.borrow_mut().lazy_mut() {
@@ -379,6 +381,7 @@ impl Vm {
             let mut b = h.borrow_mut();
             let l = b.lazy_mut().expect("lazy");
             let old = std::mem::replace(&mut l.initializer, Value::Null);
+            l.call = None;
             l.instance = Some(inst.clone());
             l.flags |= LazyInfo::INITIALIZED;
             l.obj_flags = LazyInfo::PROXY;
@@ -502,7 +505,17 @@ impl Vm {
                     _ => None,
                 };
                 let flags = rhp_values::conv::to_int(&arg(3)) as u8;
+                // php calls the fcc its zpp resolved in the caller's scope.
+                let call = match arg(2) {
+                    v @ (Value::Str(_) | Value::Array(_)) => {
+                        Some(rhp_builtins::Host::wrap_callable(self, v))
+                    }
+                    _ => None,
+                };
                 let h = self.make_lazy(o, cls, arg(2), flags)?;
+                if let Some(l) = h.borrow_mut().lazy_mut() {
+                    l.call = call;
+                }
                 Ok(Value::Object(h))
             }
             // 0: not lazy, 1: uninitialized, 2: initialized proxy
@@ -770,6 +783,7 @@ impl Vm {
             obj_flags: LazyInfo::PROXY,
             flags,
             initializer: Value::Null,
+            call: None,
             instance: Some(new_inst),
             lazy_props: Vec::new(),
         });

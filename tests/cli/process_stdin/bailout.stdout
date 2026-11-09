@@ -1,0 +1,6 @@
+a
+
+Fatal error: Cannot redeclare function f() (previously declared in Command line run code:1) in Command line run code on line 1
+Stack trace:
+#0 {main}
+shutdown

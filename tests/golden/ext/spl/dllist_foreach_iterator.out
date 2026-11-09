@@ -1,0 +1,13 @@
+0101 0112 0123 1201 1212 1223 2301 2312 2323 
+121 221 321 
+2=3(3) 1=2(2) 0=1(1) 0
+An iterator cannot be used with foreach by reference
+122 121 012 011 
+array(2) {
+  [1]=>
+  int(2)
+  [0]=>
+  int(1)
+}
+0a 1b 2c 
+x1x1 x1x2 

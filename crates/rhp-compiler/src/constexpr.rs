@@ -40,6 +40,26 @@ pub(crate) fn check_const_expr(
     }
 }
 
+/// RECV_INIT's cache rule for default `e`: `None` when its evaluation has
+/// side effects (a `new`), else whether any string result may be cached
+/// (a lone constant fetch, whose value php interns).
+pub(crate) fn recv_init_cacheable(e: &Expression) -> Option<bool> {
+    fn has_new(e: &Expression) -> bool {
+        matches!(e, Expression::Instantiation(_)) || children(e).into_iter().any(has_new)
+    }
+    if has_new(e) {
+        return None;
+    }
+    let mut e = e;
+    while let Expression::Parenthesized(p) = e {
+        e = p.expression;
+    }
+    Some(matches!(
+        e,
+        Expression::ConstantAccess(_) | Expression::Access(Access::ClassConstant(_))
+    ))
+}
+
 /// The nearest expressions below `e`.
 fn children<'a>(e: &'a Expression<'a>) -> Vec<&'a Expression<'a>> {
     use crate::parse::cst::Node;

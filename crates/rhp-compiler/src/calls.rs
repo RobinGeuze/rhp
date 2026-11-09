@@ -996,6 +996,24 @@ impl ProtoBuilder<'_> {
                         let sig = self.intern_const(Value::Array(sig));
                         self.emit(Instr::ArgSpreadRef { arr: dst, src, sig });
                     }
+                    // `...$arr` for a callee known only at run time: it is
+                    // asked for its by-reference parameters then.
+                    Argument::Positional(p)
+                        if p.ellipsis.is_some()
+                            && known.is_none()
+                            && matches!(unparen(p.value), Expression::Variable(Variable::Direct(d))
+                                if !matches!(strip_dollar(d.name), b"GLOBALS" | b"this"))
+                            && target.is_some_and(|t| !matches!(t, ArgRefTarget::Func(_))) =>
+                    {
+                        unpacked = true;
+                        let callee = self.emit_callee_value(target.expect("checked"));
+                        let src = self.compile_ref_source(unparen(p.value))?;
+                        self.emit(Instr::ArgSpreadRefDyn {
+                            arr: dst,
+                            src,
+                            callee,
+                        });
+                    }
                     Argument::Positional(p) => {
                         unpacked |= p.ellipsis.is_some();
                         let r = self.compile_expr(p.value)?;
@@ -1286,7 +1304,11 @@ impl ProtoBuilder<'_> {
                         // A later argument assigns the variable: SEND_VAR_EX
                         // asks the callee now and copies a by-value one
                         // before that runs (`f($p, $p = new X)`).
-                        if let (Some(t), true) = (target, later_arg_may_change(list, i, d.name)) {
+                        if let (Some(t), true) = (
+                            target,
+                            later_arg_may_change(list, i, d.name)
+                                || (self.var_may_alias(d.name) && later_arg_runs_code(list, i)),
+                        ) {
                             let r = self.send_var_ex_now(cv, t, i as u16);
                             slots.push(Slot::Ref(r));
                             continue;
@@ -1304,8 +1326,10 @@ impl ProtoBuilder<'_> {
                             | Expression::Access(Access::StaticProperty(_))
                     ) && self.func_arg_root(p.value).is_some()
                     {
+                        // The temp moves into the window (as the function
+                        // path's PassArg), so it holds nothing after the call.
                         let r = self.compile_func_arg(p.value, t, i as u16)?;
-                        slots.push(Slot::Ref(r));
+                        slots.push(Slot::Pass(r));
                         continue;
                     }
                 }
@@ -1342,6 +1366,13 @@ impl ProtoBuilder<'_> {
             }
         }
         Ok((base, argc))
+    }
+
+    /// Whether a later argument could write `$name` (with `$`) through
+    /// another name: every variable of the main script is a global, and
+    /// [`FileCtx::may_alias`] for the rest.
+    fn var_may_alias(&self, name: &[u8]) -> bool {
+        matches!(self.scope_kind, crate::builder::ScopeKind::Main) || self.cx.may_alias(name)
     }
 
     /// A variable sent by SEND_VAR_EX at this point: a reference when the
@@ -1398,9 +1429,15 @@ impl ProtoBuilder<'_> {
         };
         // FETCH_DIM_FUNC_ARG reading: `[]` fails when the call runs.
         let saved = std::mem::replace(&mut self.func_arg_read, true);
-        let v = self.compile_expr(e);
+        let v = self.compile_expr(e)?;
         self.func_arg_read = saved;
-        self.emit(Instr::Mov { dst: t, src: v? });
+        // The fetched temporary is dead once sent: a fresh object it held
+        // goes back to the free list when the call returns, as in php.
+        if v as usize >= self.cv_map.len() {
+            self.emit(Instr::MovTake { dst: t, src: v });
+        } else {
+            self.emit(Instr::Mov { dst: t, src: v });
+        }
         let end = self.here();
         self.code[jend] = Instr::Jmp { target: end };
         Ok(t)
@@ -1536,6 +1573,74 @@ impl ProtoBuilder<'_> {
             }
         }
         flag
+    }
+
+    /// The callee of an [`ArgRefTarget`] as a callable value (`[$o, 'm']`,
+    /// `['C', 'm']`, the callable itself). Not for `Func`.
+    fn emit_callee_value(&mut self, target: ArgRefTarget) -> Reg {
+        let pair = |b: &mut Self, first: Reg, name: Reg| {
+            let callee = b.alloc_temp();
+            b.emit(Instr::NewArray {
+                dst: callee,
+                cap: 2,
+            });
+            b.emit(Instr::ArrPush {
+                arr: callee,
+                val: first,
+            });
+            b.emit(Instr::ArrPush {
+                arr: callee,
+                val: name,
+            });
+            callee
+        };
+        let name_reg = |b: &mut Self, name: NIdx| {
+            let k = b.intern_const(Value::Str(b.names[name as usize].clone()));
+            let r = b.alloc_temp();
+            b.emit(Instr::LoadConst { dst: r, k });
+            r
+        };
+        match target {
+            ArgRefTarget::Value(c) => c,
+            // The receiver is copied: a push moves an object out of a
+            // temporary, and the call still needs it.
+            ArgRefTarget::Method(obj, name) => {
+                let recv = self.alloc_temp();
+                self.emit(Instr::Mov {
+                    dst: recv,
+                    src: obj,
+                });
+                let n = name_reg(self, name);
+                pair(self, recv, n)
+            }
+            ArgRefTarget::MethodDyn(obj, n) => {
+                let recv = self.alloc_temp();
+                self.emit(Instr::Mov {
+                    dst: recv,
+                    src: obj,
+                });
+                pair(self, recv, n)
+            }
+            // `$c::m(...)`: the class name or object itself (`$c::class`
+            // throws on a string).
+            ArgRefTarget::Static(ClassRef::Dynamic(c), name) => {
+                let cls = self.alloc_temp();
+                self.emit(Instr::Mov { dst: cls, src: c });
+                let n = name_reg(self, name);
+                pair(self, cls, n)
+            }
+            ArgRefTarget::Static(class, name) => {
+                let cls = self.alloc_temp();
+                self.emit(Instr::FetchClassName {
+                    dst: cls,
+                    class,
+                    const_expr: false,
+                });
+                let n = name_reg(self, name);
+                pair(self, cls, n)
+            }
+            ArgRefTarget::Func(f) => f,
+        }
     }
 
     /// A by-value argument that is a plain variable compiles to the variable's
@@ -2126,6 +2231,47 @@ fn later_arg_may_change(list: &[Argument], i: usize, name: &[u8]) -> bool {
             let (mut m, mut w) = (false, false);
             scan(Node::Expression(e), name, &mut m, &mut w);
             m && w
+        })
+}
+
+/// Whether an argument after the `i`th runs code that could write a
+/// variable through another name (a call, an assignment, an increment, an
+/// include or eval).
+fn later_arg_runs_code(list: &[Argument], i: usize) -> bool {
+    use crate::parse::cst::{Node, UnaryPostfixOperator as Post, UnaryPrefixOperator as Pre};
+    fn scan(node: Node, writes: &mut bool) {
+        if *writes {
+            return;
+        }
+        match node {
+            Node::Assignment(_)
+            | Node::Call(_)
+            | Node::Instantiation(_)
+            | Node::EvalConstruct(_)
+            | Node::IncludeConstruct(_)
+            | Node::IncludeOnceConstruct(_)
+            | Node::RequireConstruct(_)
+            | Node::RequireOnceConstruct(_) => *writes = true,
+            Node::UnaryPrefix(u)
+                if matches!(u.operator, Pre::PreIncrement(_) | Pre::PreDecrement(_)) =>
+            {
+                *writes = true
+            }
+            Node::UnaryPostfix(u)
+                if matches!(u.operator, Post::PostIncrement(_) | Post::PostDecrement(_)) =>
+            {
+                *writes = true
+            }
+            _ => node.visit_children(|ch| scan(ch, writes)),
+        }
+    }
+    list.iter()
+        .skip(i + 1)
+        .filter(|a| arg_may_write(a))
+        .any(|a| {
+            let mut w = false;
+            scan(Node::Expression(arg_value(a)), &mut w);
+            w
         })
 }
 

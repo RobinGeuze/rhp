@@ -62,6 +62,10 @@ impl From<Thrown> for IncludeError {
     }
 }
 
+thread_local! {
+    static UNOPENABLE: std::cell::RefCell<Option<Vec<u8>>> = const { std::cell::RefCell::new(None) };
+}
+
 impl Vm {
     /// The diagnostics php's compiler raised for a file just loaded: once
     /// per compile, or on every load from opcache with
@@ -217,6 +221,40 @@ impl Vm {
     /// (zend_exception_error) as `Parse error: …` (E_PARSE) or, for a
     /// CompileError, `Fatal error: …` (E_COMPILE_ERROR) through the usual
     /// display/log path (exit status 255 is the SAPI's job).
+    /// The main script did not compile; with auto_prepend_file set the
+    /// request runs it first, then reports this (`file` is the script).
+    pub fn defer_main_compile_error(&mut self, file: &[u8], e: IncludeError) {
+        self.main_compile_error = Some((file.to_vec(), e));
+    }
+
+    /// Report the main script's compile error `e`; the request then ends
+    /// as after a fatal error (shutdown functions still run).
+    pub(crate) fn main_compile_failed(&mut self, file: &[u8], e: IncludeError) -> Thrown {
+        let name = String::from_utf8_lossy(file).into_owned();
+        match e {
+            IncludeError::Parse {
+                class,
+                message,
+                line,
+                diags,
+            } => {
+                self.emit_parse_diags(file, &diags);
+                self.report_parse_error(class, &message, &name, line);
+                Thrown::Exit(255)
+            }
+            IncludeError::Compile {
+                message,
+                line,
+                diags,
+            } => {
+                self.compile_failed(&message, file, line, &diags, false);
+                Thrown::Exit(255)
+            }
+            IncludeError::HardLimit { line } => self.compile_hard_limit(Some((file, line))),
+            IncludeError::Thrown(t) => t,
+        }
+    }
+
     pub fn report_parse_error(&mut self, class: &str, message: &str, file: &str, line: u32) {
         let (ty, label) = if class == "ParseError" {
             (4, "Parse error")
@@ -243,8 +281,15 @@ impl Vm {
         // wrapper, an error handler for a compile warning, an autoloader)
         // may include files of its own.
         let primary = std::mem::take(&mut self.primary_next);
+        // php_stream_open_wrapper_ex refuses an empty name (the _once
+        // forms resolve it first, as the working directory, and fail to
+        // open that).
+        if raw_path.is_empty() && !kind.is_once() {
+            return Err(Thrown::error("ValueError", "Path must not be empty"));
+        }
         let path_str = String::from_utf8_lossy(&raw_path).into_owned();
         builtins::main::streams::clear_errno();
+        Self::take_unopenable();
         // php looks a script up in opcache by the name it was asked for
         // before opening anything ([`Vm::opcache_lookup_name`]): a cached
         // script needs no open, and no realpath or stat while its revalidate
@@ -335,7 +380,7 @@ impl Vm {
             })
         };
         // The plain-files opener's open_basedir check of the resolved path.
-        let mut shown = match user_shown {
+        let mut shown = match user_shown.or_else(Self::take_unopenable) {
             Some(n) => String::from_utf8_lossy(&n).into_owned(),
             None => path_str.clone(),
         };
@@ -371,7 +416,7 @@ impl Vm {
                 let ip =
                     String::from_utf8_lossy(&self.ini_get(b"include_path").unwrap_or_default())
                         .into_owned();
-                let reason = if path_str.is_empty() || quiet_open {
+                let reason = if (path_str.is_empty() && !kind.is_once()) || quiet_open {
                     None
                 } else if let Some(r) = reason_override {
                     Some(r)
@@ -449,7 +494,8 @@ impl Vm {
     /// `lc` (lowercase) as `name`.
     pub(crate) fn redeclare_function_msg(&self, lc: &[u8], name: &rhp_values::PhpStr) -> String {
         let name = String::from_utf8_lossy(name.as_bytes());
-        match self.fn_names.get(lc).map(|&i| &self.functions[i].proto) {
+        let old = self.fn_names.get(lc).map(|&i| &self.functions[i].proto);
+        match old.filter(|p| !p.is_internal()) {
             Some(old) => format!(
                 "Cannot redeclare function {name}() (previously declared in {}:{})",
                 String::from_utf8_lossy(old.debug.file.as_bytes()),
@@ -457,6 +503,31 @@ impl Vm {
             ),
             None => format!("Cannot redeclare function {name}()"),
         }
+    }
+
+    /// php -l: the first top-level function of `prog` whose name an
+    /// internal function has (zend_begin_func_decl's compile error), as
+    /// (message, line).
+    pub fn internal_redeclaration(&self, prog: &Program) -> Option<(String, u32)> {
+        prog.functions
+            .iter()
+            .skip(prog.num_prelude_functions)
+            .find_map(|proto| {
+                let lc = proto.name.as_bytes().to_ascii_lowercase();
+                self.function_declared(&lc).then(|| {
+                    (
+                        self.redeclare_function_msg(&lc, &proto.name),
+                        proto.meta.start_line,
+                    )
+                })
+            })
+    }
+
+    /// Whether declaring user function `lc` (lowercase) clashes with one
+    /// in the function table: a user function, or an internal one (a
+    /// builtin left after disable_functions, or a prelude function).
+    pub(crate) fn function_declared(&self, lc: &[u8]) -> bool {
+        self.fn_names.contains_key(lc) || crate::calls::user_visible_builtin(lc)
     }
 
     /// The main script as an included file (`get_included_files()`, the
@@ -576,6 +647,12 @@ impl Vm {
     /// (`phar://`, …) the wrapper's contents; otherwise the real path of
     /// the first candidate ([`Vm::include_candidates`]) that opens as a
     /// file, resolved through the realpath cache.
+    /// [`Vm::resolve_include_file`]: the name a search resolved to that did
+    /// not open as a file, which the warning names.
+    pub(crate) fn take_unopenable() -> Option<Vec<u8>> {
+        UNOPENABLE.with(|u| u.borrow_mut().take())
+    }
+
     pub(crate) fn resolve_include_file(
         &self,
         top: usize,
@@ -591,7 +668,17 @@ impl Vm {
             let key = w.canonical(url).unwrap_or_else(|| normalize_url(url));
             return Some((key, IncludeSource::Bytes(src)));
         }
-        for cand in self.include_candidates(top, path) {
+        // php_resolve_path: a `file://` URL is the plain path it names,
+        // realpath'd, with no include_path search.
+        let file_url = path.len() >= 7 && path.as_bytes()[..7].eq_ignore_ascii_case(b"file://");
+        let candidates = if file_url {
+            use std::os::unix::ffi::OsStrExt;
+            let p = builtins::main::streams::file_path(path.as_bytes());
+            vec![std::path::PathBuf::from(std::ffi::OsStr::from_bytes(p))]
+        } else {
+            self.include_candidates(top, path)
+        };
+        for cand in candidates {
             use std::os::unix::ffi::OsStrExt;
             // tsrm_realpath, through the realpath cache.
             let Some(real) = builtins::zend::virtual_cwd::realpath(cand.as_os_str().as_bytes())
@@ -599,13 +686,18 @@ impl Vm {
                 continue;
             };
             let real_path = std::ffi::OsStr::from_bytes(&real);
-            let Ok(f) = std::fs::File::open(real_path) else {
-                continue;
+            // php_resolve_path stops at the first name that resolves; a
+            // directory then fails to open under its resolved name.
+            let f = std::fs::File::open(real_path)
+                .ok()
+                .filter(|f| !f.metadata().is_ok_and(|m| m.is_dir()));
+            return match f {
+                Some(f) => Some((real, IncludeSource::File(f))),
+                None => {
+                    UNOPENABLE.with(|u| *u.borrow_mut() = Some(real));
+                    None
+                }
             };
-            if f.metadata().is_ok_and(|m| m.is_dir()) {
-                continue;
-            }
-            return Some((real, IncludeSource::File(f)));
         }
         None
     }
@@ -713,7 +805,7 @@ impl Vm {
         // function is fatal to redeclare (php semantics).
         for proto in prog.functions.iter().skip(prog.num_prelude_functions) {
             let lc = proto.name.as_bytes().to_ascii_lowercase();
-            if self.fn_names.contains_key(&lc) {
+            if self.function_declared(&lc) {
                 if preloaded {
                     continue;
                 }
@@ -753,10 +845,7 @@ impl Vm {
         caller_top: usize,
         kind: &'static str,
     ) -> Result<Value, Thrown> {
-        if self.stack.len() >= self.max_depth {
-            return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
-        }
-        let mut frame = Frame::new(main.clone(), unit, 0);
+        let mut frame = self.new_frame(main.clone(), unit, 0);
         frame.capture = true;
         frame.include = Some((kind, caller_top));
         frame.defining_class = self.stack[caller_top].defining_class;
@@ -819,10 +908,20 @@ impl Vm {
     /// throwable reported as a warning, and a fatal error or `exit` only
     /// sets the exit status.
     pub(crate) fn shell_eval_code(&mut self, code: &[u8], name: &str) {
+        self.eval_string_ex(code, name, (builtins::E_WARNING, "Warning"));
+    }
+
+    /// zend_eval_stringl_ex(code, NULL, name, true) under zend_try: as
+    /// [`Vm::shell_eval_code`], an uncaught throwable reported at `level`
+    /// (`(type, label)`). At E_ERROR (php-cli's -B/-R/-E) it and a parse
+    /// error leave exit status 255. True: a fatal error bailed out.
+    pub(crate) fn eval_string_ex(&mut self, code: &[u8], name: &str, level: (i64, &str)) -> bool {
+        let fatal = level.0 == builtins::E_ERROR;
+        let mark = self.last_error.clone();
         let mut source = b"<?php ".to_vec();
         source.extend_from_slice(code);
         let Some(mut cb) = self.includer.take() else {
-            return;
+            return false;
         };
         let compiled = cb(name, &source);
         self.includer = Some(cb);
@@ -836,33 +935,64 @@ impl Vm {
             }) => {
                 self.emit_parse_diags(name.as_bytes(), &diags);
                 self.report_parse_error(class, &message, name, line);
-                return;
+                if fatal {
+                    self.sapi.exit_status = 255;
+                }
+                return false;
             }
             Err(e) => {
                 if let Thrown::Exit(code) = self.include_error(e, name, true) {
                     self.sapi.exit_status = code;
+                    return true;
                 }
-                return;
+                return false;
             }
         };
         self.emit_compile_diags(&prog);
-        let r = self
-            .install_file(b"", &prog)
-            .and_then(|(main, unit)| self.run_as_primary(main, unit));
+        let mut main_ptr = 0;
+        let r = self.install_file(b"", &prog).and_then(|(main, unit)| {
+            main_ptr = Rc::as_ptr(&main) as usize;
+            self.run_as_primary(main, unit)
+        });
+        // Each run's statics start fresh (its proto's address may be reused).
+        if main_ptr != 0 && !self.statics.is_empty() {
+            self.statics.retain(|k, _| k.0 != main_ptr);
+        }
+        let mut bailed = false;
+        if r.is_err() && !self.stack.is_empty() {
+            // The global scope survives the unwound frames.
+            self.stack.truncate(1);
+            self.finished_main = self.stack.pop();
+        }
         match r {
             Ok(_) => {}
-            Err(Thrown::Exit(code)) => self.sapi.exit_status = code,
+            Err(Thrown::Exit(code)) => {
+                self.sapi.exit_status = code;
+                bailed = self.fatal_since(&mark);
+            }
             Err(t) => {
-                // The global scope survives the unwound frames.
-                if !self.stack.is_empty() {
-                    self.stack.truncate(1);
-                    self.finished_main = self.stack.pop();
+                self.report_uncaught_as(t, level.0, level.1);
+                if fatal {
+                    self.sapi.exit_status = 255;
                 }
-                self.report_uncaught_as(t, builtins::E_WARNING, "Warning");
             }
         }
         if let Some(Thrown::Exit(code)) = self.pending_throw.take() {
             self.sapi.exit_status = code;
+        }
+        bailed
+    }
+
+    /// Whether a fatal error other than `mark` is now the last error: an
+    /// `exit` that unwound was php's bailout.
+    pub(crate) fn fatal_since(&self, mark: &Option<(i64, Vec<u8>, Vec<u8>, i64)>) -> bool {
+        const FATAL: i64 = builtins::E_ERROR
+            | builtins::E_CORE_ERROR
+            | builtins::E_COMPILE_ERROR
+            | builtins::E_USER_ERROR;
+        match &self.last_error {
+            Some(e) if e.0 & FATAL != 0 => mark.as_ref() != Some(e),
+            _ => false,
         }
     }
 
@@ -870,7 +1000,7 @@ impl Vm {
     /// replaces the finished one at the bottom of the stack, in the global
     /// scope.
     fn run_as_primary(&mut self, main: Rc<FunctionProto>, unit: UnitId) -> Result<Value, Thrown> {
-        let mut frame = Frame::new(main, unit, 0);
+        let mut frame = self.new_frame(main, unit, 0);
         self.bind_superglobals(&mut frame);
         self.bind_global_scope(&mut frame);
         self.stack.clear();
@@ -882,10 +1012,15 @@ impl Vm {
     /// through the cells bound at entry; a variable it re-bound (`$a = &$b`,
     /// `global $a`, `static $a`) or unset carries that over to the including
     /// scope, as php's shared symbol table does.
+    #[inline]
     pub(crate) fn include_writeback(&mut self, frame: &Frame) {
-        let Some(caller) = frame.include_caller() else {
-            return;
-        };
+        if let Some(caller) = frame.include_caller() {
+            self.include_writeback_slow(frame, caller);
+        }
+    }
+
+    #[inline(never)]
+    fn include_writeback_slow(&mut self, frame: &Frame, caller: usize) {
         // In the global scope every variable already is a global symbol-table
         // cell, kept in step as it is re-bound or unset.
         if caller >= self.stack.len() || frame.global_scope {

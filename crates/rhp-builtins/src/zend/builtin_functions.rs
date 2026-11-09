@@ -608,6 +608,7 @@ fn fn_get_mangled_object_vars(host: &mut dyn Host, args: &[Value]) -> Result<Val
 pub(crate) const LOADED_EXTS: &[&str] = &[
     "Core",
     "date",
+    "lexbor",
     "openssl",
     "pcre",
     "sqlite3",
@@ -643,6 +644,7 @@ pub(crate) const LOADED_EXTS: &[&str] = &[
     "random",
     "readline",
     "Reflection",
+    "exif",
     "SimpleXML",
     "sockets",
     "sodium",

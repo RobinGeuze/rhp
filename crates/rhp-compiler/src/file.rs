@@ -28,6 +28,12 @@ pub(crate) struct FileCtx<'s> {
     /// The source's tokens, comments included, lexed on the first doc
     /// comment lookup.
     tokens: OnceCell<Vec<crate::parse::Token>>,
+    /// The variables the file may alias, scanned on first use
+    /// ([`FileCtx::may_alias`]).
+    alias_marks: OnceCell<AliasMarks>,
+    /// Each anonymous class's CG(rtd_key_counter) value, by its start
+    /// offset ([`crate::decl::assign_rtd_keys`]).
+    pub(crate) anon_keys: RefCell<HashMap<u32, u32>>,
     /// Byte offset of each line start. Empty for the prelude, whose line
     /// numbers are never surfaced.
     line_starts: Vec<u32>,
@@ -114,6 +120,10 @@ pub(crate) struct ClassScope {
     pub(crate) parent: Option<Vec<u8>>,
     pub(crate) is_trait: bool,
     pub(crate) is_anon: bool,
+    /// The constants compiled so far with a value known at compile time
+    /// (php's active class's constants_table, which
+    /// zend_try_ct_eval_class_const substitutes).
+    pub(crate) consts: RefCell<HashMap<Vec<u8>, Value>>,
 }
 
 impl<'s> FileCtx<'s> {
@@ -131,6 +141,8 @@ impl<'s> FileCtx<'s> {
             file,
             src,
             tokens: OnceCell::new(),
+            alias_marks: OnceCell::new(),
+            anon_keys: RefCell::new(HashMap::new()),
             line_starts: Vec::new(),
             is_prelude: false,
             strict_types: false,
@@ -513,7 +525,28 @@ fn tick_points(cx: &FileCtx, program: &AstProgram) -> Vec<(u32, u32)> {
     points
 }
 
+/// What [`FileCtx::may_alias`] scans for in the source text.
+#[derive(Default)]
+struct AliasMarks {
+    /// Names (with `$`) after a `&`, assigned by `= &`, or in a `global`
+    /// statement.
+    names: std::collections::HashSet<Vec<u8>>,
+    /// `$$`, `eval(` or `extract(`: any variable may change.
+    dynamic: bool,
+}
+
 impl FileCtx<'_> {
+    /// Whether the variable `name` (with `$`) may be written through
+    /// another name somewhere in this file: a reference (`&$name` anywhere:
+    /// a by-reference parameter, assignment, closure use or foreach; or
+    /// `$name = &…`), a
+    /// `global`, or a scope written dynamically (`$$`, eval, extract). A
+    /// text scan, so it over-approximates (`$a & $b`, comments).
+    pub(crate) fn may_alias(&self, name: &[u8]) -> bool {
+        let m = self.alias_marks.get_or_init(|| scan_alias_marks(self.src));
+        m.dynamic || m.names.contains(name)
+    }
+
     /// The ticks value a statement ending at `end` is compiled under: the
     /// last change before it.
     pub(crate) fn ticks_at(&self, end: u32) -> u32 {
@@ -524,6 +557,96 @@ impl FileCtx<'_> {
             self.ticks[i - 1].1
         }
     }
+}
+
+fn scan_alias_marks(src: &[u8]) -> AliasMarks {
+    let mut m = AliasMarks::default();
+    let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c >= 0x80;
+    let skip_ws = |mut i: usize| {
+        while i < src.len() && src[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        i
+    };
+    let var_at = |i: usize| -> Option<(Vec<u8>, usize)> {
+        if src.get(i) != Some(&b'$') {
+            return None;
+        }
+        let n = src[i + 1..].iter().take_while(|&&c| ident(c)).count();
+        (n > 0).then(|| (src[i..i + 1 + n].to_vec(), i + 1 + n))
+    };
+    let word_at = |i: usize, w: &[u8]| {
+        src.len() >= i + w.len()
+            && src[i..i + w.len()].eq_ignore_ascii_case(w)
+            && (i == 0 || !ident(src[i - 1]) && src[i - 1] != b'$')
+            && src.get(i + w.len()).is_none_or(|&c| !ident(c))
+    };
+    let mut i = 0;
+    while i < src.len() {
+        match src[i] {
+            b'&' => {
+                if let Some((name, _)) = var_at(skip_ws(i + 1)) {
+                    m.names.insert(name);
+                }
+                // `$b = &...`: the variable assigned by reference too.
+                if let Some(name) = assigned_var_before(src, i) {
+                    m.names.insert(name);
+                }
+            }
+            b'$' if src.get(i + 1) == Some(&b'$') => m.dynamic = true,
+            b'e' | b'E' => {
+                for w in [&b"eval"[..], b"extract"] {
+                    if word_at(i, w) && src.get(skip_ws(i + w.len())) == Some(&b'(') {
+                        m.dynamic = true;
+                    }
+                }
+            }
+            b'g' | b'G' if word_at(i, b"global") => {
+                let mut j = skip_ws(i + 6);
+                while let Some((name, end)) = var_at(j) {
+                    m.names.insert(name);
+                    j = skip_ws(end);
+                    if src.get(j) != Some(&b',') {
+                        break;
+                    }
+                    j = skip_ws(j + 1);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    m
+}
+
+/// The variable (with `$`) a `=` right before `src[amp]` (`&`) assigns:
+/// `$b` in `$b = &$a`.
+fn assigned_var_before(src: &[u8], amp: usize) -> Option<Vec<u8>> {
+    let mut j = amp;
+    while j > 0 && src[j - 1].is_ascii_whitespace() {
+        j -= 1;
+    }
+    if j == 0 || src[j - 1] != b'=' {
+        return None;
+    }
+    j -= 1;
+    // not `==`, `!=`, `<=`, `>=`, `.=` and the other compound assignments
+    if j > 0
+        && !src[j - 1].is_ascii_whitespace()
+        && !src[j - 1].is_ascii_alphanumeric()
+        && src[j - 1] != b'_'
+    {
+        return None;
+    }
+    while j > 0 && src[j - 1].is_ascii_whitespace() {
+        j -= 1;
+    }
+    let end = j;
+    while j > 0 && (src[j - 1].is_ascii_alphanumeric() || src[j - 1] == b'_' || src[j - 1] >= 0x80)
+    {
+        j -= 1;
+    }
+    (j < end && j > 0 && src[j - 1] == b'$').then(|| src[j - 1..end].to_vec())
 }
 
 /// Sorted byte offsets of line starts (offset 0, then after each '\n').

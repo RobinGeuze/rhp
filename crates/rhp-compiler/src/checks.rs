@@ -108,6 +108,7 @@ pub(crate) fn check_decl(cx: &FileCtx, d: &Decl) {
         parent,
         is_trait: d.kind == DeclKind::Trait,
         is_anon: d.kind == DeclKind::Anon,
+        consts: Default::default(),
     };
     cx.with_class_scope(scope, || check_decl_in_scope(cx, d));
 }

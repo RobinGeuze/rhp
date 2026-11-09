@@ -343,7 +343,7 @@ impl Vm {
         // Methods: do_inheritance_check_on_method resets the flag unless the
         // parent method is private or a constructor without an abstract
         // prototype.
-        for (k, m) in &e.methods {
+        for (k, m) in e.methods.iter() {
             if m.defining_class != ce || !has_override(&m.proto.meta.attributes) {
                 continue;
             }

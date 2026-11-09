@@ -1,0 +1,16 @@
+C: y=3 x=1 
+D: y=3 x=1 
+HT: h=10 x=2 v=virtual 
+T: iterateable
+C: -
+D: -
+H: iterateable
+HT: iterateable
+array(3) {
+  ["y"]=>
+  int(3)
+  ["x"]=>
+  int(2)
+  ["v"]=>
+  string(7) "virtual"
+}

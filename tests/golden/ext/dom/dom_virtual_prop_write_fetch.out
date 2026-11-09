@@ -1,0 +1,14 @@
+string(1) "t"
+<?xml version="1.0"?>
+<r a="1">t<b/></r>
+Error: [] operator not supported for strings
+TypeError: Cannot access offset of type string on string
+<?xml version="1.0"?>
+<r a="1">t<b/></r>
+array(1) {
+  [0]=>
+  string(0) ""
+}
+Cannot assign by reference to overloaded object
+<?xml version="1.0" encoding="UTF-8"?>
+<r>t</r>

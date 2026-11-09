@@ -1,6 +1,8 @@
 // Parser impl blocks (new architecture)
 mod alloc;
 mod common;
+// rhp: php's escape decoding
+mod escape;
 
 // Parsing modules
 pub(crate) mod argument;

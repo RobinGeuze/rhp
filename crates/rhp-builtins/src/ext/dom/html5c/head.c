@@ -7,6 +7,20 @@
  * its Zend calls replaced by the rhp_dom_* callbacks (ext/dom/html5.rs),
  * then head.c's definitions before it and tail.c's API after it.
  */
+/* php's glue functions, linked under rhp_ names (the static archive
+ * must not export lexbor's or php's own symbol names). */
+#define lexbor_libxml2_bridge_convert_document rhp_lexbor_libxml2_bridge_convert_document
+#define lexbor_libxml2_bridge_convert_fragment rhp_lexbor_libxml2_bridge_convert_fragment
+#define lexbor_libxml2_bridge_copy_observations rhp_lexbor_libxml2_bridge_copy_observations
+#define lexbor_libxml2_bridge_parse_context_init rhp_lexbor_libxml2_bridge_parse_context_init
+#define lexbor_libxml2_bridge_parse_set_error_callbacks rhp_lexbor_libxml2_bridge_parse_set_error_callbacks
+#define lexbor_libxml2_bridge_report_errors rhp_lexbor_libxml2_bridge_report_errors
+#define lxb_selectors_clean rhp_lxb_selectors_clean
+#define lxb_selectors_destroy rhp_lxb_selectors_destroy
+#define lxb_selectors_find rhp_lxb_selectors_find
+#define lxb_selectors_find_reverse rhp_lxb_selectors_find_reverse
+#define lxb_selectors_init rhp_lxb_selectors_init
+#define lxb_selectors_match_node rhp_lxb_selectors_match_node
 /* vasprintf/asprintf on glibc */
 #define _GNU_SOURCE
 #include <stdarg.h>

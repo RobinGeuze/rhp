@@ -29,6 +29,19 @@ thread_local! {
     pub(crate) static INI: RefCell<HashMap<String, Option<Vec<u8>>>> = RefCell::new(HashMap::new());
     /// Startup (`-d`) values: phpinfo's "Master Value".
     pub(crate) static INI_STARTUP: RefCell<HashMap<String, Vec<u8>>> = RefCell::new(HashMap::new());
+    /// Bumped whenever a directive's value may have changed.
+    static GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// A number that changes whenever a directive's value may have: a caller
+/// may keep values it read while it stays the same.
+pub fn ini_generation() -> u64 {
+    GENERATION.with(|g| g.get())
+}
+
+/// Record that directive values may have changed.
+pub(crate) fn ini_changed() {
+    GENERATION.with(|g| g.set(g.get() + 1));
 }
 
 thread_local! {
@@ -169,6 +182,8 @@ const QUANTITY_DIRECTIVES: &[&str] = &[
     "bcmath.scale",
     "fiber.stack_size",
     "zlib.output_compression_level",
+    "mbstring.regex_stack_limit",
+    "mbstring.regex_retry_limit",
 ];
 
 /// The warnings a directive's OnModify handler raises for `v`, and the
@@ -435,6 +450,7 @@ pub fn take_shutdown_diagnostics() -> Vec<(i64, String)> {
 
 /// Reset this module's per-request state (a new Vm).
 pub(crate) fn reset_state() {
+    ini_changed();
     INI.with(|m| m.borrow_mut().clear());
     INI_STARTUP.with(|m| m.borrow_mut().clear());
     STARTUP_DIAGS.with(|d| *d.borrow_mut() = StartupDiags::default());
@@ -508,6 +524,7 @@ fn ini_default(e: &(&'static str, &'static str, Option<&'static str>, u8)) -> Op
 /// Store a runtime override for a directive (`ini_set` / `set_include_path`).
 pub(crate) fn ini_store(name: &[u8], v: Vec<u8>) {
     let key = String::from_utf8_lossy(name).into_owned();
+    ini_changed();
     INI.with(|m| m.borrow_mut().insert(key, Some(v)));
 }
 
@@ -605,6 +622,11 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
     } else if v.is_empty() && STRING_UNEMPTY.contains(&name) {
         // OnUpdateStringUnempty refuses an empty value: the default stays.
         (Vec::new(), None)
+    } else if let Some(msgs) = crate::ext::exif::ini_refused(name, v) {
+        (
+            msgs.iter().map(|m| format!("PHP Startup: {m}")).collect(),
+            None,
+        )
     } else if name == b"date.timezone" && !tz_valid(v) {
         (vec![invalid_timezone(v, "PHP Startup")], None)
     } else if name == b"openssl.libctx" && !matches!(v, b"default" | b"custom") {
@@ -677,6 +699,7 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
                 .extend(l.into_iter().map(|(lv, w)| (pos, key.clone(), lv, w)));
         }
     });
+    ini_changed();
     let Some(v) = stored else {
         INI.with(|m| m.borrow_mut().remove(&key));
         INI_STARTUP.with(|m| m.borrow_mut().remove(&key));
@@ -968,6 +991,13 @@ pub(crate) fn alter_ini_entry_ex(
     {
         return Ok(None);
     }
+    // ext/exif's OnUpdateEncode / OnUpdateDecode.
+    if let Some(msgs) = crate::ext::exif::ini_refused(name, &newv) {
+        for m in msgs {
+            host.emit_diagnostic(crate::E_WARNING, format!("{func}(): {m}").as_bytes())?;
+        }
+        return Ok(None);
+    }
     let (warnings, stored) = on_modify_check(name, &newv);
     for w in &warnings {
         host.emit_diagnostic(crate::E_WARNING, w.as_bytes())?;
@@ -1216,4 +1246,48 @@ pub(crate) fn quantity_error(v: &[u8]) -> Option<String> {
         return out_of_range();
     }
     None
+}
+
+/// php's own defaults (main.c) for the directives php-cli's HARDCODED_INI
+/// sets: INI_TABLE holds php-cli's values for them.
+const MAIN_C_DEFAULTS: &[(&str, &str)] = &[
+    ("html_errors", "1"),
+    ("implicit_flush", "0"),
+    ("output_buffering", "0"),
+    ("max_execution_time", "30"),
+    ("max_input_time", "-1"),
+];
+
+/// A directive's (name, built-in default, current value).
+pub(crate) type NonDefault = (&'static str, Option<Vec<u8>>, Option<Vec<u8>>);
+
+/// `php --ini=diff`: (name, built-in default, current value) of each
+/// registered directive whose value is not its default, sorted by name
+/// with strcasecmp.
+pub(crate) fn non_default_entries() -> Vec<NonDefault> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for e in INI_TABLE {
+        let Some(entry) = ini_entry(e.1.as_bytes()) else {
+            continue;
+        };
+        if !seen.insert(e.1) {
+            continue;
+        }
+        let value = ini_value(e.1.as_bytes()).flatten();
+        let def = match MAIN_C_DEFAULTS.iter().find(|(k, _)| *k == e.1) {
+            Some((_, v)) => Some(v.as_bytes().to_vec()),
+            None => entry.2.map(|s| s.as_bytes().to_vec()),
+        };
+        if def == value {
+            continue;
+        }
+        out.push((e.1, def, value));
+    }
+    out.sort_by(|a, b| {
+        a.0.to_ascii_lowercase()
+            .cmp(&b.0.to_ascii_lowercase())
+            .then_with(|| a.0.cmp(b.0))
+    });
+    out
 }

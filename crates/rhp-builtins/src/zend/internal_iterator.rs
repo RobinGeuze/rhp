@@ -22,6 +22,11 @@ pub trait IteratorFuncs {
     fn key(&self, host: &mut dyn Host) -> Result<Option<Value>, Thrown>;
     fn move_forward(&self, host: &mut dyn Host) -> Result<(), Thrown>;
     fn rewind(&self, host: &mut dyn Host) -> Result<(), Thrown>;
+    /// Whether the iterator has a `rewind` function (php's funcs->rewind
+    /// may be NULL: then only an unstarted iterator can be rewound).
+    fn can_rewind(&self) -> bool {
+        true
+    }
     /// The current element as a reference, for `foreach` by reference
     /// (`get_iterator` with `by_ref`); `None` past the end.
     fn current_ref(&self, _host: &mut dyn Host) -> Result<Option<PhpRef>, Thrown> {
@@ -70,7 +75,9 @@ impl InternalIter {
     fn ensure_rewound(&self, host: &mut dyn Host) -> Result<(), Thrown> {
         if !self.rewind_called.get() {
             self.rewind_called.set(true);
-            self.funcs.rewind(host)?;
+            if self.funcs.can_rewind() {
+                self.funcs.rewind(host)?;
+            }
         }
         Ok(())
     }
@@ -94,6 +101,17 @@ pub fn step(host: &mut dyn Host, h: &ObjectHandle, s: Step) -> Result<Value, Thr
     match s {
         Step::Rewind => {
             it.rewind_called.set(true);
+            if !it.funcs.can_rewind() {
+                // zend_internal_iterator rewind(): allowed before the
+                // first step only.
+                if it.index.get() != 0 {
+                    return Err(Thrown::error(
+                        "Error",
+                        "Iterator does not support rewinding",
+                    ));
+                }
+                return Ok(Value::Null);
+            }
             it.funcs.rewind(host)?;
             it.index.set(0);
             Ok(Value::Null)
@@ -114,6 +132,16 @@ pub fn step(host: &mut dyn Host, h: &ObjectHandle, s: Step) -> Result<Value, Thr
             .map(Value::Ref)
             .unwrap_or(Value::Null)),
     }
+}
+
+/// The current element of the InternalIterator `h` (null past the end),
+/// as foreach's FE_FETCH reads it.
+pub fn current(host: &mut dyn Host, h: &ObjectHandle) -> Result<Value, Thrown> {
+    Ok(fetch(h)?
+        .funcs
+        .current(host)?
+        .map(|v| rhp_values::ops::deref(&v))
+        .unwrap_or(Value::Null))
 }
 
 /// `__internal_iterator($this, $method)`: the InternalIterator methods.

@@ -6967,6 +6967,7 @@ Symfony\Component\Filesystem\Tests\FilesystemTest::testAppendToFile
 Symfony\Component\Filesystem\Tests\FilesystemTest::testAppendToFileCreateTheFileIfNotExists
 Symfony\Component\Filesystem\Tests\FilesystemTest::testAppendToFileFollowsSymlink
 Symfony\Component\Filesystem\Tests\FilesystemTest::testAppendToFileWithResource
+Symfony\Component\Filesystem\Tests\FilesystemTest::testAppendToFileWithScheme
 Symfony\Component\Filesystem\Tests\FilesystemTest::testAppendToFileWithZlibScheme
 Symfony\Component\Filesystem\Tests\FilesystemTest::testChgrpById
 Symfony\Component\Filesystem\Tests\FilesystemTest::testChgrpByName
@@ -7005,6 +7006,7 @@ Symfony\Component\Filesystem\Tests\FilesystemTest::testDumpFile
 Symfony\Component\Filesystem\Tests\FilesystemTest::testDumpFileCleansUpAfterFailure
 Symfony\Component\Filesystem\Tests\FilesystemTest::testDumpFileFollowsSymlink
 Symfony\Component\Filesystem\Tests\FilesystemTest::testDumpFileOverwritesAnExistingFile
+Symfony\Component\Filesystem\Tests\FilesystemTest::testDumpFileWithFileScheme
 Symfony\Component\Filesystem\Tests\FilesystemTest::testDumpFileWithResource
 Symfony\Component\Filesystem\Tests\FilesystemTest::testDumpFileWithZlibScheme
 Symfony\Component\Filesystem\Tests\FilesystemTest::testDumpKeepsExistingPermissionsWhenOverwritingAnExistingFile
@@ -11641,6 +11643,7 @@ Symfony\Component\HttpKernel\Tests\HttpKernelBrowserTest::testKernelIsTerminated
 Symfony\Component\HttpKernel\Tests\HttpKernelBrowserTest::testStreamedResponseThatFlushesIsCaptured
 Symfony\Component\HttpKernel\Tests\HttpKernelBrowserTest::testUploadedFile
 Symfony\Component\HttpKernel\Tests\HttpKernelBrowserTest::testUploadedFileWhenNoFileSelected
+Symfony\Component\HttpKernel\Tests\HttpKernelBrowserTest::testUploadedFileWhenSizeExceedsUploadMaxFileSize
 Symfony\Component\HttpKernel\Tests\HttpKernelTest::testHandleAllowChangingControllerAndArguments
 Symfony\Component\HttpKernel\Tests\HttpKernelTest::testHandleAllowChangingControllerArguments
 Symfony\Component\HttpKernel\Tests\HttpKernelTest::testHandleExceptionWithARedirectionResponse
@@ -12487,7 +12490,9 @@ Symfony\Component\Process\Tests\ProcessTest::testProcessPipes with data set #3
 Symfony\Component\Process\Tests\ProcessTest::testProcessPipes with data set #4
 Symfony\Component\Process\Tests\ProcessTest::testProcessPipes with data set #5
 Symfony\Component\Process\Tests\ProcessTest::testProcessPipes with data set #6
+Symfony\Component\Process\Tests\ProcessTest::testProcessPipes with data set #7
 Symfony\Component\Process\Tests\ProcessTest::testProcessPipes with data set #8
+Symfony\Component\Process\Tests\ProcessTest::testProcessPipes with data set #9
 Symfony\Component\Process\Tests\ProcessTest::testProcessResponses with data set #0
 Symfony\Component\Process\Tests\ProcessTest::testProcessThrowsExceptionWhenExternallySignaled
 Symfony\Component\Process\Tests\ProcessTest::testProcessWithoutTermSignal
@@ -12506,7 +12511,9 @@ Symfony\Component\Process\Tests\ProcessTest::testSetStreamAsInput with data set 
 Symfony\Component\Process\Tests\ProcessTest::testSetStreamAsInput with data set #4
 Symfony\Component\Process\Tests\ProcessTest::testSetStreamAsInput with data set #5
 Symfony\Component\Process\Tests\ProcessTest::testSetStreamAsInput with data set #6
+Symfony\Component\Process\Tests\ProcessTest::testSetStreamAsInput with data set #7
 Symfony\Component\Process\Tests\ProcessTest::testSetStreamAsInput with data set #8
+Symfony\Component\Process\Tests\ProcessTest::testSetStreamAsInput with data set #9
 Symfony\Component\Process\Tests\ProcessTest::testSignal
 Symfony\Component\Process\Tests\ProcessTest::testSignalProcessNotRunning
 Symfony\Component\Process\Tests\ProcessTest::testSimpleInputStream
@@ -17390,7 +17397,10 @@ Symfony\Component\VarDumper\Tests\Caster\CasterTest::testFilter with data set #8
 Symfony\Component\VarDumper\Tests\Caster\CasterTest::testFilter with data set #9
 Symfony\Component\VarDumper\Tests\Caster\CasterTest::testTypeErrorInDebugInfo
 Symfony\Component\VarDumper\Tests\Caster\CurlCasterTest::testCastCurl
+Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastAttr
 Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastDocument
+Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastDocumentType
+Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastElement
 Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastHTMLDocument
 Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastImplementation
 Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastModernAttr
@@ -17401,7 +17411,11 @@ Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastModernNode
 Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastModernProcessingInstruction
 Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastModernText
 Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastModernXPath
+Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastNode
+Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastProcessingInstruction
+Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastText
 Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastXMLDocument
+Symfony\Component\VarDumper\Tests\Caster\DOMCasterTest::testCastXPath
 Symfony\Component\VarDumper\Tests\Caster\DateCasterTest::testCastDateTime with data set #0
 Symfony\Component\VarDumper\Tests\Caster\DateCasterTest::testCastDateTime with data set #1
 Symfony\Component\VarDumper\Tests\Caster\DateCasterTest::testCastDateTime with data set #2
@@ -17772,6 +17786,7 @@ Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testAccessingUnini
 Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testAsymmetricVisibility
 Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testClone
 Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testFullInitialization
+Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testGetPrivate
 Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testGetPublic
 Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testIndirectModification
 Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testIssetPublic
@@ -17782,6 +17797,7 @@ Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testNormalization
 Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testPropertyHooks
 Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testPropertyHooksWithDefaultValue
 Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testReadOnlyClass
+Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testReflectionPropertyGetValue
 Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testReinitLazyGhost
 Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testResetLazyGhost
 Symfony\Component\VarExporter\Tests\LegacyLazyGhostTraitTest::testSerialize
@@ -18484,6 +18500,7 @@ Symfony\Component\Yaml\Tests\ParserTest::testHashLedLinesAfterMoreIndentedEmptyL
 Symfony\Component\Yaml\Tests\ParserTest::testIndentedDocumentMarkersAreContent
 Symfony\Component\Yaml\Tests\ParserTest::testInlineMappingFollowedByMoreContentIsInvalid
 Symfony\Component\Yaml\Tests\ParserTest::testInlineNotationSpanningMultipleLines with data set "double quoted multi-line string"
+Symfony\Component\Yaml\Tests\ParserTest::testInlineNotationSpanningMultipleLines with data set "escaped characters in quoted strings"
 Symfony\Component\Yaml\Tests\ParserTest::testInlineNotationSpanningMultipleLines with data set "mapping nested in sequence"
 Symfony\Component\Yaml\Tests\ParserTest::testInlineNotationSpanningMultipleLines with data set "mapping spanning multiple lines nested in sequence"
 Symfony\Component\Yaml\Tests\ParserTest::testInlineNotationSpanningMultipleLines with data set "mapping with unquoted strings and values"
@@ -18608,6 +18625,7 @@ Symfony\Component\Yaml\Tests\ParserTest::testParseMultiLineUnquotedStringWithTra
 Symfony\Component\Yaml\Tests\ParserTest::testParseMultiLineUnquotedStringWithTrailingComment with data set "comment after tab"
 Symfony\Component\Yaml\Tests\ParserTest::testParseMultiLineUnquotedStringWithTrailingComment with data set "comment after tab, but missing space after #"
 Symfony\Component\Yaml\Tests\ParserTest::testParseQuotedMergeKeyAsRegularKey
+Symfony\Component\Yaml\Tests\ParserTest::testParseQuotedStringContainingEscapedQuotationCharacters with data set "double quoted string"
 Symfony\Component\Yaml\Tests\ParserTest::testParseQuotedStringContainingEscapedQuotationCharacters with data set "single quoted string"
 Symfony\Component\Yaml\Tests\ParserTest::testParseReferencesOnMergeKeys
 Symfony\Component\Yaml\Tests\ParserTest::testParseReferencesOnMergeKeysWithMappingsParsedAsObjects

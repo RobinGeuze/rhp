@@ -1,0 +1,16 @@
+Dom\Document::importNode(): Argument #1 ($node) must be of type Dom\Node, null given
+Dom\Document::importNode(): Argument #1 ($node) must be of type Dom\Node, int given
+Dom\Document::importNode(): Argument #1 ($node) must be of type Dom\Node, stdClass given
+Method [ <internal:dom> public method importNode ] {
+
+  - Parameters [2] {
+    Parameter #0 [ <required> ?Dom\Node $node ]
+    Parameter #1 [ <optional> bool $deep = false ]
+  }
+  - Return [ Dom\Node ]
+}
+
+DOMDocument::importNode(): Argument #1 ($node) must be of type DOMNode, null given
+DOMDocument::importNode(): Argument #1 ($node) must be of type DOMNode, int given
+DOMNode
+<x/>

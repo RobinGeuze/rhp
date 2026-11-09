@@ -1,0 +1,62 @@
+get NULL
+object(stdClass)#3 (1) {
+  ["q"]=>
+  int(2)
+}
+get NULL
+object(stdClass)#2 (1) {
+  ["q"]=>
+  array(1) {
+    [0]=>
+    int(4)
+  }
+}
+Error: Attempt to assign property "p" on null
+array(1) {
+  [0]=>
+  NULL
+}
+Error: Attempt to assign property "p" on null
+array(1) {
+  [0]=>
+  NULL
+}
+Error: Attempt to assign property "p" on null
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  NULL
+}
+Error: [] operator not supported for strings
+string(0) ""
+Error: [] operator not supported for strings
+string(2) "ab"
+Error: Cannot use a scalar value as an array
+int(5)
+
+Deprecated: Automatic conversion of false to array is deprecated in F on line 17
+Error: Attempt to assign property "p" on null
+array(1) {
+  [0]=>
+  NULL
+}
+Error: Cannot use a scalar value as an array
+bool(true)
+Error: Cannot use object of type stdClass as array
+object(stdClass)#3 (0) {
+}
+Attempt to assign property "p" on null
+array(1) {
+  [0]=>
+  NULL
+}
+Attempt to assign property "p" on null
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  NULL
+}
+<?xml version="1.0"?>
+<root><bla/><bla><name>A</name></bla><bla><name>B</name></bla></root>

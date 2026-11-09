@@ -21,7 +21,10 @@ use rhp_values::{
 use rhp_builtins::zend::object_handlers::{CloneObj, ObjectHandlers};
 
 use crate::calls::Args;
-use crate::{DeclSlot, Frame, UnitFn, UnitId, Vm};
+use crate::{DeclSlot, UnitFn, UnitId, Vm};
+
+/// A linked class's method table.
+pub type MethodTable = IndexMap<Vec<u8>, ResolvedMethod, FxBuildHasher>;
 
 /// A linked class: all tables flattened from the inheritance chain.
 pub struct ClassEntry {
@@ -38,25 +41,28 @@ pub struct ClassEntry {
     /// Traits used directly by this class (`class_uses`), in `use` order.
     pub traits: Vec<ClassId>,
     /// Flattened vtable, keyed by lowercase method name, in php's member
-    /// order (see [`php_member_order`]).
-    pub methods: IndexMap<Vec<u8>, ResolvedMethod, FxBuildHasher>,
+    /// order (see [`php_member_order`]). Immutable once linked, so the
+    /// request's copies of a linked class share it.
+    pub methods: Rc<MethodTable>,
     /// Flattened instance-property slots in php's object layout order, keyed
     /// by *storage key*: the plain name for public/protected properties, the
     /// php-mangled `"\0Class\0name"` for private ones — so a parent's private
     /// `$x` and a child's `$x` are two distinct slots (see [`prop_storage_key`]).
-    pub props: IndexMap<PhpStr, PropEntry, FxBuildHasher>,
+    /// Shared by the copies of a linked class; evaluating a default copies
+    /// it first (`Rc::make_mut`), as do the constants.
+    pub props: Rc<IndexMap<PhpStr, PropEntry, FxBuildHasher>>,
     /// The objects' slot layout: `props`' keys, slot `i` for entry `i`
     /// (a virtual property's slot stays empty).
     pub layout: Rc<rhp_values::PropLayout>,
     /// php's `properties_info`: unmangled name -> storage key of the most-derived
     /// declaration of that name (which may be an inherited parent private).
-    pub prop_visible: FxHashMap<PhpStr, PhpStr>,
+    pub prop_visible: Rc<FxHashMap<PhpStr, PhpStr>>,
     /// Private instance properties declared by THIS class (incl. trait-imported):
     /// unmangled name -> storage key. Consulted first when this class is the
     /// calling scope, so its methods see their own private slot.
-    pub own_private: FxHashMap<PhpStr, PhpStr>,
+    pub own_private: Rc<FxHashMap<PhpStr, PhpStr>>,
     /// Flattened class constants (case-sensitive), in php's member order.
-    pub constants: IndexMap<Vec<u8>, ClassConst, FxBuildHasher>,
+    pub constants: Rc<IndexMap<Vec<u8>, ClassConst, FxBuildHasher>>,
     /// Flattened static-property slots (shared cells; inherited ones alias).
     pub static_props: IndexMap<Vec<u8>, StaticProp, FxBuildHasher>,
     /// Enum case singletons in declaration order (empty for non-enums).
@@ -86,12 +92,27 @@ pub struct ClassEntry {
     /// Some property has hooks (php's `ce->num_hooked_props`): property
     /// access takes the hook-aware path only for such classes.
     pub hooked: bool,
+    /// php's `ce->get_iterator == zend_hooked_object_get_iterator`: the
+    /// class's own body (not a trait) declares a hooked property, or the
+    /// parent's iterates so. foreach then walks the properties through
+    /// their hooks.
+    pub hooked_iter: bool,
+    /// zpp may run user code to stringify an object of the class: it has
+    /// `__toString()` or a `cast_object` handler.
+    pub stringable: bool,
     /// Some static property has a type or a set visibility: static
     /// property writes take the checked path only for such classes.
     pub checked_statics: bool,
     /// What property and method lookups on this class resolved to
     /// (`lookup_cache`).
     pub(crate) cache: crate::lookup_cache::ClassCache,
+    /// Names this linked entry for the linked-class cache (`link_cache`):
+    /// a copy from the cache keeps the cached entry's stamp.
+    pub(crate) stamp: u64,
+    /// A digest of the changes this request made to what linking copies
+    /// from the class (evaluated constants with their values, property
+    /// defaults, static initializers); 0 while there were none.
+    pub(crate) state: u64,
 }
 
 #[derive(Clone)]
@@ -326,10 +347,14 @@ pub(crate) fn resolve_prop_at(
     name: &PhpStr,
 ) -> (PropRes, usize) {
     let entry = &classes[cls as usize];
-    if let Some(at) = entry.cache.prop(name, scope) {
-        if let Some((k, pe)) = entry.props.get_index(at) {
+    if let Some(hit) = entry.cache.prop(name, scope) {
+        if let Some((k, pe)) = entry.props.get_index(hit.at) {
+            if hit.same_key {
+                return (PropRes::Slot(k.clone()), hit.at);
+            }
             if pe.name == *name {
-                return (PropRes::Slot(k.clone()), at);
+                entry.cache.refresh_prop(name, scope);
+                return (PropRes::Slot(k.clone()), hit.at);
             }
         }
     }
@@ -944,16 +969,31 @@ fn unit_fn(proto: &Rc<FunctionProto>, unit: UnitId) -> UnitFn {
 /// members). Only the order changes — which member won is decided by the
 /// caller. This is what reflection and `get_class_*` enumerate.
 fn php_member_order<V, S: std::hash::BuildHasher + Default>(
-    mut map: IndexMap<Vec<u8>, V, S>,
+    map: IndexMap<Vec<u8>, V, S>,
     first: impl IntoIterator<Item = Vec<u8>>,
 ) -> IndexMap<Vec<u8>, V, S> {
-    let mut out = IndexMap::with_capacity_and_hasher(map.len(), S::default());
+    let n = map.len();
+    let mut taken = vec![false; n];
+    let mut order = Vec::with_capacity(n);
     for k in first {
-        if let Some(v) = map.shift_remove(&k) {
+        if let Some(i) = map.get_index_of(&k) {
+            if !std::mem::replace(&mut taken[i], true) {
+                order.push(i);
+            }
+        }
+    }
+    // Already in that order: nothing moves.
+    if order.iter().enumerate().all(|(j, &i)| i == j) {
+        return map;
+    }
+    order.extend((0..n).filter(|&i| !taken[i]));
+    let mut slots: Vec<Option<(Vec<u8>, V)>> = map.into_iter().map(Some).collect();
+    let mut out = IndexMap::with_capacity_and_hasher(n, S::default());
+    for i in order {
+        if let Some((k, v)) = slots[i].take() {
             out.insert(k, v);
         }
     }
-    out.extend(map);
     out
 }
 
@@ -1030,8 +1070,12 @@ fn copy_classes(classes: &[ClassEntry], capacity: usize) -> Vec<ClassEntry> {
             handlers: e.handlers,
             create_object: e.create_object,
             hooked: e.hooked,
+            hooked_iter: e.hooked_iter,
+            stringable: e.stringable,
             checked_statics: e.checked_statics,
             cache: Default::default(),
+            stamp: e.stamp,
+            state: e.state,
         });
     }
     out
@@ -1050,6 +1094,7 @@ impl Vm {
                 && p.protos.iter().zip(protos).all(|(a, b)| Rc::ptr_eq(a, b))
         });
         if let Some(p) = linked {
+            self.link_cache.on = true;
             self.classes = copy_classes(&p.classes, p.capacity.0);
             self.class_ids = p.class_ids.clone();
             self.class_order = Vec::with_capacity(p.capacity.1);
@@ -1067,9 +1112,13 @@ impl Vm {
             return Ok(());
         }
         self.install_classes(protos, 0)?;
+        self.install_internal_aliases();
         self.incomplete_class = self.class_ids.get(&b"__php_incomplete_class"[..]).copied();
         self.throwable_class = self.class_ids.get(&b"throwable"[..]).copied();
         if PRELUDE_LINKED_ONCE.with(|l| l.replace(true)) {
+            // From the thread's second request on, user classes are cached
+            // too (`link_cache`).
+            self.link_cache.on = true;
             let p = LinkedPrelude {
                 protos: protos.to_vec(),
                 classes: copy_classes(&self.classes, 0),
@@ -1080,6 +1129,17 @@ impl Vm {
             LINKED_PRELUDE.with(|c| *c.borrow_mut() = Some(Rc::new(p)));
         }
         Ok(())
+    }
+
+    /// The extensions' internal class aliases (zend_register_class_alias):
+    /// class-table keys for an internal class under another name.
+    fn install_internal_aliases(&mut self) {
+        for (alias, class) in rhp_builtins::zend::object_handlers::class_aliases() {
+            if let Some(&id) = self.class_ids.get(&class.to_ascii_lowercase().into_bytes()) {
+                self.class_ids
+                    .insert(alias.to_ascii_lowercase().into_bytes(), id);
+            }
+        }
     }
 
     /// Link every `ClassProto` of `unit` into the class table, in dependency
@@ -1396,6 +1456,24 @@ impl Vm {
         unit: UnitId,
         early: bool,
     ) -> Result<bool, Thrown> {
+        if let Some(r) = self.link_from_cache(proto, unit, early) {
+            return r;
+        }
+        if !self.link_rec_begin(proto) {
+            return self.link_class_fresh(proto, unit, early);
+        }
+        let r = self.link_class_fresh(proto, unit, early);
+        self.link_rec_end(proto, unit, early, matches!(r, Ok(true)));
+        r
+    }
+
+    /// [`Self::link_class`] without the cache.
+    fn link_class_fresh(
+        &mut self,
+        proto: &Rc<ClassProto>,
+        unit: UnitId,
+        early: bool,
+    ) -> Result<bool, Thrown> {
         self.check_link(proto)?;
         // zend_do_link_class: a `#[\Deprecated]` trait's use.
         for (i, tname) in proto.traits.iter().enumerate() {
@@ -1424,7 +1502,7 @@ impl Vm {
         // already-present concrete method (e.g. a trait's `abstract foo()`
         // alongside a concrete `foo()` inherited from the parent class).
         let mut methods: IndexMap<Vec<u8>, ResolvedMethod, FxBuildHasher> = parent
-            .map(|p| self.classes[p as usize].methods.clone())
+            .map(|p| (*self.classes[p as usize].methods).clone())
             .unwrap_or_default();
         let parent_methods = parent.map(|p| &self.classes[p as usize].methods);
         let insert_method = |methods: &mut IndexMap<Vec<u8>, ResolvedMethod, FxBuildHasher>,
@@ -1510,7 +1588,7 @@ impl Vm {
             };
         for iname in ifaces_for_methods {
             let iid = self.class_ids[&lc(iname.as_bytes())];
-            for (k, m) in &self.classes[iid as usize].methods {
+            for (k, m) in self.classes[iid as usize].methods.iter() {
                 // An enum's cases()/from()/tryFrom() are the engine's
                 // (zend_enum_register_funcs), not UnitEnum's abstract ones.
                 if proto.kind == ClassKind::Enum
@@ -1523,18 +1601,34 @@ impl Vm {
                 }
             }
         }
-        let own_methods = proto.methods.iter().map(|m| lc(m.name.as_bytes()));
-        let methods = php_member_order(methods, own_methods.chain(trait_order));
+        let mut own_methods: Vec<Vec<u8>> = proto
+            .methods
+            .iter()
+            .map(|m| lc(m.name.as_bytes()))
+            .collect();
+        // A prelude class lists its methods in its stub's order, as php's
+        // internal classes do.
+        if self.internal_classes == 0 {
+            let rows = rhp_bytecode::signatures::class_methods(proto.name.as_bytes());
+            if !rows.is_empty() {
+                own_methods.sort_by_cached_key(|k| {
+                    rows.iter()
+                        .find(|m| m.name.as_bytes().eq_ignore_ascii_case(k))
+                        .map_or(u16::MAX, |m| m.order)
+                });
+            }
+        }
+        let methods = php_member_order(methods, own_methods.into_iter().chain(trait_order));
 
         // Instance properties, flattened. A redeclared public/protected property
         // keeps its inherited slot (same plain key, same position); a property
         // whose inherited declaration is a parent *private* gets a fresh slot
         // appended, leaving the parent's private slot in place (php shadowing).
         let mut props: IndexMap<PhpStr, PropEntry, FxBuildHasher> = parent
-            .map(|p| self.classes[p as usize].props.clone())
+            .map(|p| (*self.classes[p as usize].props).clone())
             .unwrap_or_default();
         let mut prop_visible: FxHashMap<PhpStr, PhpStr> = parent
-            .map(|p| self.classes[p as usize].prop_visible.clone())
+            .map(|p| (*self.classes[p as usize].prop_visible).clone())
             .unwrap_or_default();
         let mut own_private: FxHashMap<PhpStr, PhpStr> = FxHashMap::default();
         let classes = &self.classes;
@@ -1736,6 +1830,11 @@ impl Vm {
             return Err(self.link_fatal(proto, 64, &msg));
         }
         let hooked = props.values().any(|pe| pe.hooks.is_some());
+        // zend_compile_prop_decl sets get_iterator for the class compiling
+        // the hook; zend_do_inheritance copies the parent's. A trait's
+        // properties are bound without it (except on Windows).
+        let hooked_iter = proto.props.iter().any(|p| p.has_hooks())
+            || parent.is_some_and(|p| self.classes[p as usize].hooked_iter);
 
         // Static properties (inherited slots alias; redeclared get a fresh cell).
         let mut static_props: IndexMap<Vec<u8>, StaticProp, FxBuildHasher> = parent
@@ -1824,7 +1923,12 @@ impl Vm {
             .unwrap_or_default();
         for tname in &proto.traits {
             let tid = self.class_ids[&lc(tname.as_bytes())];
-            for (k, c) in self.classes[tid as usize].constants.clone() {
+            for (k, c) in self.classes[tid as usize]
+                .constants
+                .iter()
+                .map(|(k, c)| (k.clone(), c.clone()))
+                .collect::<Vec<_>>()
+            {
                 constants.insert(
                     k,
                     ClassConst {
@@ -1839,7 +1943,12 @@ impl Vm {
         // constant takes precedence, so don't overwrite.
         for iname in &proto.interfaces {
             let iid = self.class_ids[&lc(iname.as_bytes())];
-            for (k, cc) in self.classes[iid as usize].constants.clone() {
+            for (k, cc) in self.classes[iid as usize]
+                .constants
+                .iter()
+                .map(|(k, c)| (k.clone(), c.clone()))
+                .collect::<Vec<_>>()
+            {
                 constants.entry(k).or_insert(cc);
             }
         }
@@ -1995,6 +2104,8 @@ impl Vm {
             |r| r.create_object,
         );
         let flags = link_flags(proto, parent_entry.map(|p| p.flags), handlers, internal);
+        let stringable = handlers.is_some_and(|t| t.cast_object.is_some())
+            || methods.contains_key(&b"__tostring"[..]);
 
         self.class_ids.insert(lc(proto.name.as_bytes()), id);
         // Not compiled into a slot (prelude): after everything compiled so far.
@@ -2008,12 +2119,12 @@ impl Vm {
             ancestors,
             interfaces,
             traits,
-            methods,
-            props,
+            methods: Rc::new(methods),
+            props: Rc::new(props),
             layout,
-            prop_visible,
-            own_private,
-            constants,
+            prop_visible: Rc::new(prop_visible),
+            own_private: Rc::new(own_private),
+            constants: Rc::new(constants),
             static_props,
             enum_cases: Vec::new(),
             enum_backing: proto.enum_backing,
@@ -2025,8 +2136,12 @@ impl Vm {
             handlers,
             create_object,
             hooked,
+            hooked_iter,
+            stringable,
             checked_statics,
             cache: Default::default(),
+            stamp: crate::link_cache::fresh_stamp(),
+            state: 0,
         });
         let inherits_hooks = {
             let e = &self.classes[id as usize];
@@ -2067,7 +2182,7 @@ impl Vm {
 
     /// Enum cases: one singleton object per case, exposed as a public class
     /// constant, so `E::Case` resolves through `FetchClassConst`.
-    fn materialize_enum_cases(&mut self, id: ClassId, proto: &ClassProto, unit: UnitId) {
+    pub(crate) fn materialize_enum_cases(&mut self, id: ClassId, proto: &ClassProto, unit: UnitId) {
         self.classes[id as usize].enum_cases.clear();
         for case in &proto.enum_cases {
             let (value, init) = match &case.value {
@@ -2080,7 +2195,7 @@ impl Vm {
                 ),
             };
             let obj = self.new_enum_case(id, &case.name, value);
-            self.classes[id as usize].constants.insert(
+            Rc::make_mut(&mut self.classes[id as usize].constants).insert(
                 case.name.as_bytes().to_vec(),
                 ClassConst {
                     value: Value::Object(obj.clone()),
@@ -2355,24 +2470,26 @@ impl Vm {
     /// VM's class-name cache (php's FETCH_CLASS run-time cache slot).
     #[inline]
     pub(crate) fn resolve_class_by_str(&self, name: &PhpStr) -> Result<ClassId, Thrown> {
-        if let Some(id) = self.class_names.get(name) {
-            // A removed class's id may belong to another class now.
+        if let Some(hit) = self.class_names.get(name) {
+            let id = hit.at as ClassId;
+            // The string that last found it (removing a class empties the
+            // cache), else a hit whose class has the name.
+            if hit.same_key {
+                return Ok(id);
+            }
             if self
                 .classes
                 .get(id as usize)
                 .is_some_and(|c| c.name.as_bytes().eq_ignore_ascii_case(name.as_bytes()))
             {
+                self.class_names.refresh(name);
                 return Ok(id);
             }
         }
+        // Cached whatever the class is named (an alias, a leading `\\`):
+        // a hit by another string with the same hash is checked above.
         let id = self.resolve_class_by_name(name.as_bytes())?;
-        if self.classes[id as usize]
-            .name
-            .as_bytes()
-            .eq_ignore_ascii_case(name.as_bytes())
-        {
-            self.class_names.put(name, id);
-        }
+        self.class_names.put(name, id);
         Ok(id)
     }
 
@@ -2574,15 +2691,19 @@ impl Vm {
         name: &PhpStr,
     ) -> Option<ResolvedMethod> {
         let e = &self.classes[class_id as usize];
-        if let Some(i) = e.cache.method(name) {
-            if let Some((k, m)) = e.methods.get_index(i) {
+        if let Some(hit) = e.cache.method(name) {
+            if let Some((k, m)) = e.methods.get_index(hit.at) {
+                if hit.same_key {
+                    return Some(m.clone());
+                }
                 if k.eq_ignore_ascii_case(name.as_bytes()) {
+                    e.cache.refresh_method(name);
                     return Some(m.clone());
                 }
             }
         }
         let (i, _, m) = with_lc(name.as_bytes(), |k| e.methods.get_full(k))?;
-        e.cache.put_method(name, i);
+        e.cache.put_method(name, i, e.methods.len());
         Some(m.clone())
     }
 
@@ -2598,9 +2719,6 @@ impl Vm {
         base: Reg,
         argc: u16,
     ) -> Result<(), Thrown> {
-        if self.stack.len() >= self.max_depth {
-            return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
-        }
         let args = Args::Window { top, base, argc };
         self.push_method_frame(method, this, called_class, args, dst)
     }
@@ -2614,11 +2732,8 @@ impl Vm {
         args: Args<'_>,
         dst: Reg,
     ) -> Result<(), Thrown> {
-        if self.stack.len() >= self.max_depth {
-            return Err(Thrown::error("Error", "Maximum call stack depth exceeded"));
-        }
         let callee = method.proto.clone();
-        let mut frame = Frame::new(callee.clone(), method.unit, dst);
+        let mut frame = self.new_frame(callee.clone(), method.unit, dst);
         if let (Some(this_cv), Some(obj)) = (callee.this_cv, this) {
             frame.regs[this_cv as usize] = Value::Object(obj);
         }
@@ -2761,7 +2876,10 @@ impl Vm {
         };
         if owner != cls && self.classes[owner as usize].constants[name].init.is_none() {
             let v = self.classes[owner as usize].constants[name].value.clone();
-            let e = self.classes[cls as usize].constants.get_mut(name).unwrap();
+            self.note_class_change(cls, name, Some(&v));
+            let e = Rc::make_mut(&mut self.classes[cls as usize].constants)
+                .get_mut(name)
+                .unwrap();
             e.value = v.clone();
             e.init = None;
             return Ok(Some(v));
@@ -2777,8 +2895,7 @@ impl Vm {
                     ),
                 ));
             }
-            self.classes[owner as usize]
-                .constants
+            Rc::make_mut(&mut self.classes[owner as usize].constants)
                 .get_mut(name)
                 .unwrap()
                 .visited = true;
@@ -2787,7 +2904,8 @@ impl Vm {
             ConstInit::Expr(t) | ConstInit::EnumCase(t) => self.run_init_thunk(t, decl),
         };
         if in_const_expr {
-            if let Some(e) = self.classes[owner as usize].constants.get_mut(name) {
+            if let Some(e) = Rc::make_mut(&mut self.classes[owner as usize].constants).get_mut(name)
+            {
                 e.visited = false;
             }
         }
@@ -2796,8 +2914,7 @@ impl Vm {
             v = self.verify_class_const_type(v, ty, decl, name)?;
         }
         // Evaluation may have completed it re-entrantly; finish it only once.
-        let e = self.classes[owner as usize]
-            .constants
+        let e = Rc::make_mut(&mut self.classes[owner as usize].constants)
             .get_mut(name)
             .unwrap();
         if e.init.is_some() {
@@ -2812,8 +2929,12 @@ impl Vm {
             }
         }
         let value = e.value.clone();
+        self.note_class_change(owner, name, Some(&value));
         if owner != cls {
-            let e = self.classes[cls as usize].constants.get_mut(name).unwrap();
+            self.note_class_change(cls, name, Some(&value));
+            let e = Rc::make_mut(&mut self.classes[cls as usize].constants)
+                .get_mut(name)
+                .unwrap();
             e.value = value.clone();
             e.init = None;
         }
@@ -2828,6 +2949,7 @@ impl Vm {
         if self.classes[cls as usize].updated {
             return Ok(());
         }
+        self.note_class_change(cls, b"\0update", None);
         self.touch_enum_cases(cls);
         if let Some(p) = self.classes[cls as usize].parent {
             self.update_class_constants(p)?;
@@ -2875,7 +2997,8 @@ impl Vm {
                 }
                 (None, None) => continue,
             };
-            if let Some(pe) = self.classes[cls as usize].props.get_mut(&name) {
+            self.note_class_change(cls, name.as_bytes(), Some(&v));
+            if let Some(pe) = Rc::make_mut(&mut self.classes[cls as usize].props).get_mut(&name) {
                 pe.default = v;
                 pe.init = None;
             }
@@ -2898,6 +3021,7 @@ impl Vm {
                     if let Some(ty) = ty {
                         v = self.verify_prop_init_type(v, &ty, cls, &name)?;
                     }
+                    self.note_class_change(cls, &name, Some(&v));
                     *default.borrow_mut() = v.clone();
                     *cell.borrow_mut() = v;
                 }
@@ -2910,6 +3034,7 @@ impl Vm {
             self.build_backed_enum_table(cls, backing)?;
         }
         self.classes[cls as usize].updated = true;
+        self.note_class_change(cls, b"\0updated", None);
         Ok(())
     }
 

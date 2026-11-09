@@ -15,12 +15,14 @@ mod autoload;
 mod callables;
 mod calls;
 mod classes;
+mod cli_modes;
 mod closures;
 mod compare;
 mod const_link;
 mod dispatch;
 mod errors;
 mod fibers;
+mod frame_stack;
 mod gc;
 mod generators;
 mod hooks;
@@ -29,6 +31,7 @@ mod include;
 mod inherit;
 mod lazy;
 mod lifecycle;
+mod link_cache;
 mod link_checks;
 mod lookup_cache;
 mod lvalue;
@@ -65,7 +68,12 @@ use include::Includer;
 use lvalue::{CursorRoot, CursorSteps};
 use streams::StreamTable;
 
+pub use cli_modes::CliMode;
 pub use include::IncludeError;
+pub use link_cache::link_cache_stats;
+
+/// [`Vm`]'s `recv_init_cache` key: proto address, parameter, scope.
+type RecvInitKey = (usize, u16, Option<ClassId>);
 
 /// The virtual machine: call stack + global tables, running one request
 /// under its SAPI.
@@ -85,7 +93,12 @@ pub struct Vm {
     /// The output layer (main/output.c): the `ob_start` handler stack every
     /// write passes through on its way to [`Vm::emit_stdout`].
     output: output::Output,
-    stack: Vec<Frame>,
+    stack: frame_stack::FrameStack,
+    /// Internal functions' signature argument counts, by defining class
+    /// and name (see `Vm::internal_arg_count_error`).
+    arg_counts: rustc_hash::FxHashMap<(ClassId, PhpStr), Option<calls::ArgRange>>,
+    /// Register files of returned frames, for the next calls.
+    reg_pool: frame_stack::RegPool,
     /// The programs installed so far: the main script is unit 0, then each
     /// included file and eval()'d string, in load order. A program installed
     /// right after one that added no closures and no class declarations
@@ -125,7 +138,6 @@ pub struct Vm {
     /// The `#[\Deprecated]` global constants whose deprecation is being
     /// raised (php's CONST_PROTECT_RECURSION).
     const_guard: Vec<Vec<u8>>,
-    max_depth: usize,
     /// After max_execution_time ran out: the (frame, pc) of the last user
     /// instruction run. php raises the timeout where a jump lands or a
     /// function starts (its VM interrupt checks).
@@ -172,7 +184,7 @@ pub struct Vm {
     unset_typed_props: HashMap<u32, Vec<PhpStr>>,
     // Globals that became PHP references (`global $x`, `=&`, by-ref passing):
     // php's shutdown sweep only destroys plain (non-reference) object globals.
-    ref_globals: std::collections::HashSet<Vec<u8>>,
+    ref_globals: rustc_hash::FxHashSet<Vec<u8>>,
     // `static $x`: persistent cells keyed by (function proto pointer, unit,
     // class, var name).
     statics: rustc_hash::FxHashMap<StaticKey, Rc<RefCell<Value>>>,
@@ -202,11 +214,19 @@ pub struct Vm {
     /// The `$this` that goes with `fcc_scope` (a callable bound when it was
     /// checked, such as a shutdown function's).
     fcc_this: std::cell::RefCell<Option<ObjectHandle>>,
+    /// RECV_INIT's runtime cache: a parameter default already evaluated, by
+    /// (proto address, parameter, scope: a trait method's using class); the
+    /// proto is kept alive with it.
+    recv_init_cache: rustc_hash::FxHashMap<RecvInitKey, (Rc<FunctionProto>, Value)>,
     // Resolved real paths already included (for the `_once` variants), in
     // inclusion order (`get_included_files`).
     included_files: indexmap::IndexSet<Vec<u8>, rustc_hash::FxBuildHasher>,
     /// Classes `[0, internal_classes)` are the built-in (prelude) ones.
     internal_classes: usize,
+    /// The linked-class cache's per-request side (`link_cache`).
+    link_cache: link_cache::LinkCacheState,
+    /// Diagnostics raised so far (a link that raised one is not cached).
+    diag_seq: u64,
     // Registered `spl_autoload_register` callables, in call order.
     autoloaders: Vec<autoload::Autoloader>,
     /// Lowercased class names whose autoload is in progress (php's
@@ -261,8 +281,9 @@ pub struct Vm {
     user_wrappers: Vec<(Vec<u8>, Rc<builtins::main::streams::userspace::UserWrapper>)>,
     // Filesystem path of the top-level script (for `Phar::mapPhar`).
     main_script_path: Option<Vec<u8>>,
-    /// Whether auto_prepend_file runs before the main script (not for
-    /// `-r` code, which php evaluates without php_execute_script).
+    /// Whether auto_prepend_file and auto_append_file run around the main
+    /// script (not for `-r` code, which php evaluates without
+    /// php_execute_script).
     auto_prepend: bool,
     /// Open stream resources (fopen family), one record per resource id.
     streams: StreamTable,
@@ -273,6 +294,9 @@ pub struct Vm {
     /// parent hook): property access uses the backing value.
     hook_bypass: bool,
     next_resource_id: u32,
+    // php-cli's request body stream (php://temp, two resource ids) exists:
+    // php creates it on the first php://input open.
+    input_body: bool,
     /// The resource values made, by id, for `get_resources()` (php's
     /// EG(regular_list)): a resource is listed while a value holds it.
     resource_list: std::collections::BTreeMap<u32, Vec<std::rc::Weak<rhp_values::ResourceData>>>,
@@ -395,8 +419,11 @@ pub struct Vm {
     main_ret: Option<Value>,
     // The next include runs as the request's next primary script.
     primary_next: bool,
-    // php -a: the readline shell runs instead of a script.
-    interactive: bool,
+    // php-cli: the shell, -R, --rf, ... run instead of a script.
+    cli_mode: Option<CliMode>,
+    // The main script's compile error (with its file), raised after
+    // auto_prepend_file ran: php compiles the main script after it.
+    main_compile_error: Option<(Vec<u8>, include::IncludeError)>,
     // The shutdown sequence's stack ({main} as an internal frame) is set up.
     in_shutdown_scope: bool,
     // Per-run extension state (`Host::module_state`), by module key.
@@ -410,8 +437,16 @@ pub struct Vm {
     preload_rec: Option<Vec<opcache::PreloadRec>>,
     /// What preloading declared, once installed in this request.
     preloaded: Option<Rc<opcache::Preload>>,
+    /// This thread's cycle-collector state (frames release into it).
+    gc: &'static rhp_values::gc::State,
     /// This thread's memory accounting (checked between instructions).
     mem: &'static rhp_values::mem::MemState,
+    /// `EG(vm_interrupt)`, polled between instructions: the process-wide
+    /// flag under the command-line SAPIs (pcntl signals, the interval
+    /// timer), else this thread's (its max_execution_time timer).
+    interrupt: &'static std::sync::atomic::AtomicBool,
+    /// Whether [`Vm::interrupt`] is the process-wide flag.
+    interrupt_is_process: bool,
     /// A memory_limit crossing waiting for an interrupt point.
     delayed_oom: Option<Box<memory::DelayedOom>>,
     /// EG(active_fiber): the running Fiber object.
@@ -489,7 +524,7 @@ struct Frame {
     /// traces, and the frame whose variable scope it runs in.
     include: Option<(&'static str, usize)>,
     /// Variables created by name (`$$n = v`) that have no compiled slot.
-    dyn_vars: indexmap::IndexMap<Vec<u8>, Rc<RefCell<Value>>, rustc_hash::FxBuildHasher>,
+    dyn_vars: DynVars,
     /// Runs in the global scope ({main}, or a file included from it): its
     /// CVs are the global symbol table's cells.
     global_scope: bool,
@@ -506,6 +541,44 @@ struct Frame {
     /// Called by a prelude function: php has no such call, so its `$this`
     /// is no possible root when the frame ends.
     internal_caller: bool,
+    /// What php's VM stack holds for this frame, in bytes, and whether it
+    /// took a page of its own (set by [`frame_stack::FrameStack::push`]).
+    vm_size: u32,
+    vm_page: bool,
+}
+
+type DynVarMap = indexmap::IndexMap<Vec<u8>, Rc<RefCell<Value>>, rustc_hash::FxBuildHasher>;
+
+/// A frame's variables created by name, boxed on first use (keeps `Frame`
+/// small: calls move it).
+#[derive(Default)]
+struct DynVars(Option<Box<DynVarMap>>);
+
+impl DynVars {
+    fn get(&self, name: &[u8]) -> Option<&Rc<RefCell<Value>>> {
+        self.0.as_ref()?.get(name)
+    }
+
+    fn insert(&mut self, name: Vec<u8>, cell: Rc<RefCell<Value>>) {
+        self.0.get_or_insert_default().insert(name, cell);
+    }
+
+    fn shift_remove(&mut self, name: &[u8]) -> Option<Rc<RefCell<Value>>> {
+        self.0.as_mut()?.shift_remove(name)
+    }
+
+    /// The variable `name`, created undefined when missing.
+    fn cell(&mut self, name: &[u8]) -> Rc<RefCell<Value>> {
+        self.0
+            .get_or_insert_default()
+            .entry(name.to_vec())
+            .or_insert_with(|| Rc::new(RefCell::new(Value::Undef)))
+            .clone()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&Vec<u8>, &Rc<RefCell<Value>>)> {
+        self.0.iter().flat_map(|m| m.iter())
+    }
 }
 
 /// A running foreach's iterator: `(pos_reg, arr, by_ref, id)`.
@@ -513,6 +586,24 @@ type FeLive = (Reg, Reg, bool, u32);
 
 impl Drop for Frame {
     fn drop(&mut self) {
+        if self.regs.capacity() > 0 || self.closure.is_some() || self.fe_live.is_some() {
+            self.release(rhp_values::gc::state());
+        }
+        if self.regs.capacity() > 0 {
+            // Temporaries go with the register file; its buffer was not
+            // counted (`frame_stack`).
+            self.regs.clear();
+            let regs = std::mem::take(&mut self.regs);
+            rhp_values::mem::uncounted(|| drop(regs));
+        }
+    }
+}
+
+impl Frame {
+    /// Free the frame's variables, `$this` and Closure as php's
+    /// leave helper does (what dropping it starts with; done again, it
+    /// does nothing).
+    fn release(&mut self, gc: &rhp_values::gc::State) {
         if let Some(live) = self.fe_live.take() {
             for (pos, arr, by_ref, id) in *live {
                 dispatch::release_fe_iter(&mut self.regs, pos, arr, by_ref, id);
@@ -536,7 +627,7 @@ impl Drop for Frame {
                 if let Value::Object(_) | Value::Array(_) | Value::Ref(_) | Value::Closure(_) = slot
                 {
                     let v = std::mem::replace(slot, Value::Undef);
-                    rhp_values::gc::possible_root(&v);
+                    rhp_values::gc::possible_root_in(gc, &v);
                     drop(v);
                 }
             }
@@ -545,14 +636,14 @@ impl Drop for Frame {
             // A prelude method's variables go before its `$this` too.
             self.regs.clear();
             if self.closure.is_none() && !self.internal_caller {
-                rhp_values::gc::possible_root(&this);
+                rhp_values::gc::possible_root_in(gc, &this);
             }
             drop(this);
         }
         // A closure call releases the Closure (not its bound `$this`).
         if let Some(c) = self.closure.take() {
             let c = Value::Closure(c);
-            rhp_values::gc::possible_root(&c);
+            rhp_values::gc::possible_root_in(gc, &c);
             drop(c);
         }
     }
@@ -575,8 +666,13 @@ impl Frame {
         // it is read (a copy reads `Undef` as null, a move turns it into
         // null, and `undef_cv` never warns for one).
         let n = proto.num_registers as usize;
-        let mut regs = Vec::with_capacity(n);
-        regs.resize_with(n, || Value::Undef);
+        let regs = frame_stack::alloc_regs(n, rhp_values::mem::state());
+        Self::with_regs(proto, unit, ret_dst, regs)
+    }
+
+    /// [`Frame::new`] with a register file of undefined registers.
+    #[inline]
+    fn with_regs(proto: Rc<FunctionProto>, unit: UnitId, ret_dst: Reg, regs: Vec<Value>) -> Self {
         Frame {
             proto,
             unit,
@@ -591,11 +687,13 @@ impl Frame {
             holes: 0,
             extra_args: Vec::new(),
             include: None,
-            dyn_vars: indexmap::IndexMap::default(),
+            dyn_vars: DynVars::default(),
             global_scope: false,
             closure: None,
             fe_live: None,
             internal_caller: false,
+            vm_size: 0,
+            vm_page: false,
         }
     }
 }

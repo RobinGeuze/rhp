@@ -337,7 +337,9 @@ impl Vm {
                 // Built-in classes first, then class-table (compile) order;
                 // a class_alias() entry lists under its lowercased key, at
                 // the point it was added.
-                let mut ids: Vec<(bool, usize, usize, Option<usize>)> = (0..self.classes.len())
+                // An internal alias lists under its lowercased key, after
+                // its class.
+                let mut ids: Vec<(bool, usize, usize, Option<Vec<u8>>)> = (0..self.classes.len())
                     .map(|id| {
                         let user = id >= self.internal_classes;
                         let order = if user {
@@ -348,8 +350,17 @@ impl Vm {
                         (user, order, id, None)
                     })
                     .collect();
-                for (i, (_, cid, at)) in self.class_aliases.iter().enumerate() {
-                    ids.push((true, 2 * at, *cid as usize, Some(i)));
+                for (alias, cid, at) in &self.class_aliases {
+                    ids.push((true, 2 * at, *cid as usize, Some(alias.clone())));
+                }
+                for (alias, class) in rhp_builtins::zend::object_handlers::class_aliases() {
+                    let key = class.to_ascii_lowercase().into_bytes();
+                    if let Some(&id) = self.class_ids.get(&key) {
+                        if (id as usize) < self.internal_classes {
+                            let alias = alias.to_ascii_lowercase().into_bytes();
+                            ids.push((false, 0, id as usize, Some(alias)));
+                        }
+                    }
                 }
                 ids.sort();
                 let mut out = PhpArray::new();
@@ -362,7 +373,7 @@ impl Vm {
                     };
                     if ok {
                         out.push(match alias {
-                            Some(i) => Value::str(self.class_aliases[i].0.clone()),
+                            Some(alias) => Value::str(alias),
                             None => Value::Str(e.name.clone()),
                         });
                     }
@@ -753,6 +764,7 @@ impl Vm {
         put(&mut a, "abstract", Value::Bool(explicit || has_abstract));
         put(&mut a, "final", Value::Bool(is_final));
         put(&mut a, "readonly", Value::Bool(e.flags.is_readonly));
+        put(&mut a, "hooked_iter", Value::Bool(e.hooked_iter));
         let instantiable = e.kind == ClassKind::Class
             && !explicit
             && !has_abstract

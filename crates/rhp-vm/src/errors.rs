@@ -137,7 +137,7 @@ impl Vm {
     }
 
     /// `$throwable->__toString()`, its result dereferenced.
-    fn call_to_string(&mut self, h: &ObjectHandle) -> Result<Value, Thrown> {
+    pub(crate) fn call_to_string(&mut self, h: &ObjectHandle) -> Result<Value, Thrown> {
         let cls = h.borrow().class;
         match self.lookup_method(cls, b"__tostring") {
             Some(m) => self
@@ -221,6 +221,7 @@ impl Vm {
         line: i64,
         user_handler: bool,
     ) {
+        self.diag_seq += 1;
         match &self.pending_throw {
             // a fatal error / exit is unwinding (php bailed out)
             Some(Thrown::Exit(_)) => return,
@@ -854,6 +855,16 @@ impl Vm {
         })
     }
 
+    /// sodium_remove_param_values_from_backtrace on an exception already
+    /// thrown.
+    pub(crate) fn hide_thrown_trace_args(&mut self, obj: &ObjectHandle) {
+        let kt = self.declared_prop_key(obj, b"trace");
+        let mut b = obj.borrow_mut();
+        if let Some(Value::Array(trace)) = b.props_mut().get_mut(&kt) {
+            hide_trace_args(trace);
+        }
+    }
+
     /// Stamp a freshly created Throwable with php's creation-site `file`,
     /// `line` and `trace` (zend_default_exception_new).
     pub(crate) fn init_throwable(&mut self, obj: &ObjectHandle) {
@@ -1019,8 +1030,11 @@ impl Vm {
             return;
         }
         let ini = |vm: &Self, n: &[u8]| vm.ini_get(n).unwrap_or_default();
-        let log = ini_bool(&ini(self, b"log_errors"));
+        let log = self.sapi.diag_part != 2 && ini_bool(&ini(self, b"log_errors"));
         let mut mode = display_errors_mode(&ini(self, b"display_errors"));
+        if self.sapi.diag_part == 1 {
+            mode = DisplayErrors::Off;
+        }
         if matches!(mode, DisplayErrors::Stderr)
             && !matches!(
                 builtins::main::sapi::sapi_name().as_str(),
@@ -1043,7 +1057,10 @@ impl Vm {
             m.extend_from_slice(message);
             m.extend_from_slice(&tail);
             let target = ini(self, b"error_log");
-            if target.is_empty() || target == b"syslog" {
+            if target == b"syslog" {
+                let line = m.strip_suffix(b"\n").unwrap_or(&m);
+                builtins::php_syslog(builtins::syslog_error_priority(ty), line);
+            } else if target.is_empty() {
                 // error_log unset: the SAPI's log_message (the CLI's writes
                 // to stderr).
                 let line = m.strip_suffix(b"\n").unwrap_or(&m).to_vec();

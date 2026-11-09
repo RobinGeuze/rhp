@@ -1963,6 +1963,10 @@ impl IteratorFuncs for IterFuncs {
     fn rewind(&self, _: &mut dyn Host) -> Result<(), Thrown> {
         Ok(())
     }
+    /// pdo_stmt_iter_funcs has no rewind.
+    fn can_rewind(&self) -> bool {
+        false
+    }
 }
 
 /// pdo_stmt_iter_get: the iterator object (php's `zend_iterator_init`

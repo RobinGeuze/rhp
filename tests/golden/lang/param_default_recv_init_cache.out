@@ -1,0 +1,38 @@
+
+Deprecated: Constant C::X is deprecated in F on line 5
+
+Deprecated: Constant C::X is deprecated in F on line 5
+
+Deprecated: Constant C::A is deprecated in F on line 5
+
+Deprecated: Constant MT_RAND_PHP is deprecated since 8.3, as it uses a biased non-standard variant of Mt19937 in F on line 5
+
+Deprecated: Constant C::X is deprecated in F on line 5
+
+Deprecated: Constant C::A is deprecated in F on line 5
+
+Deprecated: Constant C::X is deprecated in F on line 5
+
+Deprecated: Constant C::A is deprecated in F on line 5
+array(4) {
+  [0]=>
+  string(1) "x"
+  [1]=>
+  string(2) "xy"
+  [2]=>
+  array(1) {
+    [0]=>
+    int(1)
+  }
+  [3]=>
+  int(2)
+}
+
+Deprecated: Constant MT_RAND_PHP is deprecated since 8.3, as it uses a biased non-standard variant of Mt19937 in F on line 7
+int(1)
+int(1)
+W
+W
+Undefined constant "UNDEF_K"
+int(5)
+int(5)

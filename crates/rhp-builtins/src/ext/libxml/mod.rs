@@ -10,6 +10,7 @@
 
 pub mod ffi;
 pub mod io;
+pub mod mime_sniff;
 pub(crate) mod node;
 pub mod sys;
 
@@ -326,10 +327,14 @@ fn ctx_error_level(level: i64, ctx: *mut c_void, fname: &str, msg: &[u8], line: 
 
 /// The user function a property hook runs on behalf of (what php's
 /// `get_active_function_name` reports for a DOM property write): the frame
-/// below the prelude's `__set`, or `main` at top level.
+/// below the prelude's `__set` or set hook, or `main` at top level.
 pub fn active_user_function(host: &dyn Host) -> String {
     let st = host.call_stack();
-    let mut it = st.iter().skip_while(|(f, ..)| f.as_slice() != b"__set");
+    // The property handler's own frame: a prelude __set, or a set hook
+    // (`$prop::set`) standing for php's write_property.
+    let mut it = st
+        .iter()
+        .skip_while(|(f, ..)| f.as_slice() != b"__set" && !f.ends_with(b"::set"));
     if it.next().is_none() {
         return "main".into();
     }

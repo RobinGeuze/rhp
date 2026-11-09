@@ -649,13 +649,9 @@ class ReflectionClass implements Reflector {
         }
         $s .= $c['internal'] ? '<internal' . ($this->getExtensionName() !== false ? ':' . $this->getExtensionName() : '') : '<user';
         $s .= '> ';
-        // ce->get_iterator: a Traversable class, or one with hooked
-        // properties (zend_hooked_object_get_iterator), inherited from the
-        // parent; ones from an interface do not set it (the interface's own do).
-        $iter = $kind !== 'interface' && $kind !== 'trait' && $this->implementsInterface('Traversable');
-        for ($rc = $this; !$iter && $rc; $rc = $rc->getParentClass()) {
-            foreach ($rc->getProperties() as $rp) { if (!$rp->__dynamic() && $rp->hasHooks() && ($rp->class === $rc->name || !interface_exists($rp->class, false))) { $iter = true; break; } }
-        }
+        // ce->get_iterator: a Traversable class, or one iterating its
+        // hooked properties (zend_hooked_object_get_iterator).
+        $iter = ($kind !== 'interface' && $kind !== 'trait' && $this->implementsInterface('Traversable')) || $c['hooked_iter'];
         if ($iter) { $s .= '<iterateable> '; }
         if ($kind === 'interface' || $kind === 'trait' || $kind === 'enum') {
             $s .= $kind . ' ';
@@ -1041,9 +1037,7 @@ class ReflectionProperty implements Reflector {
         }
         if ($object === null) { throw new TypeError('ReflectionProperty::getValue(): Argument #1 ($object) must be provided for instance properties'); }
         if (!($object instanceof $this->class)) { throw new ReflectionException('Given object is not an instance of the class this property was declared in'); }
-        if ($this->__i['type'] !== null && !isset($this->__i['dynamic']) && !__reflect('is_init', $object, $this->class, $this->name)) {
-            throw new Error('Typed property ' . $this->class . '::$' . $this->name . ' must not be accessed before initialization');
-        }
+        // read_property: an unset() typed slot goes to __get().
         return __reflect_get_prop($object, $this->name, $this->class);
     }
     public function setValue(mixed $objectOrValue, mixed $value = null): void {
@@ -1293,6 +1287,7 @@ class ReflectionExtension implements Reflector {
         'dom' => ['libxml' => 'Required', 'lexbor' => 'Required', 'domxml' => 'Conflicts'],
         'xml' => ['libxml' => 'Required'], 'xmlreader' => ['dom' => 'Required', 'libxml' => 'Required'],
         'xmlwriter' => ['libxml' => 'Required'], 'zip' => ['pcre' => 'Required'],
+        'exif' => ['standard' => 'Required', 'mbstring' => 'Optional'],
     ]; }
     public function info(): void { __reflect_ext('info', $this->name); }
     public function getClasses(): array {
@@ -1312,4 +1307,26 @@ class ReflectionExtension implements Reflector {
     public function isPersistent(): bool { return true; }
     public function isTemporary(): bool { return false; }
     public function __toString(): string { return 'Extension [ <persistent> extension #0 ' . $this->name . " ] {\n}\n"; }
+}
+
+/** php's zend_extension list: rhp reports Zend OPcache only. */
+class ReflectionZendExtension implements Reflector {
+    private function __clone(): void { throw new ReflectionException('Cannot clone object using __clone()'); }
+    public string $name;
+    private $__e;
+    public function __construct(string $name) {
+        if ($name !== 'Zend OPcache') { throw new ReflectionException('Zend Extension "' . $name . '" does not exist'); }
+        $this->__e = ['Zend OPcache', PHP_VERSION, 'Zend Technologies', 'http://www.zend.com/', 'Copyright (c)'];
+        $this->name = $name;
+    }
+    /** php_reflection.c _zend_extension_string. */
+    public function __toString(): string {
+        [$n, $v, $a, $u, $c] = $this->__e;
+        return "Zend Extension [ $n $v $c by $a <$u> ]\n";
+    }
+    public function getName(): string { return $this->__e[0]; }
+    public function getVersion(): string { return $this->__e[1]; }
+    public function getAuthor(): string { return $this->__e[2]; }
+    public function getURL(): string { return $this->__e[3]; }
+    public function getCopyright(): string { return $this->__e[4]; }
 }

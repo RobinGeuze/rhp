@@ -67,12 +67,20 @@ fn dom_err_msg(cx: &mut Cx, code: i64, msg: &str) -> Thrown {
 }
 
 /// The document's namespace mapper (php_dom_get_ns_mapper).
-pub fn mapper(d: &DomObject) -> &'static mut NsMapper {
-    nscompat::mapper(d.document()).expect("a modern document has private data")
+///
+/// # Safety
+/// No other reference to the document's private data is in use while
+/// the result is.
+pub unsafe fn mapper<'a>(d: &DomObject) -> &'a mut NsMapper {
+    unsafe { nscompat::mapper(d.document()) }.expect("a modern document has private data")
 }
 
-pub fn private(d: &DomObject) -> Option<&'static mut DomPrivate> {
-    nscompat::of(d.document())
+/// The document's private data (php_dom_get_private_data).
+///
+/// # Safety
+/// As for [`mapper`].
+pub unsafe fn private<'a>(d: &DomObject) -> Option<&'a mut DomPrivate> {
+    unsafe { nscompat::of(d.document()) }
 }
 
 pub fn is_modern(d: &DomObject) -> bool {
@@ -292,7 +300,7 @@ fn dump(
             }
         });
     }
-    let p = private(d).map(|p| &*p);
+    let p = unsafe { private(d) }.map(|p| &*p);
     super::xml_serializer::dump_to_str(node, options, format, encoding, false, p)
 }
 
@@ -364,17 +372,26 @@ fn write_file(cx: &mut Cx, file: &[u8], data: &[u8]) -> Result<Option<i64>, Thro
 }
 
 /// Open `path` for reading through php's streams and read it all; the
-/// data and, for a plain file, the path opened.
-type FileData = (Vec<u8>, Option<Vec<u8>>);
+/// data, for a plain file the path opened, and the charset its transport
+/// gives (php_libxml_sniff_charset_from_stream).
+type FileData = (Vec<u8>, Option<Vec<u8>>, Option<Vec<u8>>);
 
 fn read_file(cx: &mut Cx, path: &[u8]) -> Result<Option<FileData>, Thrown> {
+    // php_stream_open_wrapper_ex refuses an empty path.
+    if path.is_empty() {
+        return Err(Thrown::error("ValueError", "Path must not be empty"));
+    }
     let fname = cx.fname();
     let ctx = crate::ext::libxml::stream_context().unwrap_or(Value::Null);
-    let Some(h) =
+    let opened = if crate::ext::standard::file::builtin_http(cx.host, path) {
+        crate::ext::standard::http_fopen_wrapper::open(cx.host, &fname, path, b"rb", &ctx, false)?
+    } else {
         crate::ext::standard::file::open_stream(cx.host, &fname, path, b"rb", &ctx, false)?
-    else {
+    };
+    let Some(h) = opened else {
         return Ok(None);
     };
+    let charset = crate::ext::libxml::mime_sniff::charset_from_stream(cx.host, &h);
     let mut data = Vec::new();
     while let Some(chunk) = cx.host.stream_read(&h, 4096) {
         if chunk.is_empty() {
@@ -397,7 +414,7 @@ fn read_file(cx: &mut Cx, path: &[u8]) -> Result<Option<FileData>, Thrown> {
     } else {
         None
     };
-    Ok(Some((data, opened)))
+    Ok(Some((data, opened, charset)))
 }
 
 /// Dom\XMLDocument::saveXmlFile and Dom\HTMLDocument::saveXmlFile
@@ -639,12 +656,17 @@ pub fn html_create_from_file(cx: &mut Cx, _: &Value, args: &[Value]) -> Result<V
             ));
         }
     }
-    let Some((data, opened)) = read_file(cx, &path)? else {
+    let Some((data, opened, charset)) = read_file(cx, &path)? else {
         return Err(Thrown::error(
             "Exception",
             format!("Cannot open file '{}'", String::from_utf8_lossy(&path)),
         ));
     };
+    // A charset from the transport (an http Content-Type) when no
+    // encoding was given; an unknown one is ignored.
+    if let (None, Some(cs)) = (&override_encoding, &charset) {
+        p.set_encoding(None, cs);
+    }
     for chunk in data.chunks(4096) {
         if !p.parse_file_chunk(chunk) {
             return Err(dom_err(cx, INVALID_STATE_ERR));
@@ -674,8 +696,8 @@ pub fn html_create_from_file(cx: &mut Cx, _: &Value, args: &[Value]) -> Result<V
 /// (dom_common_save).
 fn html_save(d: &DomObject, docp: *mut XmlDoc, node: *mut XmlNode) -> Vec<u8> {
     rhp_csrc::lexbor::setup();
-    let mut utf8 = Vec::new();
-    super::html5_serializer::serialize_outer(&mut utf8, private(d).map(|p| &*p), node);
+    let mut utf8 = super::html5_serializer::Out::default();
+    super::html5_serializer::serialize_outer(&mut utf8, unsafe { private(d) }.map(|p| &*p), node);
     let enc = unsafe { b((*docp).encoding) }.to_vec();
     super::html5::encode_output(&enc, &utf8)
 }
@@ -710,12 +732,43 @@ pub fn save_html_file(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value
     if file.is_empty() {
         return Err(value_error(cx, 1, "filename", "must not be empty"));
     }
-    let (intern, docn) = get_obj(cx, this)?;
-    let data = html_save(&intern, docn.cast(), docn);
-    Ok(match write_file(cx, file, &data)? {
-        Some(n) => Value::Int(n),
-        None => Value::Bool(false),
-    })
+    let fname = cx.fname();
+    let ctx = crate::ext::libxml::stream_context().unwrap_or(Value::Null);
+    let Some(stream) =
+        crate::ext::standard::file::open_stream(cx.host, &fname, file, b"wb", &ctx, false)?
+    else {
+        return Ok(Value::Bool(false));
+    };
+    let (intern, docn) = match get_obj(cx, this) {
+        Ok(v) => v,
+        Err(e) => {
+            cx.host.stream_close(&stream);
+            return Err(e);
+        }
+    };
+    // dom_common_save: each of the serializer's writes goes to the stream
+    // as it is made (encoded), and a failed write stops the save.
+    rhp_csrc::lexbor::setup();
+    let mut utf8 = super::html5_serializer::Out::default();
+    super::html5_serializer::serialize_outer(
+        &mut utf8,
+        unsafe { private(&intern) }.map(|p| &*p),
+        docn,
+    );
+    let enc = unsafe { b((*docn.cast::<XmlDoc>()).encoding) }.to_vec();
+    for piece in super::html5::encode_output_pieces(&enc, &utf8) {
+        // php_stream_write of nothing writes nothing.
+        if piece.is_empty() {
+            continue;
+        }
+        if cx.host.stream_write(&stream, &piece).is_none() {
+            cx.host.stream_close(&stream);
+            return Ok(Value::Bool(false));
+        }
+    }
+    let bytes = cx.host.stream_tell(&stream).unwrap_or(0);
+    cx.host.stream_close(&stream);
+    Ok(Value::Int(bytes))
 }
 
 // ---- Dom\Implementation ----
@@ -910,7 +963,7 @@ pub fn doc_create_element_ns(cx: &mut Cx, this: &Value, args: &[Value]) -> Resul
     let docp: *mut XmlDoc = docn.cast();
     match validate_and_extract(uri.as_deref(), &name) {
         Ok((local, prefix)) => {
-            let ns = mapper(&intern).get_ns(
+            let ns = unsafe { mapper(&intern) }.get_ns(
                 prefix.as_deref().unwrap_or(b""),
                 uri.as_deref().unwrap_or(b""),
             );
@@ -968,7 +1021,7 @@ pub fn doc_create_attribute_ns(cx: &mut Cx, this: &Value, args: &[Value]) -> Res
         return Err(dom_err(cx, INVALID_STATE_ERR));
     }
     if let Some(u) = uri.as_ref().filter(|u| !u.is_empty()) {
-        let ns = mapper(&intern).get_ns(prefix.as_deref().unwrap_or(b""), u);
+        let ns = unsafe { mapper(&intern) }.get_ns(prefix.as_deref().unwrap_or(b""), u);
         unsafe { (*node).ns = ns };
     }
     create_object(cx, node, Some(&intern))
@@ -1031,16 +1084,29 @@ pub fn doc_create_processing_instruction(
 }
 
 /// dom_modern_document_import_node (importNode, importLegacyNode)
+/// Dom\Document::importNode
 pub fn doc_import_node(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
+    let nodev = arg(args, 0);
+    // The stub says ?Node, but ZPP's "O" (Dom\Node) refuses anything else,
+    // null included.
+    let is_node = cx
+        .host
+        .object_class_name(&nodev)
+        .is_some_and(|c| cx.host.reflect_is_a(&c, b"Dom\\Node"));
+    if !is_node {
+        return Err(Thrown::type_error(format!(
+            "Dom\\Document::importNode(): Argument #1 ($node) must be of type Dom\\Node, {} given",
+            crate::zend::zpp::zval_value_name(cx.host, &nodev)
+        )));
+    }
+    doc_import_legacy_node(cx, this, args)
+}
+
+/// Dom\Document::importLegacyNode (and importNode's work)
+pub fn doc_import_legacy_node(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
     let (intern, docn) = get_obj(cx, this)?;
     let docp: *mut XmlDoc = docn.cast();
     let nodev = arg(args, 0);
-    if matches!(nodev, Value::Null) {
-        // The stub says ?Node, but ZPP's "O" refuses null.
-        return Err(Thrown::type_error(
-            "Dom\\Document::importNode(): Argument #1 ($node) must be of type Dom\\Node, null given",
-        ));
-    }
     let (_, nodep) = get_obj(cx, &nodev)?;
     let recursive = boolean(args, 1);
     unsafe {
@@ -1398,7 +1464,12 @@ pub fn clone_node(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Th
         }
         Ok(v)
     } else {
-        let node = clone_node_modern(Some(mapper(&intern)), n, unsafe { (*n).doc }, recursive);
+        let node = clone_node_modern(
+            Some(unsafe { mapper(&intern) }),
+            n,
+            unsafe { (*n).doc },
+            recursive,
+        );
         if node.is_null() {
             return Ok(Value::Bool(false));
         }
@@ -1873,7 +1944,7 @@ pub fn el_set_attribute_ns(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<
     let (intern, elemp) = get_obj(cx, this)?;
     match validate_and_extract(uri.as_deref(), &name) {
         Ok((local, prefix)) => {
-            let ns = mapper(&intern).get_ns(
+            let ns = unsafe { mapper(&intern) }.get_ns(
                 prefix.as_deref().unwrap_or(b""),
                 uri.as_deref().unwrap_or(b""),
             );
@@ -2040,7 +2111,7 @@ fn namespace_infos(
     nodep: *mut XmlNode,
     out: &mut PhpArray,
 ) -> Result<(), Thrown> {
-    let m = mapper(intern);
+    let m = unsafe { mapper(intern) };
     // prefix ("" for the default) to namespace, first (innermost) wins
     let mut table: Vec<(Vec<u8>, *mut XmlNs)> = Vec::new();
     let mut cur = nodep as *const XmlNode;
@@ -2249,7 +2320,7 @@ fn xml_fragment(
     context: *mut XmlNode,
     input: &[u8],
 ) -> Result<*mut XmlNode, Thrown> {
-    let m = mapper(d);
+    let m = unsafe { mapper(d) };
     let mut decls = Vec::new();
     for ns in nscompat::in_scope_ns(m, context, true) {
         unsafe {

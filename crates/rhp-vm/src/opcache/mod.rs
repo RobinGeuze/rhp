@@ -87,10 +87,10 @@ struct Startup {
 pub(crate) struct Cache {
     startup: Option<Startup>,
     /// Keyed by resolved path.
-    scripts: indexmap::IndexMap<Vec<u8>, Script>,
+    scripts: indexmap::IndexMap<Vec<u8>, Script, rustc_hash::FxBuildHasher>,
     /// php's indirect keys: a script requested by another name (relative,
     /// or through a symlink) → its resolved path.
-    keys: std::collections::HashMap<Vec<u8>, Vec<u8>>,
+    keys: rustc_hash::FxHashMap<Vec<u8>, Vec<u8>>,
     seq: u64,
     hits: i64,
     misses: i64,
@@ -147,6 +147,21 @@ pub(crate) struct Request {
     enabled: bool,
     /// `ZCG(request_time)`: the request's start, in whole seconds.
     request_time: i64,
+    /// The directives every compile reads, while the ini values stay the
+    /// same.
+    settings: std::cell::Cell<Option<Settings>>,
+}
+
+/// The run-time directives every compile reads.
+#[derive(Clone, Copy)]
+struct Settings {
+    /// [`builtins::ini_generation`] when read.
+    generation: u64,
+    enable: bool,
+    validate_timestamps: bool,
+    revalidate_freq: i64,
+    revalidate_path: bool,
+    use_cwd: bool,
 }
 
 /// php's `zend_accel_hash_init` sizes: the first prime ≥ the setting.
@@ -462,7 +477,32 @@ impl Vm {
     /// opcache.revalidate_path: php then never looks a script up, or adds
     /// it, under the name it was asked for; only its resolved path counts.
     fn revalidate_path(&self) -> bool {
-        ini_flag(&self.ini(b"opcache.revalidate_path"))
+        self.opcache_settings().revalidate_path
+    }
+
+    /// The run-time directives a compile reads, read again only after an
+    /// ini value changed.
+    fn opcache_settings(&self) -> Settings {
+        let generation = builtins::ini_generation();
+        let memo = self.opcache.as_ref().map(|r| &r.settings);
+        if let Some(s) = memo
+            .and_then(|m| m.get())
+            .filter(|s| s.generation == generation)
+        {
+            return s;
+        }
+        let s = Settings {
+            generation,
+            enable: ini_flag(&self.ini(b"opcache.enable")),
+            validate_timestamps: ini_flag(&self.ini(b"opcache.validate_timestamps")),
+            revalidate_freq: self.ini_long(b"opcache.revalidate_freq"),
+            revalidate_path: ini_flag(&self.ini(b"opcache.revalidate_path")),
+            use_cwd: ini_flag(&self.ini(b"opcache.use_cwd")),
+        };
+        if let Some(m) = memo {
+            m.set(Some(s));
+        }
+        s
     }
 
     fn ini(&self, name: &[u8]) -> Vec<u8> {
@@ -493,6 +533,7 @@ impl Vm {
                 started,
                 enabled,
                 request_time,
+                settings: Default::default(),
             });
             self.flush_accel_log();
         }
@@ -566,7 +607,7 @@ impl Vm {
     /// Whether compiles go through the cache now: started, enabled when
     /// the request began, and not switched off by `ini_set('opcache.enable', 0)`.
     fn opcache_on(&mut self) -> bool {
-        self.opcache_request().enabled && ini_flag(&self.ini(b"opcache.enable"))
+        self.opcache_request().enabled && self.opcache_settings().enable
     }
 
     /// php's `persistent_compile_file`: the cached program for the file at
@@ -600,8 +641,8 @@ impl Vm {
             return compile(self, &src).map(Rc::new);
         }
         let request_time = self.opcache_request().request_time;
-        let validate = ini_flag(&self.ini(b"opcache.validate_timestamps"));
-        let freq = self.ini_long(b"opcache.revalidate_freq");
+        let settings = self.opcache_settings();
+        let (validate, freq) = (settings.validate_timestamps, settings.revalidate_freq);
         // A cached script, still valid (validate_timestamp_and_record).
         let found = with_cache(|c| {
             let script = c.scripts.get_mut(path).filter(|s| !s.corrupted)?;
@@ -699,7 +740,7 @@ impl Vm {
             return None;
         }
         // opcache.use_cwd=0: a relative name is a key as it is.
-        if given.starts_with(b"/") || !ini_flag(&self.ini(b"opcache.use_cwd")) {
+        if given.starts_with(b"/") || !self.opcache_settings().use_cwd {
             return Some(given.to_vec());
         }
         let mut k = given.to_vec();

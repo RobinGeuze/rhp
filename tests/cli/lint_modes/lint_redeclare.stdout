@@ -1,0 +1,5 @@
+
+Fatal error: Cannot redeclare function STRLEN() in redeclare.inc on line 3
+Stack trace:
+#0 {main}
+Errors parsing redeclare.inc

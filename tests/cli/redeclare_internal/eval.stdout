@@ -1,0 +1,5 @@
+runs
+
+Fatal error: Cannot redeclare function iterator_to_array() in {DIR}/eval.php(3) : eval()'d code on line 1
+Stack trace:
+#0 {main}

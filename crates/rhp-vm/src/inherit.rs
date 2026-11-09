@@ -527,7 +527,7 @@ impl Vm {
     /// loading its dependencies. Never autoloads.
     fn lsp_lookup(&mut self, name: &[u8]) -> Option<CRef> {
         let key = name.to_ascii_lowercase();
-        if let Some(&id) = self.class_ids.get(&key) {
+        if let Some(id) = self.link_lookup(&key) {
             return Some(CRef::Linked(id));
         }
         if self.inherit.compiling {
@@ -539,6 +539,7 @@ impl Vm {
     fn lookup_unlinked(&mut self, key: &[u8]) -> Option<CRef> {
         let e = self.inherit.linking.iter_mut().rev().find(|e| e.0 == key)?;
         e.2 = true;
+        self.link_cache.taint();
         Some(CRef::Pending(e.1.clone()))
     }
 
@@ -569,8 +570,8 @@ impl Vm {
                 let p = p.clone();
                 let find = |vm: &mut Vm, n: &PhpStr| {
                     let key = n.as_bytes().to_ascii_lowercase();
-                    match vm.class_ids.get(&key) {
-                        Some(&id) => Some(CRef::Linked(id)),
+                    match vm.link_lookup(&key) {
+                        Some(id) => Some(CRef::Linked(id)),
                         None => vm.lookup_unlinked(&key),
                     }
                 };
@@ -611,6 +612,7 @@ impl Vm {
         if self.inherit.compiling || self.lsp_lookup(n.as_bytes()).is_some() {
             return;
         }
+        self.link_cache.taint();
         if !self.inherit.delayed.iter().any(|d| d == &n) {
             self.inherit.delayed.push(n);
         }
@@ -1479,7 +1481,7 @@ impl Vm {
 
     fn set_prototype(&mut self, ce: ClassId, key: &[u8], proto: Option<ClassId>, is_ctor: bool) {
         if let (Some(p), true) = (proto, is_ctor) {
-            if let Some(m) = self.classes[ce as usize].methods.get_mut(key) {
+            if let Some(m) = Rc::make_mut(&mut self.classes[ce as usize].methods).get_mut(key) {
                 if m.defining_class == ce {
                     m.prototype = Some(p);
                 }
@@ -1585,6 +1587,7 @@ impl Vm {
             }
         }
         if !obligations.is_empty() {
+            self.link_cache.taint();
             // Nearly linked: the delayed autoloads first, then the checks
             // (unless a class loaded meanwhile ran them as a dependency).
             self.inherit.pending.push((ce, obligations));

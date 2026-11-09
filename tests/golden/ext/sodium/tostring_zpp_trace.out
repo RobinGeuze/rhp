@@ -1,0 +1,8 @@
+#0 [internal function]: S->__toString()
+#: sodium_bin2hex()
+#: f()
+#3 {main}
+#0 [internal function]: S->__toString()
+#: str_repeat(Object(S), 2)
+#: g(Object(S))
+#3 {main}

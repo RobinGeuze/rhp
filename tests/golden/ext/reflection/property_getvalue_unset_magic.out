@@ -1,0 +1,5 @@
+get private
+int(42)
+get pub
+int(42)
+Typed property T::$never must not be accessed before initialization

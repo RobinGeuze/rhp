@@ -858,6 +858,21 @@ fn image_type(
     Ok(0)
 }
 
+/// php_getimagetype over a file's bytes (exif_imagetype).
+pub(crate) fn getimagetype(
+    host: &mut dyn Host,
+    fname: &str,
+    data: &[u8],
+    input: &[u8],
+) -> Result<i64, Thrown> {
+    let s = &mut Stream {
+        d: data,
+        pos: 0,
+        eof: false,
+    };
+    image_type(host, fname, s, input)
+}
+
 /// php_getimagesize_from_stream.
 fn from_stream(
     host: &mut dyn Host,

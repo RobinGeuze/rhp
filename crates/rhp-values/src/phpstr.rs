@@ -251,6 +251,12 @@ impl PhpStr {
         self.rc() as usize
     }
 
+    /// The buffer's address: the same for every handle that shares it.
+    #[inline]
+    pub fn addr(&self) -> usize {
+        self.ptr.as_ptr() as usize
+    }
+
     /// Whether both share one buffer.
     #[inline]
     pub fn ptr_eq(&self, other: &PhpStr) -> bool {

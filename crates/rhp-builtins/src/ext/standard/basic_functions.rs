@@ -684,6 +684,7 @@ fn fn_ini_restore(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     }
     // Back to the startup value (`-d`), else the default.
     let startup = INI_STARTUP.with(|m| m.borrow().get(&key).cloned());
+    crate::main::ini::ini_changed();
     INI.with(|m| match startup {
         Some(v) => m.borrow_mut().insert(key, Some(v)),
         None => m.borrow_mut().remove(&key),
@@ -782,8 +783,12 @@ fn fn_error_log(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
         }
         // 0 / 4: php_log_err_with_severity. The error_log file when it
         // opens, else the SAPI's logger (the CLI's writes "msg\n" to
-        // stderr). syslog goes to the SAPI's logger too, as in errors.rs.
+        // stderr); error_log=syslog sends type 0 to syslog.
         _ => {
+            if ty == 0 && ini_value(b"error_log").flatten().as_deref() == Some(b"syslog") {
+                crate::ext::standard::syslog::php_syslog(libc::LOG_NOTICE as i64, &msg);
+                return Ok(Value::Bool(true));
+            }
             let log_target = ini_value(b"error_log")
                 .flatten()
                 .filter(|v| !v.is_empty() && v.as_slice() != b"syslog");

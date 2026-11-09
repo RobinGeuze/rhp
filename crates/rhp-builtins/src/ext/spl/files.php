@@ -41,10 +41,12 @@ class SplFileInfo implements Stringable {
     public function getCTime(): int|false { return $this->__stat('getCTime', 'filectime'); }
     public function getType(): string|false {
         $r = @filetype($this->getPathname());
-        if ($r === false) { throw new RuntimeException('SplFileInfo::getType(): Lstat failed for ' . $this->getPathname()); }
+        if ($r === false && $this->getPathname() !== '') { throw new RuntimeException('SplFileInfo::getType(): Lstat failed for ' . $this->getPathname()); }
         return $r;
     }
+    // php_stat: an empty name is false, with no error.
     private function __stat(string $m, string $f) {
+        if ($this->getPathname() === '') { return false; }
         $r = @$f($this->getPathname());
         if ($r === false) { throw new RuntimeException("SplFileInfo::$m(): stat failed for " . $this->getPathname()); }
         return $r;

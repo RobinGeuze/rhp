@@ -283,6 +283,20 @@ pub enum Instr {
     RecvInitCheck {
         index: u16,
     },
+    /// RECV_INIT's runtime cache: when an earlier call of this function
+    /// cached parameter `index`'s default, store it and jump to `target`
+    /// (the type check), skipping the default's evaluation.
+    RecvInitCached {
+        index: u16,
+        target: Pc,
+    },
+    /// Cache the default just stored into parameter `index` when php would:
+    /// a value that is not refcounted (`strings`: any string, for a default
+    /// that is a lone constant fetch), from an expression with no `new`.
+    RecvInitStore {
+        index: u16,
+        strings: bool,
+    },
     JmpTrue {
         cond: Reg,
         target: Pc,
@@ -340,6 +354,14 @@ pub enum Instr {
         src: Reg,
         sig: CIdx,
     },
+    /// [`Instr::ArgSpreadRef`] for a callee known only at run time: the
+    /// callable in `callee` is asked for its by-reference parameters
+    /// (ZEND_SEND_UNPACK's ARG_SHOULD_BE_SENT_BY_REF).
+    ArgSpreadRefDyn {
+        arr: Reg,
+        src: Reg,
+        callee: Reg,
+    },
     /// `[&$x]` / `[k => &$x]`: push/insert the raw `Value::Ref` in `val` so the
     /// element aliases the source variable (no deref).
     ArrPushRef {
@@ -365,6 +387,14 @@ pub enum Instr {
         dst: Reg,
         arr: Reg,
         key: Reg,
+    },
+    /// `$a[]` as the object of a property write (FETCH_DIM_W with no
+    /// dimension): an ArrayAccess object's offsetGet(null) for writing; a
+    /// variable holding an array, null or false gets a null element
+    /// appended; a string or other scalar is php's Error.
+    DimAppendW {
+        dst: Reg,
+        arr: Reg,
     },
     /// An element on the way to an `unset($a[$k]->p)` (FETCH_DIM_UNSET):
     /// a missing key is silent, a string offset or a scalar container an

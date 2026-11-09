@@ -98,8 +98,8 @@ impl Vm {
 
     /// A trait named in a rule; php does not autoload it here.
     fn rule_trait(&mut self, proto: &ClassProto, name: &PhpStr) -> Result<ClassId, Thrown> {
-        match self.class_ids.get(&lc(name.as_bytes())) {
-            Some(&id) => Ok(id),
+        match self.link_lookup(&lc(name.as_bytes())) {
+            Some(id) => Ok(id),
             None => {
                 let msg = format!("Could not find trait {}", lossy(name.as_bytes()));
                 Err(self.link_fatal(proto, 64, &msg))

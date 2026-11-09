@@ -1,0 +1,6 @@
+main
+
+Fatal error: Uncaught Exception: e in {DIR}/uncaught.php:3
+Stack trace:
+#0 {main}
+  thrown in {DIR}/uncaught.php on line 3

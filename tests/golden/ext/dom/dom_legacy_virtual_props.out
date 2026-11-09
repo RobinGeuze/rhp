@@ -1,0 +1,293 @@
+DOMXPath
+Array
+(
+    [document] => DOMDocument
+    [registerNodeNamespaces] => true
+)
+Dom\XPath
+Array
+(
+    [document] => Dom\HTMLDocument
+    [registerNodeNamespaces] => true
+)
+DOMImplementation
+Array
+(
+)
+DOMDocument
+Array
+(
+    [nodeName] => '#document'
+    [nodeValue] => NULL
+    [nodeType] => 9
+    [parentNode] => NULL
+    [parentElement] => NULL
+    [childNodes] => DOMNodeList
+    [firstChild] => DOMDocumentType
+    [lastChild] => DOMElement
+    [previousSibling] => NULL
+    [nextSibling] => NULL
+    [attributes] => NULL
+    [isConnected] => true
+    [ownerDocument] => NULL
+    [namespaceURI] => NULL
+    [prefix] => ''
+    [localName] => NULL
+    [baseURI] => 'string'
+    [textContent] => 'text'
+    [doctype] => DOMDocumentType
+    [implementation] => DOMImplementation
+    [documentElement] => DOMElement
+    [actualEncoding] => -
+    [encoding] => -
+    [xmlEncoding] => NULL
+    [standalone] => -
+    [xmlStandalone] => false
+    [version] => -
+    [xmlVersion] => '1.0'
+    [strictErrorChecking] => true
+    [documentURI] => 'string'
+    [config] => -
+    [formatOutput] => false
+    [validateOnParse] => false
+    [resolveExternals] => false
+    [preserveWhiteSpace] => true
+    [recover] => false
+    [substituteEntities] => false
+    [firstElementChild] => DOMElement
+    [lastElementChild] => DOMElement
+    [childElementCount] => 1
+)
+DOMDocumentType
+Array
+(
+    [nodeName] => 'foo'
+    [nodeValue] => NULL
+    [nodeType] => 10
+    [parentNode] => DOMDocument
+    [parentElement] => NULL
+    [childNodes] => DOMNodeList
+    [firstChild] => NULL
+    [lastChild] => NULL
+    [previousSibling] => NULL
+    [nextSibling] => DOMElement
+    [attributes] => NULL
+    [isConnected] => true
+    [ownerDocument] => DOMDocument
+    [namespaceURI] => NULL
+    [prefix] => ''
+    [localName] => NULL
+    [baseURI] => 'string'
+    [textContent] => ''
+    [name] => 'foo'
+    [entities] => DOMNamedNodeMap
+    [notations] => DOMNamedNodeMap
+    [publicId] => ''
+    [systemId] => 'x.dtd'
+    [internalSubset] => NULL
+)
+DOMElement
+Array
+(
+    [nodeName] => 'foo'
+    [nodeValue] => 'text'
+    [nodeType] => 1
+    [parentNode] => DOMDocument
+    [parentElement] => NULL
+    [childNodes] => DOMNodeList
+    [firstChild] => DOMProcessingInstruction
+    [lastChild] => DOMText
+    [previousSibling] => DOMDocumentType
+    [nextSibling] => NULL
+    [attributes] => DOMNamedNodeMap
+    [isConnected] => true
+    [ownerDocument] => DOMDocument
+    [namespaceURI] => NULL
+    [prefix] => ''
+    [localName] => 'foo'
+    [baseURI] => 'string'
+    [textContent] => 'text'
+    [tagName] => 'foo'
+    [className] => ''
+    [id] => ''
+    [schemaTypeInfo] => NULL
+    [firstElementChild] => DOMElement
+    [lastElementChild] => DOMElement
+    [childElementCount] => 1
+    [previousElementSibling] => NULL
+    [nextElementSibling] => NULL
+)
+DOMAttr
+Array
+(
+    [nodeName] => 'a'
+    [nodeValue] => 'b'
+    [nodeType] => 2
+    [parentNode] => DOMElement
+    [parentElement] => DOMElement
+    [childNodes] => DOMNodeList
+    [firstChild] => DOMText
+    [lastChild] => DOMText
+    [previousSibling] => NULL
+    [nextSibling] => NULL
+    [attributes] => NULL
+    [isConnected] => true
+    [ownerDocument] => DOMDocument
+    [namespaceURI] => NULL
+    [prefix] => ''
+    [localName] => 'a'
+    [baseURI] => 'string'
+    [textContent] => 'b'
+    [name] => 'a'
+    [specified] => true
+    [value] => 'b'
+    [ownerElement] => DOMElement
+    [schemaTypeInfo] => NULL
+)
+DOMProcessingInstruction
+Array
+(
+    [nodeName] => 'pi'
+    [nodeValue] => 'data'
+    [nodeType] => 7
+    [parentNode] => DOMElement
+    [parentElement] => DOMElement
+    [childNodes] => DOMNodeList
+    [firstChild] => NULL
+    [lastChild] => NULL
+    [previousSibling] => NULL
+    [nextSibling] => DOMElement
+    [attributes] => NULL
+    [isConnected] => true
+    [ownerDocument] => DOMDocument
+    [namespaceURI] => NULL
+    [prefix] => ''
+    [localName] => NULL
+    [baseURI] => 'string'
+    [textContent] => 'data'
+    [target] => 'pi'
+    [data] => 'data'
+)
+DOMText
+Array
+(
+    [nodeName] => '#text'
+    [nodeValue] => 'text'
+    [nodeType] => 3
+    [parentNode] => DOMElement
+    [parentElement] => DOMElement
+    [childNodes] => DOMNodeList
+    [firstChild] => NULL
+    [lastChild] => NULL
+    [previousSibling] => DOMElement
+    [nextSibling] => NULL
+    [attributes] => NULL
+    [isConnected] => true
+    [ownerDocument] => DOMDocument
+    [namespaceURI] => NULL
+    [prefix] => ''
+    [localName] => NULL
+    [baseURI] => 'string'
+    [textContent] => 'text'
+    [data] => 'text'
+    [length] => 4
+    [previousElementSibling] => DOMElement
+    [nextElementSibling] => NULL
+    [wholeText] => 'text'
+)
+DOMNodeList
+Array
+(
+    [length] => 3
+    [~0] => DOMProcessingInstruction
+    [~1] => DOMElement
+    [~2] => DOMText
+)
+DOMNamedNodeMap
+Array
+(
+    [length] => 1
+    [~a] => DOMAttr
+)
+DOMText
+Array
+(
+    [nodeName] => '#text'
+    [nodeValue] => 'foo'
+    [nodeType] => 3
+    [parentNode] => NULL
+    [parentElement] => NULL
+    [childNodes] => DOMNodeList
+    [firstChild] => NULL
+    [lastChild] => NULL
+    [previousSibling] => NULL
+    [nextSibling] => NULL
+    [attributes] => NULL
+    [isConnected] => false
+    [ownerDocument] => NULL
+    [namespaceURI] => NULL
+    [prefix] => ''
+    [localName] => NULL
+    [baseURI] => 'NULL'
+    [textContent] => 'foo'
+    [data] => 'foo'
+    [length] => 3
+    [previousElementSibling] => NULL
+    [nextElementSibling] => NULL
+    [wholeText] => 'foo'
+)
+DOMException
+Array
+(
+    [code] => 3
+)
+Cannot unset DOMElement::$nodeName
+Cannot unset DOMElement::$nodeValue
+bool(false)
+dflt
+<?xml version="1.0"?>
+<a x="1">tzz</a>
+TypeError: Cannot assign array to property DOMNode::$textContent of type string
+Error: Cannot modify readonly property DOMElement::$nodeName
+bool(true)
+Cannot assign stdClass to property DOMDocument::$encoding of type ?string
+string(3) "1.0"
+string(9) "magic:foo"
+int(2)
+bool(true)
+bool(false)
+Array
+(
+)
+array(0) {
+}
+array(0) {
+}
+Property [ public virtual ?string $encoding ]
+bool(true)
+bool(false)
+bool(false)
+int(513)
+DOMNode::nodeName: string
+DOMNode::nodeValue: ?string
+DOMNode::nodeType: int
+DOMNode::parentNode: ?DOMNode
+DOMNode::parentElement: ?DOMElement
+DOMNode::childNodes: DOMNodeList
+DOMNode::firstChild: ?DOMNode
+DOMNode::lastChild: ?DOMNode
+DOMNode::previousSibling: ?DOMNode
+DOMNode::nextSibling: ?DOMNode
+DOMNode::attributes: ?DOMNamedNodeMap
+DOMNode::isConnected: bool
+DOMNode::ownerDocument: ?DOMDocument
+DOMNode::namespaceURI: ?string
+DOMNode::prefix: string
+DOMNode::localName: ?string
+DOMNode::baseURI: ?string
+DOMNode::textContent: string
+DOMAttr::name: string
+DOMAttr::specified: bool
+DOMAttr::value: string
+DOMAttr::ownerElement: ?DOMElement
+DOMAttr::schemaTypeInfo: mixed

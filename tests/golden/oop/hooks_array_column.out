@@ -1,0 +1,19 @@
+array(2) {
+  [0]=>
+  int(10)
+  [1]=>
+  int(10)
+}
+array(2) {
+  [0]=>
+  int(6)
+  [1]=>
+  int(6)
+}
+array(0) {
+}
+array(1) {
+  [10]=>
+  int(1)
+}
+Error: Property A::$w is write-only

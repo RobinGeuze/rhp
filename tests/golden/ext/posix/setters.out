@@ -1,0 +1,19 @@
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+posix_setpgid(): Argument #1 ($process_id) must be between 0 and 2147483647
+posix_setpgid(): Argument #2 ($process_group_id) must be between 0 and 2147483647
+array(5) {
+  [0]=>
+  string(5) "ticks"
+  [1]=>
+  string(5) "utime"
+  [2]=>
+  string(5) "stime"
+  [3]=>
+  string(6) "cutime"
+  [4]=>
+  string(6) "cstime"
+}
+bool(true)

@@ -1,5 +1,6 @@
 //! The `posix` extension (php-src `ext/posix/posix.c`): process ids, user and
-//! group database lookups, `posix_kill`, `posix_isatty`, `posix_uname`, and the
+//! group database lookups, the id setters, `posix_kill`, `posix_isatty`,
+//! `posix_uname`, `posix_times`, `posix_sysconf`, and the
 //! `posix_get_last_error`/`posix_strerror` error channel — thin wrappers over
 //! the real libc calls.
 
@@ -129,6 +130,80 @@ fn fn_getpgid(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::Int(r as i64))
 }
 
+/// PHP_POSIX_SINGLE_ARG_FUNC: `f(int)`, true or false with the errno kept.
+macro_rules! set_id_fn {
+    ($name:ident, $php:literal, $param:literal, $call:path) => {
+        fn $name(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+            let v = zpp_long(host, args, 0, $php, $param)?;
+            #[allow(clippy::unnecessary_cast)]
+            let r = unsafe { $call(v as _) };
+            if r < 0 {
+                set_last_error(host, errno());
+                return Ok(Value::Bool(false));
+            }
+            Ok(Value::Bool(true))
+        }
+    };
+}
+
+set_id_fn!(fn_setuid, "posix_setuid", "user_id", libc::setuid);
+set_id_fn!(fn_setgid, "posix_setgid", "group_id", libc::setgid);
+set_id_fn!(fn_seteuid, "posix_seteuid", "user_id", libc::seteuid);
+set_id_fn!(fn_setegid, "posix_setegid", "group_id", libc::setegid);
+
+fn fn_setsid(_: &mut dyn Host, _: &[Value]) -> Result<Value, Thrown> {
+    Ok(Value::Int(unsafe { libc::setsid() } as i64))
+}
+
+fn fn_setpgid(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let pid = zpp_long(host, args, 0, "posix_setpgid", "process_id")?;
+    let pgid = zpp_long(host, args, 1, "posix_setpgid", "process_group_id")?;
+    check_pid(pid, 1, "posix_setpgid", "process_id", 0)?;
+    check_pid(pgid, 2, "posix_setpgid", "process_group_id", 0)?;
+    if unsafe { libc::setpgid(pid as libc::pid_t, pgid as libc::pid_t) } < 0 {
+        set_last_error(host, errno());
+        return Ok(Value::Bool(false));
+    }
+    Ok(Value::Bool(true))
+}
+
+fn fn_times(host: &mut dyn Host, _: &[Value]) -> Result<Value, Thrown> {
+    let mut t: libc::tms = unsafe { std::mem::zeroed() };
+    let ticks = unsafe { libc::times(&mut t) };
+    if ticks == (-1i64) as libc::clock_t {
+        set_last_error(host, errno());
+        return Ok(Value::Bool(false));
+    }
+    Ok(assoc(vec![
+        ("ticks", Value::Int(ticks as i64)),
+        ("utime", Value::Int(t.tms_utime as i64)),
+        ("stime", Value::Int(t.tms_stime as i64)),
+        ("cutime", Value::Int(t.tms_cutime as i64)),
+        ("cstime", Value::Int(t.tms_cstime as i64)),
+    ]))
+}
+
+fn fn_ctermid(host: &mut dyn Host, _: &[Value]) -> Result<Value, Thrown> {
+    let mut buf = [0 as libc::c_char; 1024];
+    extern "C" {
+        fn ctermid(s: *mut libc::c_char) -> *mut libc::c_char;
+    }
+    let p = unsafe { ctermid(buf.as_mut_ptr()) };
+    if p.is_null() {
+        set_last_error(host, errno());
+        return Ok(Value::Bool(false));
+    }
+    let s = unsafe { CStr::from_ptr(buf.as_ptr()) };
+    Ok(Value::str(s.to_bytes().to_vec()))
+}
+
+fn fn_sysconf(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let id = zpp_long(host, args, 0, "posix_sysconf", "conf_id")?;
+    Ok(Value::Int(
+        unsafe { libc::sysconf(id as libc::c_int) } as i64
+    ))
+}
+
 fn fn_kill(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let pid = zpp_long(host, args, 0, "posix_kill", "process_id")?;
     let sig = zpp_long(host, args, 1, "posix_kill", "signal")?;
@@ -152,9 +227,21 @@ fn fd_of(host: &mut dyn Host, v: &Value) -> Option<i64> {
     }
 }
 
+/// php_posix_stream_get_fd's refusal of a stream that has no descriptor.
+fn uncastable(host: &mut dyn Host, fname: &str, v: &Value) -> Result<(), Thrown> {
+    if let Some(m) = host.stream_meta(v) {
+        let msg = format!("Could not use stream of type '{}'", m.stream_type);
+        crate::warn(host, fname, &msg)?;
+    }
+    Ok(())
+}
+
 fn fn_isatty(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let v = deref(&args[0]);
     let Some(fd) = fd_of(host, &v) else {
+        if matches!(v, Value::Resource(_)) {
+            uncastable(host, "posix_isatty", &v)?;
+        }
         return Ok(Value::Bool(false));
     };
     if fd < 0 || fd > i32::MAX as i64 {
@@ -173,7 +260,10 @@ fn fn_ttyname(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let v = deref(&args[0]);
     let fd = match (&v, fd_of(host, &v)) {
         (_, Some(fd)) => fd,
-        (Value::Resource(_), None) => return Ok(Value::Bool(false)),
+        (Value::Resource(_), None) => {
+            uncastable(host, "posix_ttyname", &v)?;
+            return Ok(Value::Bool(false));
+        }
         // php warns, then falls back to zval_get_long().
         (_, None) => conv::to_int(&v),
     };
@@ -354,18 +444,72 @@ fn fn_strerror(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     Ok(Value::str(s))
 }
 
+/// The posix constants (`POSIX_RLIMIT_*` for getrlimit, which rhp lacks,
+/// `POSIX_SC_*` / `POSIX_PC_*` for sysconf and pathconf).
+#[allow(clippy::unnecessary_cast)]
 pub fn constants() -> Vec<(&'static str, Value)> {
-    vec![
-        ("POSIX_F_OK", Value::Int(libc::F_OK as i64)),
-        ("POSIX_X_OK", Value::Int(libc::X_OK as i64)),
-        ("POSIX_W_OK", Value::Int(libc::W_OK as i64)),
-        ("POSIX_R_OK", Value::Int(libc::R_OK as i64)),
-        ("POSIX_S_IFREG", Value::Int(libc::S_IFREG as i64)),
-        ("POSIX_S_IFCHR", Value::Int(libc::S_IFCHR as i64)),
-        ("POSIX_S_IFBLK", Value::Int(libc::S_IFBLK as i64)),
-        ("POSIX_S_IFIFO", Value::Int(libc::S_IFIFO as i64)),
-        ("POSIX_S_IFSOCK", Value::Int(libc::S_IFSOCK as i64)),
-    ]
+    let mut v = vec![
+        ("POSIX_F_OK", libc::F_OK as i64),
+        ("POSIX_X_OK", libc::X_OK as i64),
+        ("POSIX_W_OK", libc::W_OK as i64),
+        ("POSIX_R_OK", libc::R_OK as i64),
+        ("POSIX_S_IFREG", libc::S_IFREG as i64),
+        ("POSIX_S_IFCHR", libc::S_IFCHR as i64),
+        ("POSIX_S_IFBLK", libc::S_IFBLK as i64),
+        ("POSIX_S_IFIFO", libc::S_IFIFO as i64),
+        ("POSIX_S_IFSOCK", libc::S_IFSOCK as i64),
+    ];
+    // The stub's order, with what the platform defines.
+    v.push(("POSIX_RLIMIT_AS", libc::RLIMIT_AS as i64));
+    v.push(("POSIX_RLIMIT_CORE", libc::RLIMIT_CORE as i64));
+    v.push(("POSIX_RLIMIT_CPU", libc::RLIMIT_CPU as i64));
+    v.push(("POSIX_RLIMIT_DATA", libc::RLIMIT_DATA as i64));
+    v.push(("POSIX_RLIMIT_FSIZE", libc::RLIMIT_FSIZE as i64));
+    #[cfg(target_os = "linux")]
+    v.push(("POSIX_RLIMIT_LOCKS", libc::RLIMIT_LOCKS as i64));
+    v.push(("POSIX_RLIMIT_MEMLOCK", libc::RLIMIT_MEMLOCK as i64));
+    #[cfg(target_os = "linux")]
+    v.push(("POSIX_RLIMIT_MSGQUEUE", libc::RLIMIT_MSGQUEUE as i64));
+    #[cfg(target_os = "linux")]
+    v.push(("POSIX_RLIMIT_NICE", libc::RLIMIT_NICE as i64));
+    v.push(("POSIX_RLIMIT_NOFILE", libc::RLIMIT_NOFILE as i64));
+    v.push(("POSIX_RLIMIT_NPROC", libc::RLIMIT_NPROC as i64));
+    v.push(("POSIX_RLIMIT_RSS", libc::RLIMIT_RSS as i64));
+    #[cfg(target_os = "linux")]
+    v.push(("POSIX_RLIMIT_RTPRIO", libc::RLIMIT_RTPRIO as i64));
+    #[cfg(target_os = "linux")]
+    v.push(("POSIX_RLIMIT_RTTIME", libc::RLIMIT_RTTIME as i64));
+    #[cfg(target_os = "linux")]
+    v.push(("POSIX_RLIMIT_SIGPENDING", libc::RLIMIT_SIGPENDING as i64));
+    v.push(("POSIX_RLIMIT_STACK", libc::RLIMIT_STACK as i64));
+    v.push(("POSIX_RLIMIT_INFINITY", libc::RLIM_INFINITY as i64));
+    v.push(("POSIX_SC_ARG_MAX", libc::_SC_ARG_MAX as i64));
+    v.push(("POSIX_SC_CHILD_MAX", libc::_SC_CHILD_MAX as i64));
+    v.push(("POSIX_SC_CLK_TCK", libc::_SC_CLK_TCK as i64));
+    v.push(("POSIX_SC_PAGESIZE", libc::_SC_PAGESIZE as i64));
+    v.push((
+        "POSIX_SC_NPROCESSORS_CONF",
+        libc::_SC_NPROCESSORS_CONF as i64,
+    ));
+    v.push((
+        "POSIX_SC_NPROCESSORS_ONLN",
+        libc::_SC_NPROCESSORS_ONLN as i64,
+    ));
+    v.push(("POSIX_PC_LINK_MAX", libc::_PC_LINK_MAX as i64));
+    v.push(("POSIX_PC_MAX_CANON", libc::_PC_MAX_CANON as i64));
+    v.push(("POSIX_PC_MAX_INPUT", libc::_PC_MAX_INPUT as i64));
+    v.push(("POSIX_PC_NAME_MAX", libc::_PC_NAME_MAX as i64));
+    v.push(("POSIX_PC_PATH_MAX", libc::_PC_PATH_MAX as i64));
+    v.push(("POSIX_PC_PIPE_BUF", libc::_PC_PIPE_BUF as i64));
+    v.push((
+        "POSIX_PC_CHOWN_RESTRICTED",
+        libc::_PC_CHOWN_RESTRICTED as i64,
+    ));
+    v.push(("POSIX_PC_NO_TRUNC", libc::_PC_NO_TRUNC as i64));
+    v.push(("POSIX_PC_ALLOC_SIZE_MIN", libc::_PC_ALLOC_SIZE_MIN as i64));
+    v.push(("POSIX_PC_SYMLINK_MAX", libc::_PC_SYMLINK_MAX as i64));
+    v.push(("POSIX_SC_OPEN_MAX", libc::_SC_OPEN_MAX as i64));
+    v.into_iter().map(|(n, i)| (n, Value::Int(i))).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -432,6 +576,15 @@ pub fn register(m: &mut crate::Registry) {
             ("posix_getsid", fn_getsid),
             ("posix_getpgid", fn_getpgid),
             ("posix_kill", fn_kill),
+            ("posix_setuid", fn_setuid),
+            ("posix_setgid", fn_setgid),
+            ("posix_seteuid", fn_seteuid),
+            ("posix_setegid", fn_setegid),
+            ("posix_setsid", fn_setsid),
+            ("posix_setpgid", fn_setpgid),
+            ("posix_times", fn_times),
+            ("posix_ctermid", fn_ctermid),
+            ("posix_sysconf", fn_sysconf),
             ("posix_isatty", fn_isatty),
             ("posix_ttyname", fn_ttyname),
             ("posix_getpwuid", fn_getpwuid),

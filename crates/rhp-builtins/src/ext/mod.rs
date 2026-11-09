@@ -11,6 +11,7 @@ pub mod ctype;
 pub mod curl;
 pub mod date;
 pub mod dom;
+pub mod exif;
 pub mod fileinfo;
 pub mod filter;
 pub mod gd;
@@ -76,6 +77,12 @@ pub(crate) fn class_handlers() -> Vec<&'static crate::zend::object_handlers::Cla
     .collect()
 }
 
+/// The internal class aliases the extensions register
+/// (zend_register_class_alias): (alias, class).
+pub(crate) fn class_aliases() -> &'static [(&'static str, &'static str)] {
+    dom::CLASS_ALIASES
+}
+
 /// The standard module, then every extension, in startup order: their
 /// prelude classes compile in this order.
 pub(crate) fn modules() -> Vec<ModuleDef> {
@@ -89,6 +96,18 @@ pub(crate) fn modules() -> Vec<ModuleDef> {
             prelude_php: date::PRELUDE_PHP,
             wrappers: no_wrappers,
             reset: date::reset_state,
+            object_freed: None,
+        },
+        // ext/lexbor: the library behind Dom\HTMLDocument and the CSS
+        // selectors (rhp-csrc builds it), with no functions of its own.
+        ModuleDef {
+            name: "lexbor",
+            cli_only: false,
+            functions: |_| {},
+            constants: no_constants,
+            prelude_php: "",
+            wrappers: no_wrappers,
+            reset: no_state,
             object_freed: None,
         },
         ModuleDef {
@@ -178,6 +197,16 @@ pub(crate) fn modules() -> Vec<ModuleDef> {
             functions: spl::register,
             constants: no_constants,
             prelude_php: spl::PRELUDE_PHP,
+            wrappers: no_wrappers,
+            reset: no_state,
+            object_freed: None,
+        },
+        ModuleDef {
+            name: "exif",
+            cli_only: false,
+            functions: exif::register,
+            constants: exif::constants,
+            prelude_php: "",
             wrappers: no_wrappers,
             reset: no_state,
             object_freed: None,

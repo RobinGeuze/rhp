@@ -587,7 +587,10 @@ hoisted today). `Vm::install` links them:
    - `methods` = `parent.methods.clone()`; merge trait methods (adopting the
      using class as `defining_class`); then insert own methods (lowercase key),
      **overriding** inherited entries. Enforce `final` (overriding a `final`
-     method is a fatal `Error`) and abstract-implementation rules.
+     method is a fatal `Error`) and abstract-implementation rules. The table
+     lists own methods first, then inherited ones (`php_member_order`); a
+     prelude class lists its own in its stub's order, as php's internal
+     classes do (`get_class_methods`, `getMethods()`).
    - `properties` = `parent.properties.clone()` (+ `property_index`); for each own
      `PropProto`, if the name already exists replace the `PropEntry` **in place**
      (new default/visibility/`declaring_class`), else append — reproducing the
@@ -767,5 +770,7 @@ bind `$this` (instance) and set `Frame.{defining_class, called_class}` per §3.
 the end of the chain's outermost link (property, method, static member or
 dimension), whose result is set to null there (zend_short_circuiting_commit).
 SEND_FUNC_ARG for a runtime callee asks `MethodArgIsRef`, `StaticArgIsRef`,
-`FuncArgIsRef` or, for a callable value, `ValueArgIsRef`. `self`/`static`/`parent` as the `class`
+`FuncArgIsRef` or, for a callable value, `ValueArgIsRef`; the reference or
+value it fetched moves into the window (`PassArg`), so its temporary holds
+nothing once the call returns. `self`/`static`/`parent` as the `class`
 operand are resolved from the current frame, not interned names.

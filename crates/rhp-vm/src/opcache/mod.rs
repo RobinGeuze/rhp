@@ -87,10 +87,10 @@ struct Startup {
 pub(crate) struct Cache {
     startup: Option<Startup>,
     /// Keyed by resolved path.
-    scripts: indexmap::IndexMap<Vec<u8>, Script>,
+    scripts: indexmap::IndexMap<Vec<u8>, Script, rustc_hash::FxBuildHasher>,
     /// php's indirect keys: a script requested by another name (relative,
     /// or through a symlink) → its resolved path.
-    keys: std::collections::HashMap<Vec<u8>, Vec<u8>>,
+    keys: rustc_hash::FxHashMap<Vec<u8>, Vec<u8>>,
     seq: u64,
     hits: i64,
     misses: i64,

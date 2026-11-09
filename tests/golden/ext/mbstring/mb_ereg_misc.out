@@ -1,0 +1,55 @@
+bool(true)
+string(5) "UTF-8"
+{"0":"x","1":"x","2":"","a":"x","b":false}{"0":"y","1":"","2":"y","a":false,"b":"y"}
+bArrayb
+array(1) {
+  [0]=>
+  string(5) "a,b,c"
+}
+array(1) {
+  [0]=>
+  string(5) "a,b,c"
+}
+array(2) {
+  [0]=>
+  string(1) "a"
+  [1]=>
+  string(3) "b,c"
+}
+array(1) {
+  [0]=>
+  string(0) ""
+}
+string(2) "pr"
+string(3) "ixr"
+string(1) "z"
+string(5) "a b -"
+string(11) "\k<1>\k<x>\"
+bool(true)
+string(6) "EUC-JP"
+bool(true)
+string(4) "a4a2"
+bool(false)
+bool(false)
+bool(true)
+string(5) "UTF-8"
+Error: No pattern was provided
+bool(false)
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(1)
+}
+array(1) {
+  [0]=>
+  string(1) "X"
+}
+array(2) {
+  [0]=>
+  int(3)
+  [1]=>
+  int(1)
+}
+bool(false)
+Option "q" is not supported

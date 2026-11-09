@@ -940,7 +940,7 @@ fn print_iconv(o: &mut Info) {
     }
 }
 
-/// PHP_MINFO(mbstring), without PHP_MINFO(mb_regex): rhp has no mb_ereg.
+/// PHP_MINFO(mbstring), with PHP_MINFO(mb_regex).
 fn print_mbstring(o: &mut Info) {
     let ini = |name: &str| crate::main::ini::ini_value(name.as_bytes()).flatten();
     let on = |v: &Option<Vec<u8>>| v.as_deref().is_some_and(crate::main::ini::ini_parse_bool);
@@ -955,6 +955,15 @@ fn print_mbstring(o: &mut Info) {
     o.row(&["libmbfl version", rhp_mbfl_sys::version()]);
     o.table_start();
     o.header(&["mbstring extension makes use of \"streamable kanji code filter and converter\", which is distributed under the GNU Lesser General Public License version 2.1."]);
+    #[cfg(feature = "mbstring-libmbfl")]
+    {
+        o.table_start();
+        o.row(&["Multibyte (japanese) regex support", "enabled"]);
+        o.row(&[
+            "Multibyte regex (oniguruma) version",
+            crate::ext::mbstring::ONIGURUMA_VERSION,
+        ]);
+    }
     o.table_start();
     o.header(&["Directive", "Local Value", "Master Value"]);
     for name in [

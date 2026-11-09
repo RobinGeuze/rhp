@@ -30,7 +30,7 @@ runs:
         # libcurl.a's own dependencies are linked dynamically; Ubuntu 26.04's
         # libcurl4-openssl-dev pulls in their -dev packages, 24.04's does not.
         # libsqlite3 (libsqlite3.a) and libsodium (libsodium.a) are linked
-        # statically too.
+        # statically too; oniguruma dynamically (libonig-dev has no .a).
         # libzip and libgmp (LGPL) are linked dynamically: libzip-dev ships no
         # static archive. libgd too: its codecs have no complete static set.
         # libedit (readline) is linked dynamically, as php does.
@@ -52,6 +52,7 @@ runs:
           libgmp-dev \
           libsqlite3-dev \
           libsodium-dev \
+          libonig-dev \
           libedit-dev
         php="${PHP_BIN:-$(command -v php || true)}"
         build=""
@@ -104,6 +105,15 @@ runs:
           echo "libsodium: the distro has $sodium_have; $php links ${sodium_want:-no sodium}"
           if [ -n "$sodium_want" ] && [ "$sodium_want" != "$sodium_have" ]; then
             echo "::error::$php links libsodium $sodium_want, but the distro's libsodium-dev is $sodium_have; rhp links the distro's"
+            exit 1
+          fi
+          # oniguruma has no source build here either.
+          # shellcheck disable=SC2016
+          onig_want="$("$php" -n -r 'echo defined("MB_ONIGURUMA_VERSION") ? MB_ONIGURUMA_VERSION : "";')"
+          onig_have="$(pkg-config --modversion oniguruma)"
+          echo "oniguruma: the distro has $onig_have; $php links ${onig_want:-no mbregex}"
+          if [ -n "$onig_want" ] && [ "$onig_want" != "$onig_have" ]; then
+            echo "::error::$php links oniguruma $onig_want, but the distro's libonig-dev is $onig_have; rhp links the distro's"
             exit 1
           fi
           # libzip has no source build here either.

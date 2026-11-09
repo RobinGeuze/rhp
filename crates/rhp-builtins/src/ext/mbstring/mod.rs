@@ -7,8 +7,8 @@
 //!
 //! The internal encoding follows the ini (mbstring.internal_encoding,
 //! internal_encoding, default_charset) through php's handlers and hook.
-//! Not ported yet: the functions rhp does not register (mb_ereg* and the
-//! other mbstring.c functions without a counterpart here), the other
+//! The mb_ereg* functions are in `mbregex` (php_mbregex.c).
+//! Not ported yet: the mbstring.c functions without a counterpart here, the other
 //! mbstring.* ini handlers (detect_order, language, encoding_translation's
 //! request input conversion, substitute_character), and php's
 //! `IS_STR_VALID_UTF8` string flag (a shortcut
@@ -114,6 +114,7 @@ fn st<R>(f: impl FnOnce(&mut State) -> R) -> R {
 /// RINIT/RSHUTDOWN: a new request starts from the defaults.
 pub(crate) fn reset_state() {
     st(|s| *s = State::new());
+    mbregex::reset();
 }
 
 fn internal() -> Enc {
@@ -148,6 +149,7 @@ fn php_encoding(name: &[u8]) -> Vec<u8> {
 /// _php_mb_ini_mbstring_internal_encoding_set: an unknown name warns and
 /// falls back to UTF-8.
 fn internal_encoding_from(v: &[u8], diags: &mut Vec<(i64, String)>) -> Enc {
+    mbregex::internal_encoding_set(v);
     match Encoding::by_name(c_str(v)).filter(|_| !v.is_empty()) {
         Some(enc) => enc,
         None => {
@@ -2811,7 +2813,7 @@ pub(crate) fn constants() -> Vec<(&'static str, Value)> {
     vec![
         (
             "MB_ONIGURUMA_VERSION",
-            Value::str(crate::version::ONIGURUMA_VERSION),
+            Value::str(mbregex::ONIGURUMA_VERSION),
         ),
         ("MB_CASE_UPPER", mode(case_mode::UPPER)),
         ("MB_CASE_LOWER", mode(case_mode::LOWER)),
@@ -2865,7 +2867,11 @@ pub fn register(m: &mut crate::Registry) {
             ("mb_str_pad", fn_mb_str_pad),
         ],
     );
+    crate::register(m, mbregex::FUNCTIONS);
 }
+
+mod mbregex;
+pub(crate) use mbregex::ONIGURUMA_VERSION;
 
 #[cfg(test)]
 mod tests;

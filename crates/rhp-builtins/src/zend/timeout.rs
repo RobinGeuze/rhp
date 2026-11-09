@@ -23,7 +23,7 @@
 
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// `EG(timed_out)`.
@@ -55,7 +55,9 @@ fn set_timeout_ex(seconds: i64, reset_signals: bool) {
 }
 
 /// A thread's timer state (ZTS's `EG(timed_out)` and `EG(vm_interrupt)`),
-/// shared with the watchdog.
+/// shared with the watchdog. Allocated once and never freed, so the
+/// engine and the watchdog can hold `&'static` references to it; a thread
+/// that exits hands its timer to the next thread ([`FREE_TIMERS`]).
 struct ThreadTimer {
     /// The VM's interrupt flag on this thread ([`interrupt_flag`]).
     interrupt: AtomicBool,
@@ -63,26 +65,68 @@ struct ThreadTimer {
     timed_out: AtomicBool,
 }
 
+/// The timers of threads that exited, for reuse.
+static FREE_TIMERS: Mutex<Vec<&'static ThreadTimer>> = Mutex::new(Vec::new());
+
+/// This thread's [`ThreadTimer`]; disarmed and freed for reuse when the
+/// thread exits.
+struct TimerSlot(&'static ThreadTimer);
+
+impl Drop for TimerSlot {
+    fn drop(&mut self) {
+        let t = self.0;
+        if let Some(w) = WATCHDOG.get() {
+            let mut armed = w.armed.lock().unwrap_or_else(|e| e.into_inner());
+            armed.retain(|(_, x)| !std::ptr::eq(*x, t));
+        }
+        t.interrupt.store(false, Ordering::SeqCst);
+        t.timed_out.store(false, Ordering::SeqCst);
+        FREE_TIMERS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(t);
+    }
+}
+
 thread_local! {
-    static THREAD_TIMER: Arc<ThreadTimer> = Arc::new(ThreadTimer {
-        interrupt: AtomicBool::new(false),
-        timed_out: AtomicBool::new(false),
-    });
+    static THREAD_TIMER: TimerSlot = TimerSlot(
+        FREE_TIMERS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop()
+            .unwrap_or_else(|| {
+                Box::leak(Box::new(ThreadTimer {
+                    interrupt: AtomicBool::new(false),
+                    timed_out: AtomicBool::new(false),
+                }))
+            }),
+    );
     /// `EG(timeout_seconds)` of the request on this thread.
     static THREAD_SECONDS: Cell<i64> = const { Cell::new(0) };
+}
+
+/// This thread's timer. Once the thread-local is gone (an engine dropped
+/// during thread exit) a spare one, which no watchdog ever fires.
+fn thread_timer() -> &'static ThreadTimer {
+    static SPARE: ThreadTimer = ThreadTimer {
+        interrupt: AtomicBool::new(false),
+        timed_out: AtomicBool::new(false),
+    };
+    THREAD_TIMER.try_with(|t| t.0).unwrap_or(&SPARE)
 }
 
 /// The deadlines of the armed thread timers, and the thread that fires
 /// them.
 struct Watchdog {
-    armed: Mutex<Vec<(Instant, Arc<ThreadTimer>)>>,
+    armed: Mutex<Vec<(Instant, &'static ThreadTimer)>>,
     wake: Condvar,
 }
 
+static WATCHDOG: OnceLock<Watchdog> = OnceLock::new();
+
 fn watchdog() -> &'static Watchdog {
-    static W: OnceLock<Watchdog> = OnceLock::new();
     static STARTED: std::sync::Once = std::sync::Once::new();
-    let w = W.get_or_init(|| Watchdog {
+    let w = WATCHDOG.get_or_init(|| Watchdog {
         armed: Mutex::new(Vec::new()),
         wake: Condvar::new(),
     });
@@ -120,49 +164,44 @@ fn watch(w: &'static Watchdog) {
     }
 }
 
-/// zend_max_execution_timer_settime for this thread: fire in `seconds`
-/// (0, or out of range: leave the timer as it is).
+/// zend_max_execution_timer_settime for this thread: fire in `seconds`;
+/// 0 (or out of range) disarms it, as timer_settime does.
 fn thread_arm(seconds: i64) {
     if !(1..=999_999_999).contains(&seconds) {
+        thread_disarm();
         return;
     }
-    let t = THREAD_TIMER.with(Arc::clone);
+    let t = thread_timer();
     let w = watchdog();
     let mut armed = w.armed.lock().unwrap_or_else(|e| e.into_inner());
-    armed.retain(|(_, x)| !Arc::ptr_eq(x, &t));
+    armed.retain(|(_, x)| !std::ptr::eq(*x, t));
     armed.push((Instant::now() + Duration::from_secs(seconds as u64), t));
     w.wake.notify_one();
 }
 
 /// zend_max_execution_timer_settime(0): disarm this thread's timer.
 fn thread_disarm() {
-    let t = THREAD_TIMER.with(Arc::clone);
-    let w = watchdog();
+    let Some(w) = WATCHDOG.get() else {
+        return;
+    };
+    let t = thread_timer();
     let mut armed = w.armed.lock().unwrap_or_else(|e| e.into_inner());
-    armed.retain(|(_, x)| !Arc::ptr_eq(x, &t));
+    armed.retain(|(_, x)| !std::ptr::eq(*x, t));
 }
 
 /// The flag the VM polls between instructions for this thread's engine
 /// (`EG(vm_interrupt)`): the process-wide one (pcntl's signals and the
 /// interval timer) under the command-line SAPIs, else this thread's own.
-/// Valid for as long as the thread runs.
 pub fn interrupt_flag() -> &'static AtomicBool {
     if armable() {
         return crate::ext::pcntl::process_interrupt();
     }
-    THREAD_TIMER.with(|t| {
-        // SAFETY: the thread-local's Arc keeps the timer alive until the
-        // thread exits; the engine using it lives on this thread.
-        unsafe { &*(&t.interrupt as *const AtomicBool) }
-    })
+    &thread_timer().interrupt
 }
 
 /// This thread's `EG(timed_out)` (threaded SAPIs).
 fn thread_timed_out() -> &'static AtomicBool {
-    THREAD_TIMER.with(|t| {
-        // SAFETY: as in interrupt_flag.
-        unsafe { &*(&t.timed_out as *const AtomicBool) }
-    })
+    &thread_timer().timed_out
 }
 
 /// [`set_timeout_ex`] without the SAPI check (the signal handler calls it:

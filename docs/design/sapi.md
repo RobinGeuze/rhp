@@ -438,7 +438,9 @@ threads, never from sharing an engine:
   timeout on one thread never touches another. As in ZTS builds there is
   no hard timeout, and a blocking builtin (sleep, a socket read) is not
   interrupted: the error comes when it returns. `max_input_time` covers
-  request startup, then the script runs under `max_execution_time`
+  request startup, then the script runs under `max_execution_time`; a
+  limit of 0 disarms the thread's timer (timer_settime), while the NTS
+  interval timer leaves an armed input timer running
   (rhp_builtins `zend::timeout`).
 - **Process-wide state.** `putenv()` changes stay in the request (an
   overlay its child processes get); the process's environment never

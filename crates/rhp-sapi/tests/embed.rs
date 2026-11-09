@@ -452,9 +452,10 @@ fn a_timer_ends_with_its_request() {
 }
 
 /// max_input_time covers request startup only: the script then runs
-/// under max_execution_time (php_execute_script re-arms the timer). With
-/// php's ZTS timers a max_execution_time of 0 disarms the input timer
-/// (timer_settime(0)); only the CLI SAPIs' interval timer keeps running.
+/// under max_execution_time (php_execute_script re-arms the timer). A
+/// max_execution_time of 0 leaves the input timer running, as php's ZTS
+/// timers do (zend_set_timeout_ex arms only for a positive limit): it
+/// fires as "0 seconds". The request's end disarms it.
 #[test]
 fn max_input_time_gives_way_to_max_execution_time() {
     let busy = "$t = microtime(true); while (microtime(true) - $t < 1.3) {} echo 'ok';";
@@ -465,7 +466,7 @@ fn max_input_time_gives_way_to_max_execution_time() {
     );
     assert_eq!((body(&ev), o), ("ok".to_string(), Outcome::Exit(0)));
     let (ev, o) = run(
-        "$t = microtime(true); while (microtime(true) - $t < 1.3) {} echo 'ok';",
+        "$t = microtime(true); while (microtime(true) - $t < 4) {} echo 'ok';",
         &[
             ("max_input_time", "1"),
             ("max_execution_time", "0"),
@@ -473,6 +474,17 @@ fn max_input_time_gives_way_to_max_execution_time() {
         ],
         get(),
     );
+    assert_eq!(o, Outcome::Exit(255));
+    assert!(
+        body(&ev).contains("Maximum execution time of 0 seconds exceeded"),
+        "{ev:?}"
+    );
+    // A request that ends first leaves nothing armed for the thread's
+    // next one.
+    let quick = [("max_input_time", "1"), ("max_execution_time", "0")];
+    let (ev, o) = run("echo 'quick';", &quick, get());
+    assert_eq!((body(&ev), o), ("quick".to_string(), Outcome::Exit(0)));
+    let (ev, o) = run(busy, &[("max_execution_time", "0")], get());
     assert_eq!((body(&ev), o), ("ok".to_string(), Outcome::Exit(0)));
     let (ev, o) = run(
         "while (true) {}",

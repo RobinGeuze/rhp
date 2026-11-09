@@ -49,7 +49,9 @@ fn armable() -> bool {
 fn set_timeout_ex(seconds: i64, reset_signals: bool) {
     if armable() {
         arm(seconds, reset_signals);
-    } else {
+    } else if seconds > 0 {
+        // As under ZEND_MAX_EXECUTION_TIMERS: 0 leaves an armed timer
+        // running (an input timer keeps going under max_execution_time=0).
         thread_arm(seconds);
     }
 }
@@ -165,7 +167,7 @@ fn watch(w: &'static Watchdog) {
 }
 
 /// zend_max_execution_timer_settime for this thread: fire in `seconds`;
-/// 0 (or out of range) disarms it, as timer_settime does.
+/// out of range disarms it, as php's clamp to 0 does.
 fn thread_arm(seconds: i64) {
     if !(1..=999_999_999).contains(&seconds) {
         thread_disarm();
@@ -318,7 +320,7 @@ pub fn set_timeout(seconds: i64, reset_signals: bool) {
         TIMED_OUT.store(false, Ordering::Relaxed);
     } else {
         THREAD_SECONDS.with(|s| s.set(seconds));
-        thread_arm(seconds);
+        set_timeout_ex(seconds, reset_signals);
         thread_timed_out().store(false, Ordering::Relaxed);
     }
 }
@@ -345,6 +347,17 @@ pub fn unset_timeout() {
 
 fn ini_long(name: &[u8]) -> i64 {
     crate::main::ini::c_atol(&crate::ini_value(name).flatten().unwrap_or_default())
+}
+
+/// The end of a request on this thread: zend_unset_timeout, and under a
+/// threaded SAPI also an input timer that max_execution_time=0 left
+/// running, so it cannot fire in the thread's next request (which may
+/// run with other ini settings; php re-arms the same one).
+pub fn request_shutdown() {
+    unset_timeout();
+    if !armable() {
+        thread_disarm();
+    }
 }
 
 /// php_request_startup's timer: max_input_time while the request's input

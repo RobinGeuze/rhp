@@ -440,8 +440,9 @@ threads, never from sharing an engine:
   no hard timeout, and a blocking builtin (sleep, a socket read) is not
   interrupted: the error comes when it returns. `max_input_time` covers
   request startup, then the script runs under `max_execution_time`; a
-  limit of 0 disarms the thread's timer (timer_settime), while the NTS
-  interval timer leaves an armed input timer running
+  limit of 0 leaves an armed input timer running, in both builds
+  (zend_set_timeout_ex arms only for a positive limit), so it fires as
+  "0 seconds". A thread's timer is disarmed when its request ends
   (rhp_builtins `zend::timeout`).
 - **Process-wide state.** `putenv()` changes stay in the request (an
   overlay its child processes get); the process's environment never

@@ -297,7 +297,7 @@ impl Vm {
     /// php_request_shutdown's tail: send the headers if no output did, then
     /// flush the SAPI. Call after [`Vm::run_main`].
     pub fn finish_request(&mut self) {
-        builtins::zend::timeout::unset_timeout();
+        builtins::zend::timeout::request_shutdown();
         // zend_ini_deactivate restores startup values changed at runtime
         // (re-running their handlers); php-cgi's deferred startup warnings
         // come out with them.
@@ -488,7 +488,7 @@ impl Vm {
             self.sapi.response_ended = true;
         }
         self.sapi.body.cleanup();
-        builtins::zend::timeout::unset_timeout();
+        builtins::zend::timeout::request_shutdown();
         r
     }
 

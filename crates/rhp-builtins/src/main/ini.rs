@@ -29,6 +29,19 @@ thread_local! {
     pub(crate) static INI: RefCell<HashMap<String, Option<Vec<u8>>>> = RefCell::new(HashMap::new());
     /// Startup (`-d`) values: phpinfo's "Master Value".
     pub(crate) static INI_STARTUP: RefCell<HashMap<String, Vec<u8>>> = RefCell::new(HashMap::new());
+    /// Bumped whenever a directive's value may have changed.
+    static GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// A number that changes whenever a directive's value may have: a caller
+/// may keep values it read while it stays the same.
+pub fn ini_generation() -> u64 {
+    GENERATION.with(|g| g.get())
+}
+
+/// Record that directive values may have changed.
+pub(crate) fn ini_changed() {
+    GENERATION.with(|g| g.set(g.get() + 1));
 }
 
 thread_local! {
@@ -435,6 +448,7 @@ pub fn take_shutdown_diagnostics() -> Vec<(i64, String)> {
 
 /// Reset this module's per-request state (a new Vm).
 pub(crate) fn reset_state() {
+    ini_changed();
     INI.with(|m| m.borrow_mut().clear());
     INI_STARTUP.with(|m| m.borrow_mut().clear());
     STARTUP_DIAGS.with(|d| *d.borrow_mut() = StartupDiags::default());
@@ -508,6 +522,7 @@ fn ini_default(e: &(&'static str, &'static str, Option<&'static str>, u8)) -> Op
 /// Store a runtime override for a directive (`ini_set` / `set_include_path`).
 pub(crate) fn ini_store(name: &[u8], v: Vec<u8>) {
     let key = String::from_utf8_lossy(name).into_owned();
+    ini_changed();
     INI.with(|m| m.borrow_mut().insert(key, Some(v)));
 }
 
@@ -677,6 +692,7 @@ pub(crate) fn ini_startup(name: &[u8], v: &[u8]) {
                 .extend(l.into_iter().map(|(lv, w)| (pos, key.clone(), lv, w)));
         }
     });
+    ini_changed();
     let Some(v) = stored else {
         INI.with(|m| m.borrow_mut().remove(&key));
         INI_STARTUP.with(|m| m.borrow_mut().remove(&key));

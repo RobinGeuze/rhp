@@ -381,6 +381,7 @@ pub(crate) fn additional_left_out(name: &str) -> bool {
 pub fn set_sapi(name: &str, ini_defaults: &[(&str, &str)]) {
     SAPI_NAME.with(|n| *n.borrow_mut() = name.to_string());
     SAPI_DEF.with(|d| d.set(sapi_def(name)));
+    crate::main::ini::ini_changed();
     SAPI_INI.with(|m| {
         let mut m = m.borrow_mut();
         m.clear();

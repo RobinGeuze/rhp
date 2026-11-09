@@ -500,3 +500,28 @@ fn the_realpath_cache_lives_as_long_as_the_thread() {
         assert_eq!(request(&main, &[], 1003), "b 1\n");
     });
 }
+
+#[test]
+fn settings_changed_at_run_time_apply_to_the_next_include() {
+    // The cache keeps the directives it reads on every include until an
+    // ini value changes.
+    on_own_thread(|| {
+        let d = Dir::new("runtime-ini");
+        d.file("lib.php", "<?php return 1;", 500);
+        let main = d.file(
+            "main.php",
+            &format!(
+                r#"<?php
+                include __DIR__ . '/lib.php';
+                ini_set('opcache.enable', '0');
+                include __DIR__ . '/lib.php';
+                include __DIR__ . '/lib.php';
+                {STATS}"#
+            ),
+            500,
+        );
+        // Off for the rest of the request: those includes compile anew.
+        assert_eq!(request(&main, &[], 1000), "hits=0 misses=2 scripts=2\n");
+        assert_eq!(request(&main, &[], 1001), "hits=2 misses=2 scripts=2\n");
+    });
+}

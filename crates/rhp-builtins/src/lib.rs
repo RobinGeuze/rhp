@@ -87,6 +87,8 @@ pub fn ini_value(name: &[u8]) -> Option<Option<Vec<u8>>> {
     main::ini::ini_value(name)
 }
 
+pub use main::ini::ini_generation;
+
 /// C `atol` (php's ZEND_ATOL): leading blanks, sign, digits; saturating.
 pub fn c_atol(s: &[u8]) -> i64 {
     main::ini::c_atol(s)

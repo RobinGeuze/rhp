@@ -35,7 +35,7 @@ impl Vm {
         // (constant name, parent declaring class, parent type)
         let mut inherited: Vec<(Vec<u8>, ClassId, TypeHint)> = Vec::new();
         for src in &sources {
-            for (k, c) in &self.classes[*src as usize].constants {
+            for (k, c) in self.classes[*src as usize].constants.iter() {
                 if c.visibility == rhp_values::Visibility::Private {
                     continue;
                 }
@@ -214,9 +214,8 @@ impl Vm {
                     .as_ref()
                     .map_or(b"parent".to_vec(), |p| p.as_bytes().to_vec());
             }
-            self.class_ids
-                .get(&lc(scope))
-                .and_then(|&id| self.classes[id as usize].parent)
+            self.link_lookup(&lc(scope))
+                .and_then(|id| self.classes[id as usize].parent)
                 .map_or(b"parent".to_vec(), |p| {
                     self.classes[p as usize].name.as_bytes().to_vec()
                 })
@@ -257,7 +256,7 @@ impl Vm {
     /// lookup_class: a loaded class, or the class being linked.
     fn lookup(&self, cx: &Cx, name: &[u8]) -> Option<Cls> {
         let n = name.strip_prefix(b"\\").unwrap_or(name);
-        if let Some(&id) = self.class_ids.get(&lc(n)) {
+        if let Some(id) = self.link_lookup(&lc(n)) {
             return Some(Cls::Loaded(id));
         }
         n.eq_ignore_ascii_case(cx.name).then_some(Cls::Linking)
@@ -489,7 +488,7 @@ impl Vm {
         }
         for t in &proto.traits {
             if let Some(&tid) = self.class_ids.get(&lc(t.as_bytes())) {
-                for (k, c) in &self.classes[tid as usize].constants {
+                for (k, c) in self.classes[tid as usize].constants.iter() {
                     table
                         .entry(k.clone())
                         .or_insert((None, c.visibility, c.is_final));

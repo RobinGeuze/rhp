@@ -1350,6 +1350,10 @@ impl Vm {
                     };
                     self.reg_set(top, dst, r);
                 }
+                Instr::DimAppendW { dst, arr } => {
+                    let r = self.dim_append_w(top, arr)?;
+                    self.reg_set(top, dst, r);
+                }
                 Instr::DimFetchUnset { dst, arr, key } => {
                     let a = self.reg_get(top, arr);
                     let k = self.reg_r(top, key)?;

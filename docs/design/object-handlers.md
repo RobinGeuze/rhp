@@ -143,7 +143,7 @@ Notes:
   handlers:
   - `host.magic_fetch()` says which fetch the running accessor serves:
     `Write` for a `__get`/`offsetGet` below a write (`$o->a->b = …`,
-    `$o->a[] = …`, `$o[k]->p = …`, `&$o->a`, `unset($o->a->b)`; php's
+    `$o->a[] = …`, `$o[k]->p = …`, `$o[]->p = …` (`DimAppendW`), `&$o->a`, `unset($o->a->b)`; php's
     `BP_VAR_W`/`BP_VAR_UNSET`, where SimpleXML's `get_property_ptr_ptr`
     creates a missing element), `Empty` for the `__isset` or
     `offsetExists` of `empty()` (`check_empty`), else `Read`. Only the

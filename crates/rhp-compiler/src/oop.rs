@@ -461,14 +461,15 @@ impl ProtoBuilder<'_> {
     /// element there is php's BP_VAR_W fetch (`$o->a->b = v` fetches
     /// `$o->a` for writing).
     pub(crate) fn compile_write_object(&mut self, e: &Expression) -> Result<Reg, Thrown> {
-        // `$a[]->p = v`: the appended element is null, so the property write
-        // fails ("Attempt to assign property on null"). The append itself is
-        // not made.
+        // `$a[]->p = v`: FETCH_DIM_W with no dimension. An array gets a
+        // null element, so the property write then fails ("Attempt to
+        // assign property on null"); an ArrayAccess object gives
+        // offsetGet(null)'s object.
         if let Expression::ArrayAppend(ap) = e {
             if !is_globals_var(ap.array) {
-                self.compile_write_object(ap.array)?;
+                let arr = self.compile_write_object(ap.array)?;
                 let dst = self.alloc_temp();
-                self.emit(Instr::LoadNull { dst });
+                self.emit(Instr::DimAppendW { dst, arr });
                 return Ok(dst);
             }
         }

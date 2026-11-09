@@ -2963,8 +2963,8 @@ impl Vm {
         };
         match act {
             Act::Out if self.streams.record(id).is_some_and(|s| s.output) => self.write_out(data),
-            Act::Out => self.emit_raw_stdout(data),
-            Act::Err => self.write_stderr(data),
+            Act::Out => return Some(self.emit_raw_stdout(data)),
+            Act::Err => return Some(self.sapi.sapi.write_stderr_stream(data)),
             Act::Buf => match self.streams.get_mut(&id)? {
                 StreamState::Mem {
                     mode: MemMode::ReadOnly,

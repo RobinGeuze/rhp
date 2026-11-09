@@ -119,7 +119,8 @@ impl Sapi for CaptureSapi {
         self.sink.borrow_mut().stderr.extend_from_slice(data);
     }
 
-    fn write_raw_stdout(&mut self, data: &[u8]) {
+    fn write_raw_stdout(&mut self, data: &[u8]) -> usize {
         self.sink.borrow_mut().stdout.extend_from_slice(data);
+        data.len()
     }
 }

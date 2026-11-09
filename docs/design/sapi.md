@@ -123,7 +123,8 @@ let outcome = run_request(
 | `script_done` | the primary script returned (php_execute_script), before the shutdown functions: its return value, the response and `error_get_last()`. The SAPI may name a file to run next as another primary script in the same request (the cli-server's router declining a `.php` request) | `None` |
 | `log_message` | one `error_log` / `log_errors` line, no newline | stderr |
 | `write_stderr` | `display_errors=stderr` output | stderr |
-| `write_raw_stdout` | a write to php-cli's `STDOUT` stream, past the output layer | `flush`, then stdout |
+| `write_raw_stdout` | a write to php-cli's `STDOUT` stream, past the output layer; returns the bytes written | `flush`, then write(2) on fd 1 (a non-blocking pipe may take part) |
+| `write_stderr_stream` | a write to the `STDERR` stream; returns the bytes written | `write_stderr`, all of it (the CLI: write(2) on fd 2) |
 | `exits_on_hard_limit` | whether the hard memory limit ends the process (php-cli: exit 137) rather than just the request | `false` |
 
 The SAPI decides the wire format. `CgiSapi` writes `Status:` (when not

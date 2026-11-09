@@ -1063,13 +1063,8 @@ impl Vm {
 
 impl Vm {
     /// A throwable that left the primary script: the exception handler or
-    /// the fatal report, on the shutdown stack.
-    fn uncaught_in_main(&mut self, t: Thrown) -> Result<i32, Thrown> {
-        Ok(self.uncaught_in_main_handled(t)?.unwrap_or(0))
-    }
-
-    /// [`Vm::uncaught_in_main`]; `None` when the exception handler took
-    /// the throwable.
+    /// the fatal report, on the shutdown stack. `None` when the exception
+    /// handler took the throwable, else the exit status.
     fn uncaught_in_main_handled(&mut self, t: Thrown) -> Result<Option<i32>, Thrown> {
         self.enter_shutdown_scope();
         if t.is_catchable() {
@@ -1132,10 +1127,21 @@ impl Vm {
             }
             r.map(|_| ())
         };
+        // An exit or a fatal error bails out of php_execute_script: the
+        // script's return value no longer counts (a cli-server router's).
         match r {
             Ok(()) => Ok(self.sapi.exit_status),
-            Err(Thrown::Exit(code)) => Ok(code),
-            Err(t) => self.uncaught_in_main(t),
+            Err(Thrown::Exit(code)) => {
+                self.main_ret = None;
+                Ok(code)
+            }
+            Err(t) => match self.uncaught_in_main_handled(t)? {
+                None => Ok(0),
+                Some(c) => {
+                    self.main_ret = None;
+                    Ok(c)
+                }
+            },
         }
     }
 
@@ -1146,9 +1152,12 @@ impl Vm {
     fn primary_script_done(&mut self, mut status: i32) -> Result<i32, Thrown> {
         while let Some(next) = self.notify_script_done() {
             status = match self.run_next_primary(next) {
-                Ok(()) => self.sapi.exit_status,
+                Ok(()) => self.auto_append(self.sapi.exit_status)?,
                 Err(Thrown::Exit(code)) => code,
-                Err(t) => self.uncaught_in_main(t)?,
+                Err(t) => match self.uncaught_in_main_handled(t)? {
+                    None => self.auto_append(0)?,
+                    Some(c) => c,
+                },
             };
         }
         Ok(status)
@@ -1187,9 +1196,20 @@ impl Vm {
         main.pc = main.proto.code.len();
         self.stack.push(main);
         let depth = self.stack.len();
-        self.primary_next = true;
-        let r = self.do_include(depth - 1, path, rhp_bytecode::IncludeKind::Require);
-        self.primary_next = false;
+        // php_execute_script: auto_prepend_file first, as for the first.
+        let prepend = builtins::ini_value(b"auto_prepend_file")
+            .flatten()
+            .filter(|p| !p.is_empty() && self.auto_prepend);
+        let r = match prepend {
+            Some(p) => self.run_auto_prepend(p),
+            None => Ok(()),
+        };
+        let r = r.and_then(|_| {
+            self.primary_next = true;
+            let r = self.do_include(depth - 1, path, rhp_bytecode::IncludeKind::Require);
+            self.primary_next = false;
+            r
+        });
         self.stack.truncate(depth);
         if let Some(main) = self.stack.pop() {
             self.finished_main = Some(main);

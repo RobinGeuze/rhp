@@ -452,9 +452,9 @@ fn a_timer_ends_with_its_request() {
 }
 
 /// max_input_time covers request startup only: the script then runs
-/// under max_execution_time (php_execute_script re-arms the timer). As in
-/// php, a max_execution_time of 0 leaves the input timer running
-/// (zend_set_timeout(0) doesn't disarm), so it fires naming 0 seconds.
+/// under max_execution_time (php_execute_script re-arms the timer). With
+/// php's ZTS timers a max_execution_time of 0 disarms the input timer
+/// (timer_settime(0)); only the CLI SAPIs' interval timer keeps running.
 #[test]
 fn max_input_time_gives_way_to_max_execution_time() {
     let busy = "$t = microtime(true); while (microtime(true) - $t < 1.3) {} echo 'ok';";
@@ -464,22 +464,16 @@ fn max_input_time_gives_way_to_max_execution_time() {
         get(),
     );
     assert_eq!((body(&ev), o), ("ok".to_string(), Outcome::Exit(0)));
-    // (Request startup must take less than the input time, or the timer
-    // fires before the script's start clears it.)
     let (ev, o) = run(
-        "$t = microtime(true); while (microtime(true) - $t < 3.5) {} echo 'ok';",
+        "$t = microtime(true); while (microtime(true) - $t < 1.3) {} echo 'ok';",
         &[
-            ("max_input_time", "2"),
+            ("max_input_time", "1"),
             ("max_execution_time", "0"),
             ("html_errors", "0"),
         ],
         get(),
     );
-    assert_eq!(o, Outcome::Exit(255));
-    assert!(
-        body(&ev).contains("Maximum execution time of 0 seconds"),
-        "{ev:?}"
-    );
+    assert_eq!((body(&ev), o), ("ok".to_string(), Outcome::Exit(0)));
     let (ev, o) = run(
         "while (true) {}",
         &[
@@ -858,4 +852,91 @@ fn a_worker_request_has_its_own_session_and_uploads() {
         }
     }
     assert_eq!(seen, ["2 1 1 up", "log:after 1 ", "2 2 0", "log:after 1 "]);
+}
+
+/// A SAPI that runs one more primary script after the first returns false
+/// (php's cli-server after its router).
+struct Chain {
+    events: Rc<RefCell<Vec<String>>>,
+    next: Option<Vec<u8>>,
+}
+
+impl Sapi for Chain {
+    fn name(&self) -> &str {
+        "embed-chain"
+    }
+
+    fn ub_write(&mut self, data: &[u8]) -> bool {
+        let s = String::from_utf8_lossy(data).into_owned();
+        self.events.borrow_mut().push(s);
+        true
+    }
+
+    fn send_headers(&mut self, _r: &Response) -> bool {
+        true
+    }
+
+    fn ini_defaults(&self) -> Vec<(&'static str, &'static str)> {
+        vec![("html_errors", "0")]
+    }
+
+    fn script_done(&mut self, done: rhp_builtins::main::sapi::ScriptDone<'_>) -> Option<Vec<u8>> {
+        if matches!(done.ret, Some(rhp_values::Value::Bool(false))) {
+            self.next.take()
+        } else {
+            None
+        }
+    }
+}
+
+/// Every primary script of a request runs between auto_prepend_file and
+/// auto_append_file (php_execute_script); an append that fails bails out,
+/// so the first script's return value no longer names a next one.
+#[test]
+fn each_primary_script_gets_the_prepend_and_append_files() {
+    let dir = std::env::temp_dir().join(format!("rhp-embed-chain-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = |name: &str, code: &str| {
+        let p = dir.join(name);
+        std::fs::write(&p, code).unwrap();
+        p.to_string_lossy().into_owned()
+    };
+    let page = file("page.php", "<?php echo 'page;';");
+    let pre = file("pre.php", "<?php echo 'pre;';");
+    let app = file("app.php", "<?php echo 'app;';");
+    let exits = file("exit.php", "<?php echo 'app-exit;'; exit;");
+    let router = file("router.php", "<?php echo 'router;'; return false;");
+    let run = |append: &str| {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let sapi = Chain {
+            events: events.clone(),
+            next: Some(page.clone().into_bytes()),
+        };
+        let o = run_request(
+            Box::new(sapi),
+            Request {
+                script: Script::File(router.clone()),
+                ini: vec![
+                    ("auto_prepend_file".into(), pre.clone()),
+                    ("auto_append_file".into(), append.to_string()),
+                ],
+                args: Vec::new(),
+                info: Some(get()),
+                php_binary: None,
+                cwd: None,
+                ini_files: None,
+            },
+        );
+        let out = events.borrow().concat();
+        (out, o)
+    };
+    assert_eq!(
+        run(&app),
+        ("pre;router;app;pre;page;app;".to_string(), Outcome::Exit(0))
+    );
+    assert_eq!(
+        run(&exits),
+        ("pre;router;app-exit;".to_string(), Outcome::Exit(0))
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

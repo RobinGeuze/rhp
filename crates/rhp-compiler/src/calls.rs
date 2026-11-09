@@ -1613,6 +1613,14 @@ impl ProtoBuilder<'_> {
                 });
                 pair(self, recv, n)
             }
+            // `$c::m(...)`: the class name or object itself (`$c::class`
+            // throws on a string).
+            ArgRefTarget::Static(ClassRef::Dynamic(c), name) => {
+                let cls = self.alloc_temp();
+                self.emit(Instr::Mov { dst: cls, src: c });
+                let n = name_reg(self, name);
+                pair(self, cls, n)
+            }
             ArgRefTarget::Static(class, name) => {
                 let cls = self.alloc_temp();
                 self.emit(Instr::FetchClassName {

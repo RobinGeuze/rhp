@@ -55,4 +55,13 @@ array(2) {
   int(2)
 }
 E8: Only variables should be passed by reference (line 22)
+array(1) {
+  [0]=>
+  string(1) "s"
+}
+int(1)
+array(1) {
+  [0]=>
+  string(1) "s"
+}
 done

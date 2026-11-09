@@ -20,4 +20,9 @@ $fn = [$o, 'm']; $args = [1]; $fn(...$args); var_dump($args);
 $args = ['a' => 1]; $o->m(...$args); var_dump($args);
 $copy = [1, 2]; $args = $copy; $o->m(...$args); var_dump($copy, $args);
 new N(f());
+// A class named by a variable: a string or an object.
+class S { static function s(&$a) { $a = 's'; } static function t($a) { return $a; } }
+$c = 'S'; $args = [1]; $c::s(...$args); var_dump($args);
+$args = [1]; var_dump($c::t(...$args));
+$c = new S; $args = [1]; $c::s(...$args); var_dump($args);
 echo "done\n";

@@ -120,6 +120,15 @@ fn main() {
         .extra_warnings(true)
         .compile("rhp_sodium_shim");
 
+    // mbstring's mb_ereg* against the linked oniguruma.h.
+    println!("cargo:rerun-if-changed=src/ext/mbstring/onig_shim.c");
+    cc::Build::new()
+        .file("src/ext/mbstring/onig_shim.c")
+        .include(include("ONIGURUMA"))
+        .warnings(true)
+        .extra_warnings(true)
+        .compile("rhp_onig_shim");
+
     // ext/gettext's calls through libintl.h (Homebrew's renames them).
     println!("cargo:rerun-if-changed=src/ext/gettext/shim.c");
     let mut intl = cc::Build::new();

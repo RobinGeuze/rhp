@@ -1293,6 +1293,7 @@ class ReflectionExtension implements Reflector {
         'dom' => ['libxml' => 'Required', 'lexbor' => 'Required', 'domxml' => 'Conflicts'],
         'xml' => ['libxml' => 'Required'], 'xmlreader' => ['dom' => 'Required', 'libxml' => 'Required'],
         'xmlwriter' => ['libxml' => 'Required'], 'zip' => ['pcre' => 'Required'],
+        'exif' => ['standard' => 'Required', 'mbstring' => 'Optional'],
     ]; }
     public function info(): void { __reflect_ext('info', $this->name); }
     public function getClasses(): array {

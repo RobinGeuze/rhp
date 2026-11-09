@@ -41,8 +41,8 @@ Status: policy (Phase L). It replaces the "pure-Rust by default" stance of
 
 | Kind | Linked | Examples |
 |---|---|---|
-| Code rhp compiles: php-src C, frozen vendored libraries | static | php-src's crypt C, timelib, libavifinfo, lexbor, argon2 (in `rhp-csrc`); libmbfl and php_unicode.c (in `rhp-mbfl-sys`, LGPL); later oniguruma |
-| A third-party library whose static archive is the build php links | static | PCRE2, ICU, OpenSSL, libcurl, libsqlite3, libsodium, libxml2 on Linux |
+| Code rhp compiles: php-src C, frozen vendored libraries | static | php-src's crypt C, timelib, libavifinfo, lexbor, argon2 (in `rhp-csrc`); libmbfl and php_unicode.c (in `rhp-mbfl-sys`, LGPL) |
+| A third-party library whose static archive is the build php links | static | PCRE2, ICU, OpenSSL, libcurl, libsqlite3, libsodium, libxml2 on Linux, oniguruma on macOS |
 | The listed exceptions below | dynamic | |
 
 A static archive is "the build php links" when it comes from the same package
@@ -58,7 +58,8 @@ rather than linking dynamically quietly.
   (libicucore, libldap, libgssapi_krb5, libresolv, frameworks). Linux:
   glibc's iconv.
 - Libraries with no static archive of php's version: libzip (Homebrew's
-  libzip and Debian/Ubuntu's libzip-dev ship only the shared library).
+  libzip and Debian/Ubuntu's libzip-dev ship only the shared library),
+  oniguruma on Linux (libonig-dev ships only libonig.so).
 - libgd, whose codec libraries have no complete set of static archives
   (libavif with aom, dav1d, rav1e and SVT-AV1; libheif, libtiff and
   fontconfig on Debian/Ubuntu). php's `--with-external-gd` loads the shared
@@ -116,6 +117,7 @@ Today rhp-builtins links:
 | libmbfl, php_unicode.c (via rhp-mbfl-sys; feature `mbstring-libmbfl`, on by default) | static, compiled from php-8.5.12 | the same |
 | libgmp | dynamic, Homebrew gmp | dynamic, libgmp-dev |
 | libzip | dynamic, Homebrew libzip (its own zlib, bzip2, xz and zstd links) | dynamic, libzip-dev |
+| oniguruma (libonig; mbstring's mb_ereg*) | static, Homebrew oniguruma | dynamic, libonig-dev (no static archive) |
 | libsqlite3 (pdo_sqlite, sqlite3) | static, Homebrew sqlite (keg-only; php's pdo_sqlite loads its dylib) | static, libsqlite3-dev |
 | libgd (ext/gd), with its codecs | dynamic (dlopen on first use), Homebrew gd | dynamic (dlopen on first use), libgd-dev |
 | libedit (readline) | dynamic, the SDK's /usr/lib/libedit.3.dylib | dynamic, libedit-dev |
@@ -244,7 +246,7 @@ sanitizer build uses php-src's bundled PCRE2).
 libcrypto or libcurl (and on Linux no libxml2); `nm` shows the `pcre2_*` and
 `curl_*` symbols. rhp-builtins' `pcre2_is_linked_statically`,
 `libxml2_is_linked_statically`, `icu_is_linked_statically`,
-`openssl_is_linked_statically` and `libcurl_is_linked_statically` tests
+`openssl_is_linked_statically`, `oniguruma_is_linked_statically` and `libcurl_is_linked_statically` tests
 check its own test binary, which is linked straight from the crate. The last
 also requires `curl_version_info()` to report the version of the curl.h rhp
 compiled against. ext/gmp's `links_libgmp_dynamically` checks with

@@ -247,6 +247,30 @@ pub const LIBS: &[Lib] = &[
         install:
             "macOS: brew install libsodium; Debian/Ubuntu: apt install pkg-config libsodium-dev",
     },
+    // mbstring's mb_ereg* (php_mbregex.c): php links Homebrew's oniguruma
+    // on macOS and the distro's libonig5 on Linux. BSD-2-Clause.
+    Lib {
+        name: "ONIGURUMA",
+        pkg: "oniguruma",
+        brew: Some("oniguruma"),
+        macos_sdk: false,
+        link: "onig",
+        incdir: "",
+        header: "oniguruma.h",
+        macros: &[
+            "ONIGURUMA_VERSION_MAJOR",
+            "ONIGURUMA_VERSION_MINOR",
+            "ONIGURUMA_VERSION_TEENY",
+        ],
+        version: &[
+            "ONIGURUMA_VERSION_MAJOR",
+            "ONIGURUMA_VERSION_MINOR",
+            "ONIGURUMA_VERSION_TEENY",
+        ],
+        macos: Mode::Static,
+        linux: Mode::Dynamic("no static archive (libonig-dev ships only the .so)"),
+        install: "macOS: brew install oniguruma; Debian/Ubuntu: apt install pkg-config libonig-dev",
+    },
     // ext/gettext: php links Homebrew's libintl (gettext, LGPL-2.1+) on
     // macOS; glibc has gettext built in.
     Lib {

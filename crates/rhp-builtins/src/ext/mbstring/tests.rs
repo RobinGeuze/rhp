@@ -400,3 +400,32 @@ fn internal_encoding_roundtrip() {
     let _ = call(fn_mb_internal_encoding, &[s("UTF-8")]);
     assert!(fn_mb_internal_encoding(&mut TestHost::new(), &[s("bogus")]).is_err());
 }
+
+#[test]
+fn oniguruma_is_linked_statically() {
+    // MB_ONIGURUMA_VERSION is the linked oniguruma.h's, as php's.
+    assert_eq!(
+        ONIGURUMA_VERSION.split('.').count(),
+        3,
+        "{ONIGURUMA_VERSION}"
+    );
+    if env!("RHP_ONIGURUMA_LINK_MODE") != "static" {
+        return;
+    }
+    let exe = std::env::current_exe().unwrap();
+    let (tool, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
+        ("otool", &["-L"])
+    } else {
+        ("ldd", &[])
+    };
+    let Ok(out) = std::process::Command::new(tool)
+        .args(args)
+        .arg(&exe)
+        .output()
+    else {
+        return;
+    };
+    let deps = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{tool} failed: {deps}");
+    assert!(!deps.contains("libonig"), "{deps}");
+}

@@ -312,6 +312,22 @@ pub fn main_bytes(raw: &[Vec<u8>]) -> i32 {
         script_file = Some(args[optind].clone());
         optind += 1;
     }
+    // -H wipes the arguments before the mode runs: the -B/-R/-E code, the
+    // reflection name and -F's file with them (a script file is open by
+    // then; -r code is wiped in `Run::once`).
+    if hide_argv {
+        for code in [&mut exec_begin, &mut exec_run, &mut exec_end] {
+            if let Some(c) = code.as_mut() {
+                c.clear();
+            }
+        }
+        reflection_what.clear();
+        if mode == Mode::ProcessStdin {
+            if let Some(f) = script_file.as_mut() {
+                f.clear();
+            }
+        }
+    }
     let run = Run {
         mode,
         mode_opt,

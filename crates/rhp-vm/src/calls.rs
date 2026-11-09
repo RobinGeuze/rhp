@@ -1980,8 +1980,6 @@ impl Vm {
         Ok(args)
     }
 
-    /// Pop the current frame and deliver `value`. Returns `Some(value)` when the
-    /// outermost frame returns (program done), else delivers to the caller.
     /// A frame for a call to `proto`, its registers from the pool.
     #[inline]
     pub(crate) fn new_frame(
@@ -2006,6 +2004,8 @@ impl Vm {
         self.reg_pool.give(regs, self.mem);
     }
 
+    /// Pop the current frame and deliver `value`. Returns `Some(value)` when the
+    /// outermost frame returns (program done), else delivers to the caller.
     pub(crate) fn do_return(&mut self, value: Value) -> Option<Value> {
         let frame = self.stack.pop().expect("non-empty stack");
         if self

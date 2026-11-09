@@ -29,6 +29,7 @@ mod include;
 mod inherit;
 mod lazy;
 mod lifecycle;
+mod link_cache;
 mod link_checks;
 mod lookup_cache;
 mod lvalue;
@@ -66,6 +67,7 @@ use lvalue::{CursorRoot, CursorSteps};
 use streams::StreamTable;
 
 pub use include::IncludeError;
+pub use link_cache::link_cache_stats;
 
 /// The virtual machine: call stack + global tables, running one request
 /// under its SAPI.
@@ -207,6 +209,10 @@ pub struct Vm {
     included_files: indexmap::IndexSet<Vec<u8>, rustc_hash::FxBuildHasher>,
     /// Classes `[0, internal_classes)` are the built-in (prelude) ones.
     internal_classes: usize,
+    /// The linked-class cache's per-request side (`link_cache`).
+    link_cache: link_cache::LinkCacheState,
+    /// Diagnostics raised so far (a link that raised one is not cached).
+    diag_seq: u64,
     // Registered `spl_autoload_register` callables, in call order.
     autoloaders: Vec<autoload::Autoloader>,
     /// Lowercased class names whose autoload is in progress (php's

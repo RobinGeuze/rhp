@@ -113,6 +113,7 @@ them. rhp resets them, so each request starts as a fresh php process does.
 | compiler `lib.rs` | `COMPILE_ERROR_DIAGS` (diagnostics raised before that error, taken right after) | call | — |
 | compiler `prelude.rs` | `PRELUDE_CACHE` (the compiled prelude) | thread | — |
 | vm `classes.rs` | `LINKED_PRELUDE`, `PRELUDE_LINKED_ONCE` | thread | — |
+| vm `link_cache.rs` | `CACHE` (linked user classes), `NEXT_STAMP`, `STATS` | thread, as php's inheritance cache | — |
 | vm `lvalue.rs` | `PATH_DIAGS` (warnings of a cursor walk) | call | `lvalue::reset_path_diags` via `lifecycle::reset_request_state` |
 | vm `opcache/mod.rs` | `CACHE` (the compiled-script cache) | thread, as opcache's shared memory | `opcache_reset()` |
 

@@ -222,6 +222,20 @@ other stream wrappers are compiled on every include.
   fresh in every request. Loading a cached file copies none of its code;
   the request only builds its own entries for it (functions, linked
   classes).
+- **Linked classes.** php's inheritance cache, per thread
+  (`rhp-vm/src/link_cache.rs`): from a thread's second request on, the
+  second link of a user class declaration is kept as a snapshot when it
+  raised nothing, autoloaded nothing and left no variance obligations.
+  A later request that links the same declaration, as the same class id
+  and unit, against the same parent, interfaces and traits (each named
+  by a stamp, with a count of the changes the request made to the
+  constants and defaults linking copies) and whose inheritance checks
+  would look up the same classes, installs a copy instead: shared
+  method table, fresh static cells (inherited ones alias the parent's
+  as linking does), its own enum case objects. Any other input links
+  afresh. The directives every include reads (`opcache.enable`,
+  `validate_timestamps`, `revalidate_freq`, `revalidate_path`,
+  `use_cwd`) are read again only after an ini value changed.
 - **Preload.** `opcache.preload` runs once per thread, before its first
   request, on an engine of its own (its output goes to stdout). The
   functions and classes it declared are declared again at the start of
@@ -233,8 +247,8 @@ other stream wrappers are compiled on every include.
 - **Not implemented:** the file cache (`opcache.file_cache`: compiled
   units aren't serialisable), the optimizer and its debug output, the JIT
   (`opcache_get_status()['jit']` reports what the settings select),
-  switching to `opcache.preload_user` (only its warning), the inheritance
-  cache and `opcache.enable_file_override`.
+  switching to `opcache.preload_user` (only its warning) and
+  `opcache.enable_file_override`.
 
 ## The built-in web server (`rhp -S`)
 

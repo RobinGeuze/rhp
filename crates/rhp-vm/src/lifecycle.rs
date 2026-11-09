@@ -120,6 +120,8 @@ impl Vm {
             fcc_this: std::cell::RefCell::new(None),
             included_files: Default::default(),
             internal_classes: 0,
+            link_cache: Default::default(),
+            diag_seq: 0,
             autoloaders: Vec::new(),
             autoload_depths: Vec::new(),
             in_autoload: Default::default(),

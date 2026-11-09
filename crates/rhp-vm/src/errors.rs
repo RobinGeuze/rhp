@@ -221,6 +221,7 @@ impl Vm {
         line: i64,
         user_handler: bool,
     ) {
+        self.diag_seq += 1;
         match &self.pending_throw {
             // a fatal error / exit is unwinding (php bailed out)
             Some(Thrown::Exit(_)) => return,

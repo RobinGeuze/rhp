@@ -340,7 +340,8 @@ What happens inside one `run_request`, in php's order:
    exit status 255. `auto_prepend_file` runs first; `auto_append_file`
    runs once the script returned (or the exception handler took its
    uncaught throwable), as a primary script of its own, never after
-   `exit` or a fatal error.
+   `exit` or a fatal error. A script the SAPI names next
+   (`script_done`) runs between the two files as well.
 5. **Output.** `echo` goes through the output-buffer stack. Whatever leaves
    the bottom goes to `Sapi::ub_write`, and the first byte triggers
    `send_headers` (after `header_register_callback`'s callback runs). A

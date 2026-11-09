@@ -130,7 +130,8 @@ Not per thread, so shared by every engine in the process:
 - The command-line SAPIs' max_execution_time timer (`zend/timeout.rs`:
   `TIMED_OUT`, `SECONDS`, `HARD`, the hard timeout's locator; a process
   interval timer), and the watchdog thread with the deadlines of every
-  other SAPI's threads (`watchdog()`).
+  other SAPI's threads (`WATCHDOG`); a thread's timer flags are never
+  freed, and an exited thread's go to the next thread (`FREE_TIMERS`).
 - `OnceLock`s and `Once`s that compute something once: the module list,
   the builtin registry, signatures, the process's umask (`virtual_cwd`),
   libxml2's process init and default entity loader, curl's and OpenSSL's

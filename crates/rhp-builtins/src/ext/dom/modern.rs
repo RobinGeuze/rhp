@@ -1072,16 +1072,29 @@ pub fn doc_create_processing_instruction(
 }
 
 /// dom_modern_document_import_node (importNode, importLegacyNode)
+/// Dom\Document::importNode
 pub fn doc_import_node(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
+    let nodev = arg(args, 0);
+    // The stub says ?Node, but ZPP's "O" (Dom\Node) refuses anything else,
+    // null included.
+    let is_node = cx
+        .host
+        .object_class_name(&nodev)
+        .is_some_and(|c| cx.host.reflect_is_a(&c, b"Dom\\Node"));
+    if !is_node {
+        return Err(Thrown::type_error(format!(
+            "Dom\\Document::importNode(): Argument #1 ($node) must be of type Dom\\Node, {} given",
+            crate::zend::zpp::zval_value_name(cx.host, &nodev)
+        )));
+    }
+    doc_import_legacy_node(cx, this, args)
+}
+
+/// Dom\Document::importLegacyNode (and importNode's work)
+pub fn doc_import_legacy_node(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
     let (intern, docn) = get_obj(cx, this)?;
     let docp: *mut XmlDoc = docn.cast();
     let nodev = arg(args, 0);
-    if matches!(nodev, Value::Null) {
-        // The stub says ?Node, but ZPP's "O" refuses null.
-        return Err(Thrown::type_error(
-            "Dom\\Document::importNode(): Argument #1 ($node) must be of type Dom\\Node, null given",
-        ));
-    }
     let (_, nodep) = get_obj(cx, &nodev)?;
     let recursive = boolean(args, 1);
     unsafe {

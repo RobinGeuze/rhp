@@ -747,7 +747,8 @@ fn modern_method(name: &[u8]) -> Option<Method> {
         b"Document::getElementsByTagNameNS" | b"Element::getElementsByTagNameNS" => {
             m::get_elements_by_tag_name_ns
         }
-        b"Document::importLegacyNode" | b"Document::importNode" => m::doc_import_node,
+        b"Document::importLegacyNode" => m::doc_import_legacy_node,
+        b"Document::importNode" => m::doc_import_node,
         b"Document::registerNodeClass" => document::register_node_class,
         b"Document::relaxNgValidate" => document::relaxng_validate,
         b"Document::relaxNgValidateSource" => document::relaxng_validate_source,

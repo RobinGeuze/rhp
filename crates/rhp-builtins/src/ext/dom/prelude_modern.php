@@ -111,7 +111,7 @@ namespace Dom {
         public function createCDATASection(string $data): \Dom\CDATASection { return __dom('Dom\Document::createCDATASection', $this, $data); }
         public function createComment(string $data): \Dom\Comment { return __dom('Dom\Document::createComment', $this, $data); }
         public function createProcessingInstruction(string $target, string $data): \Dom\ProcessingInstruction { return __dom('Dom\Document::createProcessingInstruction', $this, $target, $data); }
-        public function importNode(?\Dom\Node $node, bool $deep = false): \Dom\Node { return __dom('Dom\Document::importNode', $this, $node, $deep); }
+        public function importNode($node, bool $deep = false): \Dom\Node { return __dom('Dom\Document::importNode', $this, $node, $deep); }
         public function adoptNode(\Dom\Node $node): \Dom\Node { return __dom('Dom\Document::adoptNode', $this, $node); }
         public function createAttribute(string $localName): \Dom\Attr { return __dom('Dom\Document::createAttribute', $this, $localName); }
         public function createAttributeNS(?string $namespace, string $qualifiedName): \Dom\Attr { return __dom('Dom\Document::createAttributeNS', $this, $namespace, $qualifiedName); }

@@ -1007,14 +1007,7 @@ impl ProtoBuilder<'_> {
         let dst = self.alloc_temp();
         let empty = self.intern_const(Value::str(""));
         self.emit(Instr::LoadConst { dst, k: empty });
-        use crate::parse::cst::{DocumentIndentation, DocumentKind};
-        let (heredoc, flat) = match cs {
-            CompositeString::Document(d) => (
-                d.kind == DocumentKind::Heredoc,
-                matches!(d.indentation, DocumentIndentation::None),
-            ),
-            _ => (false, false),
-        };
+        use crate::parse::cst::DocumentKind;
         let escapes = !matches!(cs, CompositeString::Document(d) if d.kind == DocumentKind::Nowdoc);
         for part in parts.iter() {
             let pr = match part {
@@ -1022,16 +1015,7 @@ impl ProtoBuilder<'_> {
                     if escapes {
                         self.octal_overflow_warnings(l.raw, l.span.start.offset);
                     }
-                    let mut v = l.value.unwrap_or(l.raw).to_vec();
-                    if matches!(cs, CompositeString::ShellExecute(_)) {
-                        v = crate::strings::shell_exec_value(&v);
-                    }
-                    // A heredoc keeps `\"` as written.
-                    if heredoc && flat {
-                        if let Some(fixed) = crate::strings::heredoc_value(l.raw, &v) {
-                            v = fixed;
-                        }
-                    }
+                    let v = l.value.unwrap_or(l.raw).to_vec();
                     let r = self.alloc_temp();
                     let k = self.intern_const(Value::str(v));
                     self.emit(Instr::LoadConst { dst: r, k });

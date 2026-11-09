@@ -4,7 +4,6 @@ use ordered_float::OrderedFloat;
 
 use mago_syntax_core::utils::parse_literal_float;
 use mago_syntax_core::utils::parse_literal_integer;
-use mago_syntax_core::utils::parse_literal_string_in;
 
 use crate::T;
 use crate::cst::cst::Keyword;
@@ -51,7 +50,8 @@ where
                 },
                 span: token.span_for(self.stream.file_id()),
                 raw: token.value,
-                value: parse_literal_string_in(self.arena, token.value, None, true),
+                // rhp: php's escape decoding
+                value: super::escape::literal_string(self.arena, token.value),
             }),
             T![PartialLiteralString] => {
                 let kind = if token.value.starts_with(b"\"")

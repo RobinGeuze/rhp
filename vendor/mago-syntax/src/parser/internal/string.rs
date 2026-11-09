@@ -4,7 +4,6 @@ use mago_allocator::prelude::*;
 use mago_database::file::HasFileId;
 use mago_span::Span;
 use mago_syntax_core::utils::parse_literal_integer;
-use mago_syntax_core::utils::parse_literal_string_in;
 
 use crate::T;
 use crate::cst::cst::Access;
@@ -34,7 +33,9 @@ use crate::token::TokenKind;
 #[derive(Clone, Copy)]
 pub(crate) enum LiteralPartDecoding {
     /// Apply the double-quoted escape rules (interpolated strings, shell-execute, heredoc).
-    DoubleQuoted,
+    /// rhp: with php's quote type (`"`, `` ` ``, 0 for a heredoc): `\"` and `` \` ``
+    /// decode only inside their own quotes.
+    DoubleQuoted(u8),
     /// Keep the bytes verbatim, with no escape decoding (nowdoc).
     Verbatim,
 }
@@ -78,7 +79,7 @@ where
             if has_prefix { Span { start: token_span.start.forward(1), ..token_span } } else { token_span };
 
         let mut parts = self.new_vec();
-        while let Some(part) = self.parse_optional_string_part(T!["\""], LiteralPartDecoding::DoubleQuoted)? {
+        while let Some(part) = self.parse_optional_string_part(T!["\""], LiteralPartDecoding::DoubleQuoted(b'"'))? {
             parts.push(part);
         }
 
@@ -90,7 +91,7 @@ where
     pub(crate) fn parse_shell_execute_string(&mut self) -> Result<ShellExecuteString<'arena>, ParseError> {
         let left_backtick = self.stream.eat_span(T!["`"])?;
         let mut parts = self.new_vec();
-        while let Some(part) = self.parse_optional_string_part(T!["`"], LiteralPartDecoding::DoubleQuoted)? {
+        while let Some(part) = self.parse_optional_string_part(T!["`"], LiteralPartDecoding::DoubleQuoted(b'`'))? {
             parts.push(part);
         }
 
@@ -114,7 +115,7 @@ where
             if has_prefix { Span { start: current_span.start.forward(1), ..current_span } } else { current_span };
         let (open, kind, decoding) = match current.kind {
             TokenKind::DocumentStart(DocumentKind::Heredoc) => {
-                (open_span, AstDocumentKind::Heredoc, LiteralPartDecoding::DoubleQuoted)
+                (open_span, AstDocumentKind::Heredoc, LiteralPartDecoding::DoubleQuoted(0))
             }
             TokenKind::DocumentStart(DocumentKind::Nowdoc) => {
                 (open_span, AstDocumentKind::Nowdoc, LiteralPartDecoding::Verbatim)
@@ -183,8 +184,8 @@ where
             T![StringPart] => {
                 let token = self.stream.consume()?;
                 let value = match decoding {
-                    LiteralPartDecoding::DoubleQuoted => {
-                        parse_literal_string_in(self.arena, token.value, Some(b'"'), false)
+                    LiteralPartDecoding::DoubleQuoted(quote) => {
+                        super::escape::escape_string(self.arena, token.value, quote)
                     }
                     LiteralPartDecoding::Verbatim => Some(token.value),
                 };

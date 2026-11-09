@@ -684,6 +684,7 @@ fn fn_ini_restore(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> 
     }
     // Back to the startup value (`-d`), else the default.
     let startup = INI_STARTUP.with(|m| m.borrow().get(&key).cloned());
+    crate::main::ini::ini_changed();
     INI.with(|m| match startup {
         Some(v) => m.borrow_mut().insert(key, Some(v)),
         None => m.borrow_mut().remove(&key),

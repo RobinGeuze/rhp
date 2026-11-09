@@ -137,6 +137,7 @@ impl Vm {
             started: true,
             enabled: false,
             request_time: now(),
+            settings: Default::default(),
         });
         let real = std::fs::canonicalize(path)
             .map(|p| path_bytes(&p))

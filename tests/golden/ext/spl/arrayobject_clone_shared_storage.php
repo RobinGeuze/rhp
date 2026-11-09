@@ -22,3 +22,11 @@ $i = new ArrayIterator(new ArrayObject([1]));
 $j = clone $i;
 $j[] = 2;
 var_dump(count($i), count($j));
+// exchangeArray() on a shared storage: the one over it sees the new array.
+$c = new ArrayObject([1]);
+$d = new ArrayObject($c);
+$c->exchangeArray([5, 6]);
+var_dump($d->getArrayCopy());
+$d->exchangeArray([7]);
+$c[] = 8;
+var_dump($c->getArrayCopy(), $d->getArrayCopy());

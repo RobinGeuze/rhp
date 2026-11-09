@@ -13,8 +13,8 @@ class ArrayIterator implements SeekableIterator, ArrayAccess, Serializable, Coun
     // one's storage (shared, shown as that object), else the array or the
     // object's properties.
     private static function __store($me, $array): void {
-        __spl_array_bind($me, null);
-        $me->__w = null;
+        // (storage another one shares stays shared: it sees the new array)
+        if ($me->__w !== null) { __spl_array_bind($me, null); $me->__w = null; }
         if (($array instanceof ArrayObject || $array instanceof ArrayIterator) && $array !== $me) { __spl_array_bind($me, $array); $me->__w = $array; }
         else { $me->__s = is_object($array) ? get_object_vars($array) : $array; }
     }
@@ -101,8 +101,8 @@ class ArrayObject implements IteratorAggregate, ArrayAccess, Serializable, Count
     // The ArrayObject / ArrayIterator whose storage this one shares.
     private $__w = null;
     private static function __store($me, $array): void {
-        __spl_array_bind($me, null);
-        $me->__w = null;
+        // (storage another one shares stays shared: it sees the new array)
+        if ($me->__w !== null) { __spl_array_bind($me, null); $me->__w = null; }
         if (($array instanceof ArrayObject || $array instanceof ArrayIterator) && $array !== $me) { __spl_array_bind($me, $array); $me->__w = $array; }
         else { $me->__s = is_object($array) ? get_object_vars($array) : $array; }
     }
@@ -400,7 +400,7 @@ function iterator_count($iterator) {
     return $count;
 }
 
-function iterator_apply($iterator, callable $callback, $args = null) {
+function iterator_apply(Traversable $iterator, callable $callback, ?array $args = null) {
     $callback = __spl_fcc($callback);
     if ($iterator instanceof IteratorAggregate) { $iterator = $iterator->getIterator(); }
     $count = 0;

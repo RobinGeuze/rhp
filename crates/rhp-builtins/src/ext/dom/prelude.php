@@ -17,29 +17,30 @@ interface DOMChildNode {
 }
 
 class DOMNode {
+    public string $nodeName { get => __dom_prop(0, $this, 'nodeName'); set(mixed $value) { __dom_prop(1, $this, 'nodeName', $value); } }
+    public ?string $nodeValue { get => __dom_prop(0, $this, 'nodeValue'); set(mixed $value) { __dom_prop(1, $this, 'nodeValue', $value); } }
+    public int $nodeType { get => __dom_prop(0, $this, 'nodeType'); set(mixed $value) { __dom_prop(1, $this, 'nodeType', $value); } }
+    public ?DOMNode $parentNode { get => __dom_prop(0, $this, 'parentNode'); set(mixed $value) { __dom_prop(1, $this, 'parentNode', $value); } }
+    public ?DOMElement $parentElement { get => __dom_prop(0, $this, 'parentElement'); set(mixed $value) { __dom_prop(1, $this, 'parentElement', $value); } }
+    public DOMNodeList $childNodes { get => __dom_prop(0, $this, 'childNodes'); set(mixed $value) { __dom_prop(1, $this, 'childNodes', $value); } }
+    public ?DOMNode $firstChild { get => __dom_prop(0, $this, 'firstChild'); set(mixed $value) { __dom_prop(1, $this, 'firstChild', $value); } }
+    public ?DOMNode $lastChild { get => __dom_prop(0, $this, 'lastChild'); set(mixed $value) { __dom_prop(1, $this, 'lastChild', $value); } }
+    public ?DOMNode $previousSibling { get => __dom_prop(0, $this, 'previousSibling'); set(mixed $value) { __dom_prop(1, $this, 'previousSibling', $value); } }
+    public ?DOMNode $nextSibling { get => __dom_prop(0, $this, 'nextSibling'); set(mixed $value) { __dom_prop(1, $this, 'nextSibling', $value); } }
+    public ?DOMNamedNodeMap $attributes { get => __dom_prop(0, $this, 'attributes'); set(mixed $value) { __dom_prop(1, $this, 'attributes', $value); } }
+    public bool $isConnected { get => __dom_prop(0, $this, 'isConnected'); set(mixed $value) { __dom_prop(1, $this, 'isConnected', $value); } }
+    public ?DOMDocument $ownerDocument { get => __dom_prop(0, $this, 'ownerDocument'); set(mixed $value) { __dom_prop(1, $this, 'ownerDocument', $value); } }
+    public ?string $namespaceURI { get => __dom_prop(0, $this, 'namespaceURI'); set(mixed $value) { __dom_prop(1, $this, 'namespaceURI', $value); } }
+    public string $prefix { get => __dom_prop(0, $this, 'prefix'); set(mixed $value) { __dom_prop(1, $this, 'prefix', $value); } }
+    public ?string $localName { get => __dom_prop(0, $this, 'localName'); set(mixed $value) { __dom_prop(1, $this, 'localName', $value); } }
+    public ?string $baseURI { get => __dom_prop(0, $this, 'baseURI'); set(mixed $value) { __dom_prop(1, $this, 'baseURI', $value); } }
+    public string $textContent { get => __dom_prop(0, $this, 'textContent'); set(mixed $value) { __dom_prop(1, $this, 'textContent', $value); } }
     public const DOCUMENT_POSITION_DISCONNECTED = 1;
     public const DOCUMENT_POSITION_PRECEDING = 2;
     public const DOCUMENT_POSITION_FOLLOWING = 4;
     public const DOCUMENT_POSITION_CONTAINS = 8;
     public const DOCUMENT_POSITION_CONTAINED_BY = 16;
     public const DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC = 32;
-
-    public function __get($name) {
-        $v = __dom_prop(0, $this, $name);
-        if (is_array($v)) { return $this->$name; }
-        return $v;
-    }
-    public function __set($name, $value) {
-        if (is_array(__dom_prop(1, $this, $name, $value))) { $this->$name = $value; }
-    }
-    public function __isset($name) {
-        $v = __dom_prop(2, $this, $name);
-        if (is_array($v)) { return isset($this->$name); }
-        return $v;
-    }
-    public function __unset($name) {
-        if (is_array(__dom_prop(3, $this, $name))) { unset($this->$name); }
-    }
 
     public function appendChild(DOMNode $node) { return __dom('DOMNode::appendChild', $this, $node); }
     public function C14N(bool $exclusive = false, bool $withComments = false, ?array $xpath = null, ?array $nsPrefixes = null) { return __dom('DOMNode::C14N', $this, $exclusive, $withComments, $xpath, $nsPrefixes); }
@@ -67,22 +68,16 @@ class DOMNode {
 }
 
 class DOMNameSpaceNode {
-    public function __get($name) {
-        $v = __dom_prop(0, $this, $name);
-        if (is_array($v)) { return $this->$name; }
-        return $v;
-    }
-    public function __set($name, $value) {
-        if (is_array(__dom_prop(1, $this, $name, $value))) { $this->$name = $value; }
-    }
-    public function __isset($name) {
-        $v = __dom_prop(2, $this, $name);
-        if (is_array($v)) { return isset($this->$name); }
-        return $v;
-    }
-    public function __unset($name) {
-        if (is_array(__dom_prop(3, $this, $name))) { unset($this->$name); }
-    }
+    public string $nodeName { get => __dom_prop(0, $this, 'nodeName'); set(mixed $value) { __dom_prop(1, $this, 'nodeName', $value); } }
+    public ?string $nodeValue { get => __dom_prop(0, $this, 'nodeValue'); set(mixed $value) { __dom_prop(1, $this, 'nodeValue', $value); } }
+    public int $nodeType { get => __dom_prop(0, $this, 'nodeType'); set(mixed $value) { __dom_prop(1, $this, 'nodeType', $value); } }
+    public string $prefix { get => __dom_prop(0, $this, 'prefix'); set(mixed $value) { __dom_prop(1, $this, 'prefix', $value); } }
+    public ?string $localName { get => __dom_prop(0, $this, 'localName'); set(mixed $value) { __dom_prop(1, $this, 'localName', $value); } }
+    public ?string $namespaceURI { get => __dom_prop(0, $this, 'namespaceURI'); set(mixed $value) { __dom_prop(1, $this, 'namespaceURI', $value); } }
+    public bool $isConnected { get => __dom_prop(0, $this, 'isConnected'); set(mixed $value) { __dom_prop(1, $this, 'isConnected', $value); } }
+    public ?DOMDocument $ownerDocument { get => __dom_prop(0, $this, 'ownerDocument'); set(mixed $value) { __dom_prop(1, $this, 'ownerDocument', $value); } }
+    public ?DOMNode $parentNode { get => __dom_prop(0, $this, 'parentNode'); set(mixed $value) { __dom_prop(1, $this, 'parentNode', $value); } }
+    public ?DOMElement $parentElement { get => __dom_prop(0, $this, 'parentElement'); set(mixed $value) { __dom_prop(1, $this, 'parentElement', $value); } }
     public function __sleep(): array { return __dom('DOMNode::__sleep', $this); }
     public function __wakeup(): void { __dom('DOMNode::__wakeup', $this); }
 }
@@ -94,6 +89,9 @@ class DOMImplementation {
 }
 
 class DOMDocumentFragment extends DOMNode implements DOMParentNode {
+    public ?DOMElement $firstElementChild { get => __dom_prop(0, $this, 'firstElementChild'); set(mixed $value) { __dom_prop(1, $this, 'firstElementChild', $value); } }
+    public ?DOMElement $lastElementChild { get => __dom_prop(0, $this, 'lastElementChild'); set(mixed $value) { __dom_prop(1, $this, 'lastElementChild', $value); } }
+    public int $childElementCount { get => __dom_prop(0, $this, 'childElementCount'); set(mixed $value) { __dom_prop(1, $this, 'childElementCount', $value); } }
     public function __construct() { __dom('DOMDocumentFragment::__construct', $this); }
     public function appendXML(string $data) { return __dom('DOMDocumentFragment::appendXML', $this, $data); }
     public function append(...$nodes): void { __dom('DOMDocumentFragment::append', $this, ...$nodes); }
@@ -102,22 +100,7 @@ class DOMDocumentFragment extends DOMNode implements DOMParentNode {
 }
 
 class DOMNodeList implements IteratorAggregate, Countable, ArrayAccess {
-    public function __get($name) {
-        $v = __dom_prop(0, $this, $name);
-        if (is_array($v)) { return $this->$name; }
-        return $v;
-    }
-    public function __set($name, $value) {
-        if (is_array(__dom_prop(1, $this, $name, $value))) { $this->$name = $value; }
-    }
-    public function __isset($name) {
-        $v = __dom_prop(2, $this, $name);
-        if (is_array($v)) { return isset($this->$name); }
-        return $v;
-    }
-    public function __unset($name) {
-        if (is_array(__dom_prop(3, $this, $name))) { unset($this->$name); }
-    }
+    public int $length { get => __dom_prop(0, $this, 'length'); set(mixed $value) { __dom_prop(1, $this, 'length', $value); } }
     public function count(): int { return __dom('DOMNodeList::count', $this); }
     public function getIterator(): Iterator { $i = 0; $c = null; while (($p = __dom_iter($this, $c, $i)) !== null) { $c = $p[1]; yield $p[0] => $c; $i++; } }
     public function item(int $index) { return __dom('DOMNodeList::item', $this, $index); }
@@ -128,22 +111,7 @@ class DOMNodeList implements IteratorAggregate, Countable, ArrayAccess {
 }
 
 class DOMNamedNodeMap implements IteratorAggregate, Countable, ArrayAccess {
-    public function __get($name) {
-        $v = __dom_prop(0, $this, $name);
-        if (is_array($v)) { return $this->$name; }
-        return $v;
-    }
-    public function __set($name, $value) {
-        if (is_array(__dom_prop(1, $this, $name, $value))) { $this->$name = $value; }
-    }
-    public function __isset($name) {
-        $v = __dom_prop(2, $this, $name);
-        if (is_array($v)) { return isset($this->$name); }
-        return $v;
-    }
-    public function __unset($name) {
-        if (is_array(__dom_prop(3, $this, $name))) { unset($this->$name); }
-    }
+    public int $length { get => __dom_prop(0, $this, 'length'); set(mixed $value) { __dom_prop(1, $this, 'length', $value); } }
     public function getNamedItem(string $qualifiedName): ?DOMNode { return __dom('DOMNamedNodeMap::getNamedItem', $this, $qualifiedName); }
     public function getNamedItemNS(?string $namespace, string $localName): ?DOMNode { return __dom('DOMNamedNodeMap::getNamedItemNS', $this, $namespace, $localName); }
     public function item(int $index): ?DOMNode { return __dom('DOMNamedNodeMap::item', $this, $index); }
@@ -156,6 +124,10 @@ class DOMNamedNodeMap implements IteratorAggregate, Countable, ArrayAccess {
 }
 
 class DOMCharacterData extends DOMNode implements DOMChildNode {
+    public string $data { get => __dom_prop(0, $this, 'data'); set(mixed $value) { __dom_prop(1, $this, 'data', $value); } }
+    public int $length { get => __dom_prop(0, $this, 'length'); set(mixed $value) { __dom_prop(1, $this, 'length', $value); } }
+    public ?DOMElement $previousElementSibling { get => __dom_prop(0, $this, 'previousElementSibling'); set(mixed $value) { __dom_prop(1, $this, 'previousElementSibling', $value); } }
+    public ?DOMElement $nextElementSibling { get => __dom_prop(0, $this, 'nextElementSibling'); set(mixed $value) { __dom_prop(1, $this, 'nextElementSibling', $value); } }
     public function appendData(string $data) { return __dom('DOMCharacterData::appendData', $this, $data); }
     public function substringData(int $offset, int $count) { return __dom('DOMCharacterData::substringData', $this, $offset, $count); }
     public function insertData(int $offset, string $data) { return __dom('DOMCharacterData::insertData', $this, $offset, $data); }
@@ -168,6 +140,7 @@ class DOMCharacterData extends DOMNode implements DOMChildNode {
 }
 
 class DOMText extends DOMCharacterData {
+    public string $wholeText { get => __dom_prop(0, $this, 'wholeText'); set(mixed $value) { __dom_prop(1, $this, 'wholeText', $value); } }
     public function __construct(string $data = "") { __dom('DOMText::__construct', $this, ...func_get_args()); }
     public function isWhitespaceInElementContent() { return __dom('DOMText::isWhitespaceInElementContent', $this); }
     public function isElementContentWhitespace() { return __dom('DOMText::isElementContentWhitespace', $this); }
@@ -183,11 +156,25 @@ class DOMComment extends DOMCharacterData {
 }
 
 class DOMAttr extends DOMNode {
+    public string $name { get => __dom_prop(0, $this, 'name'); set(mixed $value) { __dom_prop(1, $this, 'name', $value); } }
+    public bool $specified { get => __dom_prop(0, $this, 'specified'); set(mixed $value) { __dom_prop(1, $this, 'specified', $value); } }
+    public string $value { get => __dom_prop(0, $this, 'value'); set(mixed $value) { __dom_prop(1, $this, 'value', $value); } }
+    public ?DOMElement $ownerElement { get => __dom_prop(0, $this, 'ownerElement'); set(mixed $value) { __dom_prop(1, $this, 'ownerElement', $value); } }
+    public mixed $schemaTypeInfo { get => __dom_prop(0, $this, 'schemaTypeInfo'); set(mixed $value) { __dom_prop(1, $this, 'schemaTypeInfo', $value); } }
     public function __construct(string $name, string $value = "") { __dom('DOMAttr::__construct', $this, ...func_get_args()); }
     public function isId() { return __dom('DOMAttr::isId', $this); }
 }
 
 class DOMElement extends DOMNode implements DOMParentNode, DOMChildNode {
+    public string $tagName { get => __dom_prop(0, $this, 'tagName'); set(mixed $value) { __dom_prop(1, $this, 'tagName', $value); } }
+    public string $className { get => __dom_prop(0, $this, 'className'); set(mixed $value) { __dom_prop(1, $this, 'className', $value); } }
+    public string $id { get => __dom_prop(0, $this, 'id'); set(mixed $value) { __dom_prop(1, $this, 'id', $value); } }
+    public mixed $schemaTypeInfo { get => __dom_prop(0, $this, 'schemaTypeInfo'); set(mixed $value) { __dom_prop(1, $this, 'schemaTypeInfo', $value); } }
+    public ?DOMElement $firstElementChild { get => __dom_prop(0, $this, 'firstElementChild'); set(mixed $value) { __dom_prop(1, $this, 'firstElementChild', $value); } }
+    public ?DOMElement $lastElementChild { get => __dom_prop(0, $this, 'lastElementChild'); set(mixed $value) { __dom_prop(1, $this, 'lastElementChild', $value); } }
+    public int $childElementCount { get => __dom_prop(0, $this, 'childElementCount'); set(mixed $value) { __dom_prop(1, $this, 'childElementCount', $value); } }
+    public ?DOMElement $previousElementSibling { get => __dom_prop(0, $this, 'previousElementSibling'); set(mixed $value) { __dom_prop(1, $this, 'previousElementSibling', $value); } }
+    public ?DOMElement $nextElementSibling { get => __dom_prop(0, $this, 'nextElementSibling'); set(mixed $value) { __dom_prop(1, $this, 'nextElementSibling', $value); } }
     public function __construct(string $qualifiedName, ?string $value = null, string $namespace = "") { __dom('DOMElement::__construct', $this, $qualifiedName, $value, $namespace); }
     public function getAttribute(string $qualifiedName) { return __dom('DOMElement::getAttribute', $this, $qualifiedName); }
     public function getAttributeNames() { return __dom('DOMElement::getAttributeNames', $this); }
@@ -221,6 +208,28 @@ class DOMElement extends DOMNode implements DOMParentNode, DOMChildNode {
 }
 
 class DOMDocument extends DOMNode implements DOMParentNode {
+    public ?DOMDocumentType $doctype { get => __dom_prop(0, $this, 'doctype'); set(mixed $value) { __dom_prop(1, $this, 'doctype', $value); } }
+    public DOMImplementation $implementation { get => __dom_prop(0, $this, 'implementation'); set(mixed $value) { __dom_prop(1, $this, 'implementation', $value); } }
+    public ?DOMElement $documentElement { get => __dom_prop(0, $this, 'documentElement'); set(mixed $value) { __dom_prop(1, $this, 'documentElement', $value); } }
+    public ?string $actualEncoding { get => __dom_prop(0, $this, 'actualEncoding'); set(mixed $value) { __dom_prop(1, $this, 'actualEncoding', $value); } }
+    public ?string $encoding { get => __dom_prop(0, $this, 'encoding'); set(mixed $value) { __dom_prop(1, $this, 'encoding', $value); } }
+    public ?string $xmlEncoding { get => __dom_prop(0, $this, 'xmlEncoding'); set(mixed $value) { __dom_prop(1, $this, 'xmlEncoding', $value); } }
+    public bool $standalone { get => __dom_prop(0, $this, 'standalone'); set(mixed $value) { __dom_prop(1, $this, 'standalone', $value); } }
+    public bool $xmlStandalone { get => __dom_prop(0, $this, 'xmlStandalone'); set(mixed $value) { __dom_prop(1, $this, 'xmlStandalone', $value); } }
+    public ?string $version { get => __dom_prop(0, $this, 'version'); set(mixed $value) { __dom_prop(1, $this, 'version', $value); } }
+    public ?string $xmlVersion { get => __dom_prop(0, $this, 'xmlVersion'); set(mixed $value) { __dom_prop(1, $this, 'xmlVersion', $value); } }
+    public bool $strictErrorChecking { get => __dom_prop(0, $this, 'strictErrorChecking'); set(mixed $value) { __dom_prop(1, $this, 'strictErrorChecking', $value); } }
+    public ?string $documentURI { get => __dom_prop(0, $this, 'documentURI'); set(mixed $value) { __dom_prop(1, $this, 'documentURI', $value); } }
+    public mixed $config { get => __dom_prop(0, $this, 'config'); set(mixed $value) { __dom_prop(1, $this, 'config', $value); } }
+    public bool $formatOutput { get => __dom_prop(0, $this, 'formatOutput'); set(mixed $value) { __dom_prop(1, $this, 'formatOutput', $value); } }
+    public bool $validateOnParse { get => __dom_prop(0, $this, 'validateOnParse'); set(mixed $value) { __dom_prop(1, $this, 'validateOnParse', $value); } }
+    public bool $resolveExternals { get => __dom_prop(0, $this, 'resolveExternals'); set(mixed $value) { __dom_prop(1, $this, 'resolveExternals', $value); } }
+    public bool $preserveWhiteSpace { get => __dom_prop(0, $this, 'preserveWhiteSpace'); set(mixed $value) { __dom_prop(1, $this, 'preserveWhiteSpace', $value); } }
+    public bool $recover { get => __dom_prop(0, $this, 'recover'); set(mixed $value) { __dom_prop(1, $this, 'recover', $value); } }
+    public bool $substituteEntities { get => __dom_prop(0, $this, 'substituteEntities'); set(mixed $value) { __dom_prop(1, $this, 'substituteEntities', $value); } }
+    public ?DOMElement $firstElementChild { get => __dom_prop(0, $this, 'firstElementChild'); set(mixed $value) { __dom_prop(1, $this, 'firstElementChild', $value); } }
+    public ?DOMElement $lastElementChild { get => __dom_prop(0, $this, 'lastElementChild'); set(mixed $value) { __dom_prop(1, $this, 'lastElementChild', $value); } }
+    public int $childElementCount { get => __dom_prop(0, $this, 'childElementCount'); set(mixed $value) { __dom_prop(1, $this, 'childElementCount', $value); } }
     public function __construct(string $version = "1.0", string $encoding = "") { __dom('DOMDocument::__construct', $this, ...func_get_args()); }
     public function createAttribute(string $localName) { return __dom('DOMDocument::createAttribute', $this, $localName); }
     public function createAttributeNS(?string $namespace, string $qualifiedName) { return __dom('DOMDocument::createAttributeNS', $this, $namespace, $qualifiedName); }
@@ -258,35 +267,40 @@ class DOMDocument extends DOMNode implements DOMParentNode {
     public function replaceChildren(...$nodes): void { __dom('DOMDocument::replaceChildren', $this, ...$nodes); }
 }
 
-class DOMDocumentType extends DOMNode {}
-class DOMEntity extends DOMNode {}
-class DOMNotation extends DOMNode {}
+class DOMDocumentType extends DOMNode {
+    public string $name { get => __dom_prop(0, $this, 'name'); set(mixed $value) { __dom_prop(1, $this, 'name', $value); } }
+    public DOMNamedNodeMap $entities { get => __dom_prop(0, $this, 'entities'); set(mixed $value) { __dom_prop(1, $this, 'entities', $value); } }
+    public DOMNamedNodeMap $notations { get => __dom_prop(0, $this, 'notations'); set(mixed $value) { __dom_prop(1, $this, 'notations', $value); } }
+    public string $publicId { get => __dom_prop(0, $this, 'publicId'); set(mixed $value) { __dom_prop(1, $this, 'publicId', $value); } }
+    public string $systemId { get => __dom_prop(0, $this, 'systemId'); set(mixed $value) { __dom_prop(1, $this, 'systemId', $value); } }
+    public ?string $internalSubset { get => __dom_prop(0, $this, 'internalSubset'); set(mixed $value) { __dom_prop(1, $this, 'internalSubset', $value); } }
+}
+class DOMEntity extends DOMNode {
+    public ?string $publicId { get => __dom_prop(0, $this, 'publicId'); set(mixed $value) { __dom_prop(1, $this, 'publicId', $value); } }
+    public ?string $systemId { get => __dom_prop(0, $this, 'systemId'); set(mixed $value) { __dom_prop(1, $this, 'systemId', $value); } }
+    public ?string $notationName { get => __dom_prop(0, $this, 'notationName'); set(mixed $value) { __dom_prop(1, $this, 'notationName', $value); } }
+    public ?string $actualEncoding { get => __dom_prop(0, $this, 'actualEncoding'); set(mixed $value) { __dom_prop(1, $this, 'actualEncoding', $value); } }
+    public ?string $encoding { get => __dom_prop(0, $this, 'encoding'); set(mixed $value) { __dom_prop(1, $this, 'encoding', $value); } }
+    public ?string $version { get => __dom_prop(0, $this, 'version'); set(mixed $value) { __dom_prop(1, $this, 'version', $value); } }
+}
+class DOMNotation extends DOMNode {
+    public string $publicId { get => __dom_prop(0, $this, 'publicId'); set(mixed $value) { __dom_prop(1, $this, 'publicId', $value); } }
+    public string $systemId { get => __dom_prop(0, $this, 'systemId'); set(mixed $value) { __dom_prop(1, $this, 'systemId', $value); } }
+}
 
 class DOMEntityReference extends DOMNode {
     public function __construct(string $name) { __dom('DOMEntityReference::__construct', $this, $name); }
 }
 
 class DOMProcessingInstruction extends DOMNode {
+    public string $target { get => __dom_prop(0, $this, 'target'); set(mixed $value) { __dom_prop(1, $this, 'target', $value); } }
+    public string $data { get => __dom_prop(0, $this, 'data'); set(mixed $value) { __dom_prop(1, $this, 'data', $value); } }
     public function __construct(string $name, string $value = "") { __dom('DOMProcessingInstruction::__construct', $this, ...func_get_args()); }
 }
 
 class DOMXPath {
-    public function __get($name) {
-        $v = __dom_prop(0, $this, $name);
-        if (is_array($v)) { return $this->$name; }
-        return $v;
-    }
-    public function __set($name, $value) {
-        if (is_array(__dom_prop(1, $this, $name, $value))) { $this->$name = $value; }
-    }
-    public function __isset($name) {
-        $v = __dom_prop(2, $this, $name);
-        if (is_array($v)) { return isset($this->$name); }
-        return $v;
-    }
-    public function __unset($name) {
-        if (is_array(__dom_prop(3, $this, $name))) { unset($this->$name); }
-    }
+    public DOMDocument $document { get => __dom_prop(0, $this, 'document'); set(mixed $value) { __dom_prop(1, $this, 'document', $value); } }
+    public bool $registerNodeNamespaces { get => __dom_prop(0, $this, 'registerNodeNamespaces'); set(mixed $value) { __dom_prop(1, $this, 'registerNodeNamespaces', $value); } }
     public function __construct(DOMDocument $document, bool $registerNodeNS = true) { __dom('DOMXPath::__construct', $this, $document, $registerNodeNS); }
     public function evaluate(string $expression, ?DOMNode $contextNode = null, bool $registerNodeNS = true) { return __dom('DOMXPath::evaluate', $this, ...func_get_args()); }
     public function query(string $expression, ?DOMNode $contextNode = null, bool $registerNodeNS = true) { return __dom('DOMXPath::query', $this, ...func_get_args()); }

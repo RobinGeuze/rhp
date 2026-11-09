@@ -131,12 +131,13 @@ Notes:
   `has_property`…; writes and unsets only get the checks above),
   `get_constructor` (`Directory`; a prelude `__construct` that the stub
   lacks stands in for it, as for PDORow and CurlHandle refusing `new`, and
-  its frame is plumbing too), `get_gc`. DOM's, SimpleXML's, XMLReader's, DatePeriod's and ZipArchive's properties (and
+  its frame is plumbing too), `get_gc`. SimpleXML's, XMLReader's and ZipArchive's properties (and
   SimpleXML's dimensions) go through their prelude classes'
   `__get`/`__set`/`__isset`/`__unset` and ArrayAccess methods, which call
-  the ported handlers. DatePeriod declares its `@virtual` properties as
-  property hooks that call them (get: the read handler, set: the read-only
-  error), and its `unset_property` check refuses an unset; Reflection
+  the ported handlers. DatePeriod and DOM (legacy and `Dom\`) declare their
+  `@virtual` properties as property hooks that call them (get: the read
+  handler, set: the write handler or the read-only error), and their
+  `unset_property` check refuses an unset; Reflection
   shows those properties as php's (virtual, no hooks) and traces leave the
   hook frames out. Two things make those stand-ins behave like php's
   handlers:
@@ -164,7 +165,7 @@ Notes:
     `offsetGet`…) replaces the stand-in, so it shadows every virtual
     property, read-only checks included.
   - `property_exists()` and Reflection's property lists differ from php:
-    they see no virtual properties of DOM, XMLReader and ZipArchive;
+    they see no virtual properties of XMLReader and ZipArchive;
     SimpleXML implements `ArrayAccess`; `ReflectionMethod('XMLReader',
     'open')` and `method_exists()` find no `open`/`XML`
     (tests/api/known-differences.txt lists every such row).

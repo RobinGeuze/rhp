@@ -1061,24 +1061,28 @@ fn clone_ns_obj(host: &mut dyn Host, src: &ObjectHandle, dst: &ObjectHandle) -> 
 
 static NODE_HANDLERS: ObjectHandlers = ObjectHandlers {
     get_properties_for: Some(get_properties_for),
+    unset_property: Some(unset_property),
     clone_obj: CloneObj::Custom(clone_node_obj),
     ..ObjectHandlers::STD
 };
 
 static NS_NODE_HANDLERS: ObjectHandlers = ObjectHandlers {
     get_properties_for: Some(get_properties_for),
+    unset_property: Some(unset_property),
     clone_obj: CloneObj::Custom(clone_ns_obj),
     ..ObjectHandlers::STD
 };
 
 static MAP_HANDLERS: ObjectHandlers = ObjectHandlers {
     get_properties_for: Some(get_properties_for),
+    unset_property: Some(unset_property),
     clone_obj: CloneObj::None,
     ..ObjectHandlers::STD
 };
 
 static PLAIN_HANDLERS: ObjectHandlers = ObjectHandlers {
     get_properties_for: Some(get_properties_for),
+    unset_property: Some(unset_property),
     ..ObjectHandlers::STD
 };
 

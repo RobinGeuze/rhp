@@ -1,0 +1,6 @@
+
+Fatal error: Cannot redeclare function strlen() in {DIR}/main.php on line 3
+Stack trace:
+#0 {main}
+bool(true)
+bool(false)

@@ -1174,3 +1174,18 @@ pub fn fopen_tmpfile() -> Option<crate::main::streams::LocalFile> {
     }
     f
 }
+
+/// php's starting `stream->position` for a stream on `fd`
+/// (_php_stream_fopen_from_fd): the fd's offset when detect_is_seekable
+/// allows it and lseek works, else -1 (a pipe, a terminal; ftell() is
+/// then false).
+pub fn fd_initial_position(fd: i32) -> i64 {
+    // SAFETY: fstat fills a zeroed stat; lseek only queries the offset.
+    unsafe {
+        let mut st: libc::stat = std::mem::zeroed();
+        if libc::fstat(fd, &mut st) != 0 || !detect_is_seekable(&st) {
+            return -1;
+        }
+        libc::lseek(fd, 0, libc::SEEK_CUR).max(-1) as i64
+    }
+}

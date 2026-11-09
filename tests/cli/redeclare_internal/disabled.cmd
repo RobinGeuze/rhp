@@ -1,0 +1,1 @@
+ini disable_functions=strlen

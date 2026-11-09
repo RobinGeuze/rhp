@@ -38,6 +38,8 @@ pub use ext::readline::cli::{
     shell_output as readline_shell_output, shell_run as readline_shell_run,
 };
 pub use ext::standard::http_fopen_wrapper;
+/// `error_log = syslog` (main/php_syslog.c).
+pub use ext::standard::syslog::{error_priority as syslog_error_priority, php_syslog};
 pub use host::{
     host_compare, host_loose_eq, Host, MagicFetch, ObCall, ScopeVar, StreamKind, StreamMeta,
     UnserProp, WrapperRestore,
@@ -50,6 +52,8 @@ pub use registry::{
     stream_wrappers, Builtin, NativeFn,
 };
 pub(crate) use registry::{register, register_helpers, Registry};
+/// php-cli's informational modes (`-m`, `--ri`, `--ini`, `--ini=diff`).
+pub use sapi::cli::{ext_info_text, ini_config_text, ini_diff_text, modules_text};
 
 pub use ext::pcntl::{dispatch as pcntl_dispatch, interrupt_pending as pcntl_interrupt_pending};
 /// pcntl's asynchronous signal delivery: the VM polls

@@ -1647,7 +1647,9 @@ fn fn_file_get_contents(host: &mut dyn Host, args: &[Value]) -> Result<Value, Th
         return stdin_contents(host, offset, maxlen);
     }
     let scheme = crate::main::streams::split_scheme(&url).0.to_vec();
+    // php://input too: opening it takes resource ids, as in php.
     if crate::main::streams::is_filter_url(&url)
+        || url.eq_ignore_ascii_case(b"php://input")
         || host
             .stream_wrapper(&scheme)
             .is_some_and(|w| w.has_stream_opener())

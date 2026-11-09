@@ -217,6 +217,40 @@ impl Vm {
     /// (zend_exception_error) as `Parse error: …` (E_PARSE) or, for a
     /// CompileError, `Fatal error: …` (E_COMPILE_ERROR) through the usual
     /// display/log path (exit status 255 is the SAPI's job).
+    /// The main script did not compile; with auto_prepend_file set the
+    /// request runs it first, then reports this (`file` is the script).
+    pub fn defer_main_compile_error(&mut self, file: &[u8], e: IncludeError) {
+        self.main_compile_error = Some((file.to_vec(), e));
+    }
+
+    /// Report the main script's compile error `e`; the request then ends
+    /// as after a fatal error (shutdown functions still run).
+    pub(crate) fn main_compile_failed(&mut self, file: &[u8], e: IncludeError) -> Thrown {
+        let name = String::from_utf8_lossy(file).into_owned();
+        match e {
+            IncludeError::Parse {
+                class,
+                message,
+                line,
+                diags,
+            } => {
+                self.emit_parse_diags(file, &diags);
+                self.report_parse_error(class, &message, &name, line);
+                Thrown::Exit(255)
+            }
+            IncludeError::Compile {
+                message,
+                line,
+                diags,
+            } => {
+                self.compile_failed(&message, file, line, &diags, false);
+                Thrown::Exit(255)
+            }
+            IncludeError::HardLimit { line } => self.compile_hard_limit(Some((file, line))),
+            IncludeError::Thrown(t) => t,
+        }
+    }
+
     pub fn report_parse_error(&mut self, class: &str, message: &str, file: &str, line: u32) {
         let (ty, label) = if class == "ParseError" {
             (4, "Parse error")
@@ -449,7 +483,8 @@ impl Vm {
     /// `lc` (lowercase) as `name`.
     pub(crate) fn redeclare_function_msg(&self, lc: &[u8], name: &rhp_values::PhpStr) -> String {
         let name = String::from_utf8_lossy(name.as_bytes());
-        match self.fn_names.get(lc).map(|&i| &self.functions[i].proto) {
+        let old = self.fn_names.get(lc).map(|&i| &self.functions[i].proto);
+        match old.filter(|p| !p.is_internal()) {
             Some(old) => format!(
                 "Cannot redeclare function {name}() (previously declared in {}:{})",
                 String::from_utf8_lossy(old.debug.file.as_bytes()),
@@ -457,6 +492,31 @@ impl Vm {
             ),
             None => format!("Cannot redeclare function {name}()"),
         }
+    }
+
+    /// php -l: the first top-level function of `prog` whose name an
+    /// internal function has (zend_begin_func_decl's compile error), as
+    /// (message, line).
+    pub fn internal_redeclaration(&self, prog: &Program) -> Option<(String, u32)> {
+        prog.functions
+            .iter()
+            .skip(prog.num_prelude_functions)
+            .find_map(|proto| {
+                let lc = proto.name.as_bytes().to_ascii_lowercase();
+                self.function_declared(&lc).then(|| {
+                    (
+                        self.redeclare_function_msg(&lc, &proto.name),
+                        proto.meta.start_line,
+                    )
+                })
+            })
+    }
+
+    /// Whether declaring user function `lc` (lowercase) clashes with one
+    /// in the function table: a user function, or an internal one (a
+    /// builtin left after disable_functions, or a prelude function).
+    pub(crate) fn function_declared(&self, lc: &[u8]) -> bool {
+        self.fn_names.contains_key(lc) || crate::calls::user_visible_builtin(lc)
     }
 
     /// The main script as an included file (`get_included_files()`, the
@@ -713,7 +773,7 @@ impl Vm {
         // function is fatal to redeclare (php semantics).
         for proto in prog.functions.iter().skip(prog.num_prelude_functions) {
             let lc = proto.name.as_bytes().to_ascii_lowercase();
-            if self.fn_names.contains_key(&lc) {
+            if self.function_declared(&lc) {
                 if preloaded {
                     continue;
                 }
@@ -816,10 +876,20 @@ impl Vm {
     /// throwable reported as a warning, and a fatal error or `exit` only
     /// sets the exit status.
     pub(crate) fn shell_eval_code(&mut self, code: &[u8], name: &str) {
+        self.eval_string_ex(code, name, (builtins::E_WARNING, "Warning"));
+    }
+
+    /// zend_eval_stringl_ex(code, NULL, name, true) under zend_try: as
+    /// [`Vm::shell_eval_code`], an uncaught throwable reported at `level`
+    /// (`(type, label)`). At E_ERROR (php-cli's -B/-R/-E) it and a parse
+    /// error leave exit status 255. True: a fatal error bailed out.
+    pub(crate) fn eval_string_ex(&mut self, code: &[u8], name: &str, level: (i64, &str)) -> bool {
+        let fatal = level.0 == builtins::E_ERROR;
+        let mark = self.last_error.clone();
         let mut source = b"<?php ".to_vec();
         source.extend_from_slice(code);
         let Some(mut cb) = self.includer.take() else {
-            return;
+            return false;
         };
         let compiled = cb(name, &source);
         self.includer = Some(cb);
@@ -833,33 +903,64 @@ impl Vm {
             }) => {
                 self.emit_parse_diags(name.as_bytes(), &diags);
                 self.report_parse_error(class, &message, name, line);
-                return;
+                if fatal {
+                    self.sapi.exit_status = 255;
+                }
+                return false;
             }
             Err(e) => {
                 if let Thrown::Exit(code) = self.include_error(e, name, true) {
                     self.sapi.exit_status = code;
+                    return true;
                 }
-                return;
+                return false;
             }
         };
         self.emit_compile_diags(&prog);
-        let r = self
-            .install_file(b"", &prog)
-            .and_then(|(main, unit)| self.run_as_primary(main, unit));
+        let mut main_ptr = 0;
+        let r = self.install_file(b"", &prog).and_then(|(main, unit)| {
+            main_ptr = Rc::as_ptr(&main) as usize;
+            self.run_as_primary(main, unit)
+        });
+        // Each run's statics start fresh (its proto's address may be reused).
+        if main_ptr != 0 && !self.statics.is_empty() {
+            self.statics.retain(|k, _| k.0 != main_ptr);
+        }
+        let mut bailed = false;
+        if r.is_err() && !self.stack.is_empty() {
+            // The global scope survives the unwound frames.
+            self.stack.truncate(1);
+            self.finished_main = self.stack.pop();
+        }
         match r {
             Ok(_) => {}
-            Err(Thrown::Exit(code)) => self.sapi.exit_status = code,
+            Err(Thrown::Exit(code)) => {
+                self.sapi.exit_status = code;
+                bailed = self.fatal_since(&mark);
+            }
             Err(t) => {
-                // The global scope survives the unwound frames.
-                if !self.stack.is_empty() {
-                    self.stack.truncate(1);
-                    self.finished_main = self.stack.pop();
+                self.report_uncaught_as(t, level.0, level.1);
+                if fatal {
+                    self.sapi.exit_status = 255;
                 }
-                self.report_uncaught_as(t, builtins::E_WARNING, "Warning");
             }
         }
         if let Some(Thrown::Exit(code)) = self.pending_throw.take() {
             self.sapi.exit_status = code;
+        }
+        bailed
+    }
+
+    /// Whether a fatal error other than `mark` is now the last error: an
+    /// `exit` that unwound was php's bailout.
+    pub(crate) fn fatal_since(&self, mark: &Option<(i64, Vec<u8>, Vec<u8>, i64)>) -> bool {
+        const FATAL: i64 = builtins::E_ERROR
+            | builtins::E_CORE_ERROR
+            | builtins::E_COMPILE_ERROR
+            | builtins::E_USER_ERROR;
+        match &self.last_error {
+            Some(e) if e.0 & FATAL != 0 => mark.as_ref() != Some(e),
+            _ => false,
         }
     }
 

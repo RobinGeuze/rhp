@@ -11,7 +11,7 @@ use rhp_values::{ObjectHandle, Thrown, Value, Visibility};
 
 use crate::lvalue::CursorRoot;
 use crate::streams::{StreamState, StreamTable};
-use crate::{deref, output, request, Frame, UnitFn, Vm};
+use crate::{deref, output, request, CliMode, Frame, IncludeError, UnitFn, Vm};
 
 /// The shutdown sequence's handler for an `exit` / uncaught throwable:
 /// `Some(code)` ends the current step with that exit status.
@@ -149,6 +149,7 @@ impl Vm {
             last_dir: None,
             default_context: None,
             next_resource_id: 1,
+            input_body: false,
             resource_list: Default::default(),
             stream_contexts: HashMap::new(),
             stream_notifiers: HashMap::new(),
@@ -193,7 +194,8 @@ impl Vm {
             finished_main: None,
             main_ret: None,
             primary_next: false,
-            interactive: false,
+            cli_mode: None,
+            main_compile_error: None,
             in_shutdown_scope: false,
             module_states: HashMap::new(),
             sapi: request::SapiState::new(sapi),
@@ -502,7 +504,7 @@ impl Vm {
     /// php -a: after the (empty) main script, the readline shell reads and
     /// runs statements until its input ends.
     pub fn set_interactive(&mut self) {
-        self.interactive = true;
+        self.cli_mode = Some(CliMode::Shell);
     }
 
     /// Skip auto_prepend_file and auto_append_file (`-r` code).
@@ -906,6 +908,7 @@ impl Vm {
         }
         self.emit_compile_diags(prog);
         // Install (hoist) all declared functions, keyed case-insensitively.
+        let mut redeclared = None;
         for (idx, proto) in prog.functions.iter().enumerate() {
             // Engine helpers are builtins, not prelude functions, so a user
             // function may take any helper's name.
@@ -913,11 +916,31 @@ impl Vm {
                 idx >= prog.num_prelude_functions
                     || !crate::calls::is_helper_function(proto.name.as_bytes())
             );
+            let lc = proto.name.as_bytes().to_ascii_lowercase();
+            // zend_begin_func_decl: a top-level function whose name the
+            // function table already has (an internal one) is a compile
+            // error at its declaration.
+            // Raised after auto_prepend_file, as php compiles the main
+            // script after running it.
+            // The compile stops there: later functions are never declared
+            // (and the function table keeps its indices).
+            if idx >= prog.num_prelude_functions && self.function_declared(&lc) {
+                let msg = self.redeclare_function_msg(&lc, &proto.name);
+                let line = proto.meta.start_line;
+                let file = proto.debug.file.as_bytes().to_vec();
+                let e = IncludeError::Compile {
+                    message: msg,
+                    line,
+                    diags: Vec::new(),
+                };
+                redeclared = Some((file, e));
+                break;
+            }
             self.functions.push(UnitFn {
                 proto: proto.clone(),
                 unit: 0,
             });
-            self.add_fn_name(proto.name.as_bytes().to_ascii_lowercase(), idx);
+            self.add_fn_name(lc, idx);
         }
         // The main script is unit 0: register its anonymous closure /
         // arrow-function protos (indexed by fnidx).
@@ -961,6 +984,11 @@ impl Vm {
             Some(path) => self.run_auto_prepend(path),
             None => Ok(()),
         };
+        let compile_error = self.main_compile_error.take().or(redeclared);
+        let prepended = match compile_error {
+            Some((file, e)) => prepended.and_then(|_| Err(self.main_compile_failed(&file, e))),
+            None => prepended,
+        };
         // zend_execute_script raises an out-of-memory error still pending
         // when the script ends.
         match prepended
@@ -971,7 +999,12 @@ impl Vm {
                 self.main_ret = Some(v);
                 Ok(self.sapi.exit_status)
             }
-            Err(Thrown::Exit(code)) => Ok(code),
+            // exit(n) sets EG(exit_status): a later bailout (a client
+            // abort in a shutdown function) keeps it.
+            Err(Thrown::Exit(code)) => {
+                self.sapi.exit_status = code;
+                Ok(code)
+            }
             Err(other) => Err(other),
         }
     }
@@ -1053,10 +1086,9 @@ impl Vm {
                 Some(c) => c,
             },
         };
-        let status = if self.interactive {
-            builtins::readline_shell_run(self)
-        } else {
-            status
+        let status = match self.cli_mode.take() {
+            Some(mode) => self.run_cli_mode(mode)?,
+            None => status,
         };
         let status = self.primary_script_done(status)?;
         let status = self.shutdown_sequence(status, &mut |vm, t| vm.top_level_throw(t))?;
@@ -1091,53 +1123,11 @@ impl Vm {
     /// Its own `exit` or uncaught throwable ends the script as one in the
     /// primary script would.
     fn auto_append(&mut self, status: i32) -> Result<i32, Thrown> {
-        let Some(path) = builtins::ini_value(b"auto_append_file")
-            .flatten()
-            .filter(|p| !p.is_empty() && self.auto_prepend)
-        else {
+        if !self.auto_prepend {
             return Ok(status);
-        };
-        // {main} is back on the stack (as for the cli-server's next
-        // primary script), or the shutdown scope is after an exception
-        // the handler took.
-        let pushed = self.stack.is_empty();
-        if pushed {
-            let Some(mut main) = self.finished_main.take() else {
-                return Ok(status);
-            };
-            main.pc = main.proto.code.len();
-            self.stack.push(main);
         }
-        let depth = self.stack.len();
-        let path_str = String::from_utf8_lossy(&path).into_owned();
-        builtins::main::streams::clear_errno();
-        let r = if !builtins::main::streams::is_data_url(&path)
-            && self.resolve_include_file(depth - 1, &path_str).is_none()
-        {
-            // Reported with no script running.
-            let stack = std::mem::replace(
-                &mut self.stack,
-                crate::frame_stack::FrameStack::new(self.mem),
-            );
-            let t = self.auto_file_missing(&path_str);
-            self.stack = stack;
-            if pushed {
-                self.finished_main = self.stack.pop();
-            }
-            Err(t)
-        } else {
-            // Run as php runs it (zend_execute_script): its {main} in place
-            // of the finished one, in the global scope.
-            let main_ret = self.main_ret.take();
-            self.primary_next = true;
-            let r = self.do_include(depth - 1, path, rhp_bytecode::IncludeKind::Require);
-            self.primary_next = false;
-            self.main_ret = main_ret;
-            if pushed && self.stack.len() >= depth {
-                self.stack.truncate(depth);
-                self.finished_main = self.stack.pop();
-            }
-            r.map(|_| ())
+        let Some(r) = self.run_auto_append() else {
+            return Ok(status);
         };
         // An exit or a fatal error bails out of php_execute_script: the
         // script's return value no longer counts (a cli-server router's).
@@ -1155,6 +1145,58 @@ impl Vm {
                 }
             },
         }
+    }
+
+    /// auto_append_file, if set, required in the global scope; `None`
+    /// when there is none.
+    pub(crate) fn run_auto_append(&mut self) -> Option<Result<(), Thrown>> {
+        let path = builtins::ini_value(b"auto_append_file")
+            .flatten()
+            .filter(|p| !p.is_empty())?;
+        // {main} is back on the stack (as for the cli-server's next
+        // primary script), or the shutdown scope is after an exception
+        // the handler took.
+        let pushed = self.stack.is_empty();
+        if pushed {
+            let Some(mut main) = self.finished_main.take() else {
+                return Some(Ok(()));
+            };
+            main.pc = main.proto.code.len();
+            self.stack.push(main);
+        }
+        let depth = self.stack.len();
+        let path_str = String::from_utf8_lossy(&path).into_owned();
+        builtins::main::streams::clear_errno();
+        Some(
+            if !builtins::main::streams::is_data_url(&path)
+                && self.resolve_include_file(depth - 1, &path_str).is_none()
+            {
+                // Reported with no script running.
+                let stack = std::mem::replace(
+                    &mut self.stack,
+                    crate::frame_stack::FrameStack::new(self.mem),
+                );
+                let t = self.auto_file_missing(&path_str);
+                self.stack = stack;
+                if pushed {
+                    self.finished_main = self.stack.pop();
+                }
+                Err(t)
+            } else {
+                // Run as php runs it (zend_execute_script): its {main} in place
+                // of the finished one, in the global scope.
+                let main_ret = self.main_ret.take();
+                self.primary_next = true;
+                let r = self.do_include(depth - 1, path, rhp_bytecode::IncludeKind::Require);
+                self.primary_next = false;
+                self.main_ret = main_ret;
+                if pushed && self.stack.len() >= depth {
+                    self.stack.truncate(depth);
+                    self.finished_main = self.stack.pop();
+                }
+                r.map(|_| ())
+            },
+        )
     }
 
     /// php_execute_script returned: tell the SAPI ([`Sapi::script_done`]),
@@ -1194,7 +1236,15 @@ impl Vm {
     /// php_execute_script for another primary script of the request: in
     /// its directory, in the global scope of the one before.
     fn run_next_primary(&mut self, path: Vec<u8>) -> Result<(), Thrown> {
-        if let Some(slash) = path.iter().rposition(|&b| b == b'/') {
+        self.run_primary_file(path, true)
+    }
+
+    /// php_execute_script for a further primary script, in the global
+    /// scope of the one before: auto_prepend_file, then the file, in its
+    /// directory when `chdir` (php-cli's -F runs one per line).
+    pub(crate) fn run_primary_file(&mut self, path: Vec<u8>, chdir: bool) -> Result<(), Thrown> {
+        let slash = path.iter().rposition(|&b| b == b'/');
+        if let Some(slash) = slash.filter(|_| chdir) {
             let dir = if slash == 0 {
                 &path[..1]
             } else {
@@ -1211,7 +1261,7 @@ impl Vm {
         // php_execute_script: auto_prepend_file first, as for the first.
         let prepend = builtins::ini_value(b"auto_prepend_file")
             .flatten()
-            .filter(|p| !p.is_empty() && self.auto_prepend);
+            .filter(|p| !p.is_empty());
         let r = match prepend {
             Some(p) => self.run_auto_prepend(p),
             None => Ok(()),

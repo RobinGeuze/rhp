@@ -1,0 +1,5 @@
+runs
+
+Fatal error: Cannot redeclare function STRLEN() in {DIR}/conditional.php on line 4
+Stack trace:
+#0 {main}

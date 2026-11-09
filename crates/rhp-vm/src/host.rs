@@ -788,6 +788,13 @@ impl Host for Vm {
             }
             return Some(v);
         } else if path.eq_ignore_ascii_case(b"php://input") {
+            // php-cli has no request body stream until the first open
+            // creates an empty php://temp (a temp and a memory stream).
+            if !std::mem::replace(&mut self.input_body, true)
+                && builtins::main::sapi::sapi_name() == "cli"
+            {
+                self.next_resource_id += 2;
+            }
             // The request body: a read-only buffer, re-readable per open.
             let v = self.make_stream(
                 StreamState::Mem {
@@ -3175,7 +3182,21 @@ impl Vm {
             // php's ftell(): false while the stream position is -1.
             StreamState::Fd(f) => Some(f.tell()).filter(|&p| p != -1),
             StreamState::Ops(s) => Some(s.tell()).filter(|&p| p != -1),
-            StreamState::Stdin => Some(self.stdin_reader.as_ref().map_or(0, |f| f.tell())),
+            // php's position starts at -1 on a pipe or a terminal (ftell
+            // false), where the lseek at open failed; reads still add to it.
+            StreamState::Stdin => Some(self.stdin_reader.as_ref().map_or_else(
+                || builtins::main::streams::plain_wrapper::fd_initial_position(0),
+                |f| f.tell(),
+            ))
+            .filter(|&p| p != -1),
+            StreamState::Stdout => Some(
+                builtins::main::streams::plain_wrapper::fd_initial_position(1),
+            )
+            .filter(|&p| p != -1),
+            StreamState::Stderr => Some(
+                builtins::main::streams::plain_wrapper::fd_initial_position(2),
+            )
+            .filter(|&p| p != -1),
             StreamState::Mem { pos, skew, .. } => {
                 // ftell() is false while php's position is -1 (failed seek).
                 let t = *pos as i64 + *skew;

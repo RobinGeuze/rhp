@@ -1,0 +1,5 @@
+resource(5) of type (stream)
+resource(8) of type (stream)
+string(11) "PHP://INPUT"
+string(0) ""
+resource(10) of type (stream)

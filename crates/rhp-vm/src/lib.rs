@@ -15,6 +15,7 @@ mod autoload;
 mod callables;
 mod calls;
 mod classes;
+mod cli_modes;
 mod closures;
 mod compare;
 mod const_link;
@@ -67,6 +68,7 @@ use include::Includer;
 use lvalue::{CursorRoot, CursorSteps};
 use streams::StreamTable;
 
+pub use cli_modes::CliMode;
 pub use include::IncludeError;
 pub use link_cache::link_cache_stats;
 
@@ -285,6 +287,9 @@ pub struct Vm {
     /// parent hook): property access uses the backing value.
     hook_bypass: bool,
     next_resource_id: u32,
+    // php-cli's request body stream (php://temp, two resource ids) exists:
+    // php creates it on the first php://input open.
+    input_body: bool,
     /// The resource values made, by id, for `get_resources()` (php's
     /// EG(regular_list)): a resource is listed while a value holds it.
     resource_list: std::collections::BTreeMap<u32, Vec<std::rc::Weak<rhp_values::ResourceData>>>,
@@ -407,8 +412,11 @@ pub struct Vm {
     main_ret: Option<Value>,
     // The next include runs as the request's next primary script.
     primary_next: bool,
-    // php -a: the readline shell runs instead of a script.
-    interactive: bool,
+    // php-cli: the shell, -R, --rf, ... run instead of a script.
+    cli_mode: Option<CliMode>,
+    // The main script's compile error (with its file), raised after
+    // auto_prepend_file ran: php compiles the main script after it.
+    main_compile_error: Option<(Vec<u8>, include::IncludeError)>,
     // The shutdown sequence's stack ({main} as an internal frame) is set up.
     in_shutdown_scope: bool,
     // Per-run extension state (`Host::module_state`), by module key.

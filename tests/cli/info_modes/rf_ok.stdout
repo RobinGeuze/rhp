@@ -1,0 +1,8 @@
+Function [ <internal:Core> function strlen ] {
+
+  - Parameters [1] {
+    Parameter #0 [ <required> string $string ]
+  }
+  - Return [ int ]
+}
+

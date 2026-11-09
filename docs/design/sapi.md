@@ -57,9 +57,22 @@ builtins) and `sapi/cgi/cgi_main.c` (the CGI front end).
   php's messages (`-v` and `-i` run after module startup, so its
   warnings come first). `-l` compiles each file as php_lint_script does
   (`run_lint`), `-s`/`-w` print `highlight_file()`/`php_strip_whitespace()`
-  and `-m` the sorted module list; the php-cli modes rhp lacks
-  (`-B`/`-R`/`-F`/`-E`, `--rf` and friends, `--ini`, `--repeat`) are
-  refused after php's own checks. `-a` runs
+  and `-m` the sorted module list. The modes that run no script of
+  their own are `Script::Mode` requests: the VM runs the `CliMode`
+  (rhp-vm `cli_modes.rs`) after the empty main script, in the request.
+  `-B`/`-R`/`-E` code goes through `zend_eval_string_ex`'s rules (an
+  uncaught throwable or a parse error is a fatal that does not bail out,
+  exit status 255; a compile error bails out), `-F` runs its file as
+  php_execute_script for each line (auto_prepend_file and
+  auto_append_file included), and
+  `$argn`/`$argi` come from the `STDIN` stream, so the code can read
+  further lines itself. `--rf`/`--rc`/`--re`/`--rz` construct the
+  Reflection object and print it, `--ri` prints the module's phpinfo
+  section, `--ini` and `--ini=diff` the configuration files and the
+  directives that differ from php's built-in defaults; `--repeat` runs
+  everything again in the process. php-cgi's `-l` (one request per file,
+  no headers), `-s`/`-w` (with headers), `-m` and `-a` follow
+  cgi_main.c, and with no script it reads one from stdin. `-a` runs
   readline_cli.c's interactive shell (rhp-builtins
   `ext/readline/cli.rs`): `Script::Shell` sets `Vm::set_interactive`, so
   after request startup the shell reads lines with libedit's
@@ -198,7 +211,12 @@ environment and `$argv` from `Request::args`.
 `Request::script` is a `Script::File` (its real path is `__FILE__`; it goes
 through the compiled-script cache), a `Script::Source { path, bytes }` the
 caller already holds (run as the file `path`, not cached), `Script::Code`
-(`-r`) or `Script::Stdin`. `Request::new(script)` is a CLI-style request
+(`-r`), `Script::Stdin`, `Script::Shell` (php -a) or `Script::Mode` (a
+php-cli mode with no script: `-R`, `--rf`, `-m`, ...). When the main
+script does not compile and auto_prepend_file is set, the request runs
+the prepended file first and reports the error after it
+(`Vm::defer_main_compile_error`), as php compiles the main script only
+then. `Request::new(script)` is a CLI-style request
 with no settings or arguments.
 
 ### `Outcome`
@@ -588,11 +606,10 @@ Limits of the model:
   php-cgi's own checks before the request (`cgi.force_redirect`,
   `cgi.redirect_status_env`) read only `-d`, and `.user.ini` files are
   not read.
-- The php-cgi front end cannot read the script from stdin and doesn't
-  support `-v -i -m -l -s -w -a`. `-T [warmup,]count` runs the request
+- The php-cgi front end doesn't support `-i`. `-T [warmup,]count` runs the request
   that many times in one process and prints php's `Elapsed time` line;
   `-b` (FastCGI) is refused.
-- Output layer: no `ob_gzhandler`, no `output_add_rewrite_var`.
+- Output layer: no `output_add_rewrite_var`.
 
 ## Testing
 

@@ -1314,3 +1314,25 @@ class ReflectionExtension implements Reflector {
     public function isTemporary(): bool { return false; }
     public function __toString(): string { return 'Extension [ <persistent> extension #0 ' . $this->name . " ] {\n}\n"; }
 }
+
+/** php's zend_extension list: rhp reports Zend OPcache only. */
+class ReflectionZendExtension implements Reflector {
+    private function __clone(): void { throw new ReflectionException('Cannot clone object using __clone()'); }
+    public string $name;
+    private $__e;
+    public function __construct(string $name) {
+        if ($name !== 'Zend OPcache') { throw new ReflectionException('Zend Extension "' . $name . '" does not exist'); }
+        $this->__e = ['Zend OPcache', PHP_VERSION, 'Zend Technologies', 'http://www.zend.com/', 'Copyright (c)'];
+        $this->name = $name;
+    }
+    /** php_reflection.c _zend_extension_string. */
+    public function __toString(): string {
+        [$n, $v, $a, $u, $c] = $this->__e;
+        return "Zend Extension [ $n $v $c by $a <$u> ]\n";
+    }
+    public function getName(): string { return $this->__e[0]; }
+    public function getVersion(): string { return $this->__e[1]; }
+    public function getAuthor(): string { return $this->__e[2]; }
+    public function getURL(): string { return $this->__e[3]; }
+    public function getCopyright(): string { return $this->__e[4]; }
+}

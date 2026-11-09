@@ -1,0 +1,7 @@
+a
+
+Fatal error: Uncaught Exception: x in Command line run code:1
+Stack trace:
+#0 {main}
+  thrown in Command line run code on line 1
+end

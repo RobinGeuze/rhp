@@ -2,12 +2,13 @@
 //! text and the passes `main` and `do_cli` make over the command line, so
 //! `rhp` reads options, and reports bad ones, as php does. `-l` lints,
 //! `-s` and `-w` highlight and strip a file, `-m` lists the modules, `-a`
-//! runs readline_cli.c's shell. The modes rhp does not have
-//! (`-B`/`-R`/`-F`/`-E`, `--rf` and friends, `--ini`, `--repeat`) are
-//! refused once php would run them, after its own checks.
+//! runs readline_cli.c's shell. `-B`/`-R`/`-F`/`-E`, the reflection
+//! modes (`--rf` and friends), `--ri`, `--ini` and `-m` run in the
+//! request as [`CliMode`]s; `--repeat` runs it all again.
 
 use crate::getopt::{opt, Opt, OptDef, PhpGetopt, NO_ARG, OPTIONAL, REQUIRED};
 use crate::Script;
+use rhp_vm::CliMode;
 
 /// php-cli's `OPTIONS`.
 pub(crate) const OPTIONS: &[OptDef] = &[
@@ -73,20 +74,7 @@ enum Mode {
     ProcessStdin,
     Reflection,
     ShowIni,
-}
-
-/// Refuse a mode or option rhp does not have: `c` is its letter, or a
-/// long-only option's number.
-fn refuse(c: u8) -> i32 {
-    let name = match c {
-        b' '..=b'~' => format!("-{}", c as char),
-        _ => {
-            let long = OPTIONS.iter().find(|o| o.ch == c).map_or("", |o| o.name);
-            format!("--{long}")
-        }
-    };
-    eprintln!("rhp: option {name} is not supported");
-    1
+    ShowIniDiff,
 }
 
 /// php-cli: parse `args` (`args[0]` is the program name) as php's `main`
@@ -161,8 +149,11 @@ pub fn main_bytes(raw: &[Vec<u8>]) -> i32 {
             // print_modules / print_extensions: the module names sorted
             // with strcasecmp, then the Zend extensions.
             Opt::Char(b'm', _) => {
-                let code = "$m = get_loaded_extensions(); usort($m, 'strcasecmp'); echo \"[PHP Modules]\\n\"; foreach ($m as $n) echo $n, \"\\n\"; echo \"\\n[Zend Modules]\\n\"; foreach (get_loaded_extensions(true) as $n) echo $n, \"\\n\"; echo \"\\n\";".to_string();
-                return crate::run_cli(Script::Code(code), ini, Vec::new(), ini_files);
+                let script = Script::Mode {
+                    mode: CliMode::Modules,
+                    file: None,
+                };
+                return crate::run_cli(script, ini, Vec::new(), ini_files);
             }
             _ => {}
         }
@@ -176,7 +167,9 @@ pub fn main_bytes(raw: &[Vec<u8>]) -> i32 {
     let mut param_error: Option<&str> = None;
     let mut script_file: Option<String> = None;
     let mut exec_direct: Option<String> = None;
-    let (mut exec_run, mut exec_begin, mut exec_end) = (false, false, false);
+    let mut exec_run: Option<String> = None;
+    let (mut exec_begin, mut exec_end): (Option<String>, Option<String>) = (None, None);
+    let mut reflection_what = String::new();
     let mut hide_argv = false;
     let mut interactive = false;
     let mut num_repeats = 1;
@@ -200,7 +193,7 @@ pub fn main_bytes(raw: &[Vec<u8>]) -> i32 {
             }
             b'F' | b'R' => {
                 if mode == Mode::ProcessStdin {
-                    if exec_run || script_file.is_some() {
+                    if exec_run.is_some() || script_file.is_some() {
                         param_error = Some("You can use -R or -F only once.\n");
                         continue;
                     }
@@ -212,7 +205,7 @@ pub fn main_bytes(raw: &[Vec<u8>]) -> i32 {
                 if c == b'F' {
                     script_file = arg;
                 } else {
-                    exec_run = true;
+                    exec_run = arg;
                 }
             }
             b'f' => {
@@ -250,7 +243,7 @@ pub fn main_bytes(raw: &[Vec<u8>]) -> i32 {
                     &mut exec_end
                 };
                 if mode == Mode::ProcessStdin {
-                    if *seen {
+                    if seen.is_some() {
                         param_error = Some(if c == b'B' {
                             "You can use -B only once.\n"
                         } else {
@@ -263,7 +256,7 @@ pub fn main_bytes(raw: &[Vec<u8>]) -> i32 {
                     continue;
                 }
                 (mode, mode_opt) = (Mode::ProcessStdin, c);
-                *seen = true;
+                *seen = arg;
             }
             b's' | b'w' => {
                 if matches!(mode, Mode::Direct | Mode::ProcessStdin) {
@@ -282,9 +275,13 @@ pub fn main_bytes(raw: &[Vec<u8>]) -> i32 {
                 (mode, mode_opt) = (m, c);
             }
             b'H' => hide_argv = true,
-            10..=14 => (mode, mode_opt) = (Mode::Reflection, c),
+            10..=14 => {
+                (mode, mode_opt) = (Mode::Reflection, c);
+                reflection_what = arg.unwrap_or_default();
+            }
             15 => match arg.as_deref() {
-                None | Some("diff") => (mode, mode_opt) = (Mode::ShowIni, c),
+                None => (mode, mode_opt) = (Mode::ShowIni, c),
+                Some("diff") => (mode, mode_opt) = (Mode::ShowIniDiff, c),
                 Some(_) => param_error = Some("Unknown argument for --ini\n"),
             },
             16 => num_repeats = rhp_builtins::c_atoi(arg.unwrap_or_default().as_bytes()),
@@ -296,17 +293,12 @@ pub fn main_bytes(raw: &[Vec<u8>]) -> i32 {
         print!("{e}");
         return 1;
     }
-    if !matches!(
-        mode,
-        Mode::Standard | Mode::Direct | Mode::Lint | Mode::Highlight | Mode::Strip
-    ) {
-        return refuse(mode_opt);
-    }
-    if num_repeats > 1 {
-        return refuse(16);
-    }
     if interactive {
         print!("Interactive shell\n\n");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+    }
+    if num_repeats > 1 {
+        println!("Executing for the first time...");
         let _ = std::io::Write::flush(&mut std::io::stdout());
     }
 
@@ -314,68 +306,179 @@ pub fn main_bytes(raw: &[Vec<u8>]) -> i32 {
     let mut optind = g.optind;
     if optind < args.len()
         && script_file.is_none()
-        && mode != Mode::Direct
+        && !matches!(mode, Mode::Direct | Mode::ProcessStdin)
         && args[optind - 1] != "--"
     {
         script_file = Some(args[optind].clone());
         optind += 1;
     }
-    match mode {
-        // PHP_CLI_MODE_LINT: each file in turn, as its own request, until
-        // the operands end or reach `--`; a failure leaves status 255.
-        Mode::Lint => {
-            let mut files = vec![script_file];
-            while optind < args.len() && args[optind] != "--" {
-                files.push(Some(args[optind].clone()));
-                optind += 1;
+    // -H wipes the arguments before the mode runs: the -B/-R/-E code, the
+    // reflection name and -F's file with them (a script file is open by
+    // then; -r code is wiped in `Run::once`).
+    if hide_argv {
+        for code in [&mut exec_begin, &mut exec_run, &mut exec_end] {
+            if let Some(c) = code.as_mut() {
+                c.clear();
             }
-            let mut status = 0;
-            for file in files {
-                match crate::run_lint(file, ini.clone(), ini_files.clone()) {
-                    0 => {}
-                    s => status = s,
-                }
+        }
+        reflection_what.clear();
+        if mode == Mode::ProcessStdin {
+            if let Some(f) = script_file.as_mut() {
+                f.clear();
             }
+        }
+    }
+    let run = Run {
+        mode,
+        mode_opt,
+        script_file,
+        exec_direct,
+        exec_run,
+        exec_begin,
+        exec_end,
+        reflection_what,
+        interactive,
+        hide_argv,
+    };
+    // --repeat: the whole run again, in this process.
+    loop {
+        let status = run.once(raw, args, optind, ini.clone(), ini_files.clone());
+        num_repeats -= 1;
+        if num_repeats <= 0 {
             return status;
         }
-        // zend_highlight / zend_strip: highlight_file() and
-        // php_strip_whitespace() print the same.
-        Mode::Highlight | Mode::Strip => {
-            let path = match &script_file {
-                Some(f) => {
+        println!("Finished execution, repeating...");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+    }
+}
+
+/// do_cli's choices after option parsing.
+struct Run {
+    mode: Mode,
+    mode_opt: u8,
+    script_file: Option<String>,
+    exec_direct: Option<String>,
+    exec_run: Option<String>,
+    exec_begin: Option<String>,
+    exec_end: Option<String>,
+    reflection_what: String,
+    interactive: bool,
+    hide_argv: bool,
+}
+
+impl Run {
+    /// One request (or, for -l, one per file): the part of do_cli from
+    /// `do_repeat`. Returns the exit status.
+    fn once(
+        &self,
+        raw: &[Vec<u8>],
+        args: &[String],
+        mut optind: usize,
+        ini: Vec<(String, String)>,
+        ini_files: crate::IniFiles,
+    ) -> i32 {
+        let mode = self.mode;
+        let script_file = self.script_file.clone();
+        let mode_script = |mode: CliMode, file: Option<String>| Script::Mode { mode, file };
+        let script = match mode {
+            // PHP_CLI_MODE_LINT: each file in turn, as its own request,
+            // until the operands end or reach `--`; a failure leaves
+            // status 255.
+            Mode::Lint => {
+                let mut files = vec![script_file];
+                while optind < args.len() && args[optind] != "--" {
+                    files.push(Some(args[optind].clone()));
+                    optind += 1;
+                }
+                let mut status = 0;
+                for file in files {
+                    match crate::run_lint(file, ini.clone(), ini_files.clone()) {
+                        0 => {}
+                        s => status = s,
+                    }
+                }
+                return status;
+            }
+            // zend_highlight / zend_strip: highlight_file() and
+            // php_strip_whitespace() print the same.
+            Mode::Highlight | Mode::Strip => {
+                let path = match &script_file {
+                    Some(f) => {
+                        if std::fs::File::open(f).is_err() {
+                            eprintln!("Could not open input file: {f}");
+                            return 1;
+                        }
+                        f.clone()
+                    }
+                    None => "php://stdin".to_string(),
+                };
+                let lit = path.replace('\\', "\\\\").replace('\'', "\\'");
+                let code = if mode == Mode::Highlight {
+                    format!("highlight_file('{lit}');")
+                } else {
+                    format!("echo php_strip_whitespace('{lit}');")
+                };
+                Script::Code(code)
+            }
+            Mode::ProcessStdin => {
+                // cli_seek_file_begin, before the request starts.
+                if let Some(f) = &script_file {
                     if std::fs::File::open(f).is_err() {
                         eprintln!("Could not open input file: {f}");
                         return 1;
                     }
-                    f.clone()
                 }
-                None => "php://stdin".to_string(),
-            };
-            let lit = path.replace('\\', "\\\\").replace('\'', "\\'");
-            let code = if mode == Mode::Highlight {
-                format!("highlight_file('{lit}');")
-            } else {
-                format!("echo php_strip_whitespace('{lit}');")
-            };
-            return crate::run_cli(Script::Code(code), ini, Vec::new(), ini_files);
-        }
-        _ => {}
+                let bytes = |s: &Option<String>| s.as_ref().map(|s| s.as_bytes().to_vec());
+                let mode = CliMode::ProcessStdin {
+                    begin: bytes(&self.exec_begin),
+                    run: bytes(&self.exec_run),
+                    file: bytes(&script_file),
+                    end: bytes(&self.exec_end),
+                };
+                mode_script(mode, script_file)
+            }
+            Mode::Reflection => {
+                let what = self.reflection_what.as_bytes().to_vec();
+                let class = match self.mode_opt {
+                    10 => "ReflectionFunction",
+                    11 => "ReflectionClass",
+                    12 => "ReflectionExtension",
+                    13 => "ReflectionZendExtension",
+                    _ => return self.run_mode(CliMode::ExtInfo(what), ini, ini_files),
+                };
+                return self.run_mode(CliMode::Reflection { class, what }, ini, ini_files);
+            }
+            Mode::ShowIni => {
+                return self.run_mode(CliMode::ShowIni(ini_files.ignore), ini, ini_files)
+            }
+            Mode::ShowIniDiff => return self.run_mode(CliMode::ShowIniDiff, ini, ini_files),
+            Mode::Standard | Mode::Direct => {
+                match (script_file, self.exec_direct.clone()) {
+                    // The shell runs instead of the script.
+                    _ if self.interactive && mode == Mode::Standard => Script::Shell,
+                    (Some(file), None) => Script::File(file),
+                    // php wipes its arguments for -H before it runs, the
+                    // -r code among them.
+                    (None, Some(code)) => {
+                        Script::Code(if self.hide_argv { String::new() } else { code })
+                    }
+                    (None, None) => Script::Stdin,
+                    // php runs the code with the file as `$argv[0]` and
+                    // `SCRIPT_FILENAME`.
+                    (Some(_), Some(_)) => {
+                        eprintln!("rhp: -r after -f is not supported");
+                        return 1;
+                    }
+                }
+            }
+        };
+        let rest = raw[optind..].to_vec();
+        crate::run_cli(script, ini, rest, ini_files)
     }
-    let script = match (script_file, exec_direct) {
-        // The shell runs instead of the script.
-        _ if interactive && mode == Mode::Standard => Script::Shell,
-        (Some(file), None) => Script::File(file),
-        // php wipes its arguments for -H before it runs, the -r code
-        // among them.
-        (None, Some(code)) => Script::Code(if hide_argv { String::new() } else { code }),
-        (None, None) => Script::Stdin,
-        // php runs the code with the file as `$argv[0]` and
-        // `SCRIPT_FILENAME`.
-        (Some(_), Some(_)) => {
-            eprintln!("rhp: -r after -f is not supported");
-            return 1;
-        }
-    };
-    let rest = raw[optind..].to_vec();
-    crate::run_cli(script, ini, rest, ini_files)
+
+    /// A mode with no script and no arguments.
+    fn run_mode(&self, mode: CliMode, ini: Vec<(String, String)>, files: crate::IniFiles) -> i32 {
+        let script = Script::Mode { mode, file: None };
+        crate::run_cli(script, ini, Vec::new(), files)
+    }
 }

@@ -1,0 +1,2 @@
+opt --ini=bad
+noscript

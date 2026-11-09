@@ -558,9 +558,13 @@ Limits of the model:
 - `php://input` and the urlencoded reader keep a streamed body in memory
   (php's `request_body` spills to a temporary file past 2 MB; rhp writes
   the file but reads from memory).
-- php.ini: php-cli loads the `-c` file (or `$PHPRC`'s) and the `.ini`
-  files in `$PHP_INI_SCAN_DIR` (`Request::ini_files`); rhp has no built-in
-  search path or scan directory, and php-cgi and embedders load none.
+- php.ini: php-cli and php-cgi load the `-c` file (or `$PHPRC`'s) and
+  the `.ini` files in `$PHP_INI_SCAN_DIR` unless `-n`
+  (`Request::ini_files`); rhp has no built-in search path or scan
+  directory, and embedders pass their settings as `Request::ini`.
+  php-cgi's own checks before the request (`cgi.force_redirect`,
+  `cgi.redirect_status_env`) read only `-d`, and `.user.ini` files are
+  not read.
 - The php-cgi front end cannot read the script from stdin and doesn't
   support `-v -i -m -l -s -w -a`. `-T [warmup,]count` runs the request
   that many times in one process and prints php's `Elapsed time` line;

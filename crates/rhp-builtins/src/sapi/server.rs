@@ -48,14 +48,7 @@ fn fn_fastcgi_finish_request(host: &mut dyn Host, _args: &[Value]) -> Result<Val
 /// request's superglobals, then complete its response. False when the
 /// worker should stop; outside worker mode a RuntimeException.
 fn fn_frankenphp_handle_request(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
-    let name = "frankenphp_handle_request";
-    if args.len() != 1 {
-        return Err(Thrown::error(
-            "ArgumentCountError",
-            format!("{name}() expects exactly 1 argument, {} given", args.len()),
-        ));
-    }
     let handler = rhp_values::ops::deref(&args[0]);
-    crate::zend::zpp::require_callback(host, name, 1, &handler)?;
+    crate::zend::zpp::require_callback(host, "frankenphp_handle_request", 1, &handler)?;
     host.worker_handle_request(&handler).map(Value::Bool)
 }

@@ -83,6 +83,10 @@ const SOURCES: &[(&str, &str)] = &[
     ("sapi/fpm/fpm/fpm_main.stub.php", "standard"),
 ];
 
+/// Stubs in this repository (relative to the workspace root), for
+/// builtins php-src has no stub of.
+const LOCAL_STUBS: &[&str] = &["crates/rhp-builtins/src/sapi/server.stub.php"];
+
 /// The generated file, relative to the workspace root.
 const OUT: &str = "crates/rhp-bytecode/src/signatures/table.rs";
 
@@ -306,6 +310,11 @@ fn generate(php_src: &Path) -> Result<String, String> {
             .display()
             .to_string();
         parse_stub(&rel, &src, ext, &mut out).map_err(|e| format!("{rel}: {e}"))?;
+    }
+    // rhp's own stubs, for functions php-src has none of.
+    for rel in LOCAL_STUBS {
+        let src = std::fs::read(rel).map_err(|e| format!("{rel}: {e}"))?;
+        parse_stub(rel, &src, "standard", &mut out).map_err(|e| format!("{rel}: {e}"))?;
     }
     let mut dirs: Vec<&str> = SOURCES.iter().map(|&(rel, _)| rel).collect();
     dirs.push("main");

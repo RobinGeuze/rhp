@@ -104,8 +104,8 @@ fn watch(w: &'static Watchdog) {
             if *at > now {
                 return true;
             }
-            t.timed_out.store(true, Ordering::Relaxed);
-            t.interrupt.store(true, Ordering::Release);
+            t.timed_out.store(true, Ordering::SeqCst);
+            t.interrupt.store(true, Ordering::SeqCst);
             false
         });
         armed = match armed.iter().map(|e| e.0).min() {
@@ -341,7 +341,7 @@ pub fn timed_out() -> bool {
     if armable() {
         TIMED_OUT.load(Ordering::Relaxed)
     } else {
-        thread_timed_out().load(Ordering::Relaxed)
+        thread_timed_out().load(Ordering::SeqCst)
     }
 }
 

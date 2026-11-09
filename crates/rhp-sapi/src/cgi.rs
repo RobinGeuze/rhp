@@ -500,6 +500,8 @@ struct Opts {
     optind: usize,
     /// `-b`: FastCGI bind path.
     bindpath: Option<String>,
+    /// `-c` / `-n`: which php.ini to load.
+    ini_files: crate::IniFiles,
     /// `-T [warmup,]count`: (warmup runs, timed runs).
     benchmark: Option<(i64, i64)>,
 }
@@ -517,6 +519,8 @@ fn parse_options(args: &[String], cgi: bool, skip: bool) -> Result<Opts, (String
                 Opt::End => break,
                 Opt::Char(b'd', Some(kv)) => o.ini.push(crate::ini_define(&kv)),
                 Opt::Char(b'b', Some(path)) => o.bindpath = Some(path),
+                Opt::Char(b'c', Some(path)) => o.ini_files.path_override = Some(path),
+                Opt::Char(b'n', _) => o.ini_files.ignore = true,
                 _ => {}
             }
         }
@@ -776,7 +780,7 @@ pub fn main(args: &[String], env: CgiEnv) -> i32 {
             info: Some(request),
             php_binary: None,
             cwd: cwd.clone(),
-            ini_files: None,
+            ini_files: Some(opts.ini_files.clone()),
         };
         let sapi = if cgi {
             CgiSapi::for_request()

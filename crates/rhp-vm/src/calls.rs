@@ -2806,7 +2806,12 @@ impl Vm {
             return builtins::pcntl_dispatch(self);
         }
         self.interrupt
-            .store(false, std::sync::atomic::Ordering::Relaxed);
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        // The watchdog may have fired since the caller looked.
+        if builtins::zend::timeout::timed_out() {
+            self.interrupt
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         Ok(())
     }
 

@@ -359,6 +359,8 @@ f("fpow", "standard", 0, "float", &[p("num", "float", "", 0), p("exponent", "flo
 f("fprintf", "standard", 0, "int", &[p("stream", "", "", ST), p("format", "string", "", 0), p("values", "mixed", "", V)]),
 f("fputcsv", "standard", 0, "int|false", &[p("stream", "", "", ST), p("fields", "array", "", 0), p("separator", "string", "\",\"", 0), p("enclosure", "string", "\"\\\"\"", 0), p("escape", "string", "\"\\\\\"", 0), p("eol", "string", "\"\\n\"", 0)]),
 f("fputs", "standard", 0, "int|false", &[p("stream", "", "", ST), p("data", "string", "", 0), p("length", "?int", "null", 0)]),
+f("frankenphp_finish_request", "standard", 0, "bool", &[]),
+f("frankenphp_handle_request", "standard", 0, "bool", &[p("callback", "callable", "", 0)]),
 f("fread", "standard", 0, "string|false", &[p("stream", "", "", ST), p("length", "int", "", 0)]),
 f("frenchtojd", "calendar", 0, "int", &[p("month", "int", "", 0), p("day", "int", "", 0), p("year", "int", "", 0)]),
 f("fscanf", "standard", 0, "array|int|false|null", &[p("stream", "", "", RS), p("format", "string", "", 0), p("vars", "mixed", "", R|V)]),

@@ -464,10 +464,12 @@ fn max_input_time_gives_way_to_max_execution_time() {
         get(),
     );
     assert_eq!((body(&ev), o), ("ok".to_string(), Outcome::Exit(0)));
+    // (Request startup must take less than the input time, or the timer
+    // fires before the script's start clears it.)
     let (ev, o) = run(
-        busy,
+        "$t = microtime(true); while (microtime(true) - $t < 3.5) {} echo 'ok';",
         &[
-            ("max_input_time", "1"),
+            ("max_input_time", "2"),
             ("max_execution_time", "0"),
             ("html_errors", "0"),
         ],

@@ -2622,7 +2622,7 @@ impl Vm {
                     // The proto is stored in the closures table (file-local index).
                     let f = self.closures[(self.unit_base(top).closures + idx) as usize].clone();
                     let lc = f.proto.name.as_bytes().to_ascii_lowercase();
-                    if self.fn_names.contains_key(&lc) {
+                    if self.function_declared(&lc) {
                         // A preloaded file's declaration of a preloaded function
                         // was removed by preloading.
                         if self.preloaded.as_ref().is_some_and(|p| p.has_function(&lc)) {

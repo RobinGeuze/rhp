@@ -449,7 +449,8 @@ impl Vm {
     /// `lc` (lowercase) as `name`.
     pub(crate) fn redeclare_function_msg(&self, lc: &[u8], name: &rhp_values::PhpStr) -> String {
         let name = String::from_utf8_lossy(name.as_bytes());
-        match self.fn_names.get(lc).map(|&i| &self.functions[i].proto) {
+        let old = self.fn_names.get(lc).map(|&i| &self.functions[i].proto);
+        match old.filter(|p| !p.is_internal()) {
             Some(old) => format!(
                 "Cannot redeclare function {name}() (previously declared in {}:{})",
                 String::from_utf8_lossy(old.debug.file.as_bytes()),
@@ -457,6 +458,13 @@ impl Vm {
             ),
             None => format!("Cannot redeclare function {name}()"),
         }
+    }
+
+    /// Whether declaring user function `lc` (lowercase) clashes with one
+    /// in the function table: a user function, or an internal one (a
+    /// builtin left after disable_functions, or a prelude function).
+    pub(crate) fn function_declared(&self, lc: &[u8]) -> bool {
+        self.fn_names.contains_key(lc) || crate::calls::user_visible_builtin(lc)
     }
 
     /// The main script as an included file (`get_included_files()`, the
@@ -713,7 +721,7 @@ impl Vm {
         // function is fatal to redeclare (php semantics).
         for proto in prog.functions.iter().skip(prog.num_prelude_functions) {
             let lc = proto.name.as_bytes().to_ascii_lowercase();
-            if self.fn_names.contains_key(&lc) {
+            if self.function_declared(&lc) {
                 if preloaded {
                     continue;
                 }

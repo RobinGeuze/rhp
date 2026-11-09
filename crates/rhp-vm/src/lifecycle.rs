@@ -901,11 +901,21 @@ impl Vm {
                 idx >= prog.num_prelude_functions
                     || !crate::calls::is_helper_function(proto.name.as_bytes())
             );
+            let lc = proto.name.as_bytes().to_ascii_lowercase();
+            // zend_begin_func_decl: a top-level function whose name the
+            // function table already has (an internal one) is a compile
+            // error at its declaration.
+            if idx >= prog.num_prelude_functions && self.function_declared(&lc) {
+                let msg = self.redeclare_function_msg(&lc, &proto.name);
+                let line = proto.meta.start_line as i64;
+                let file = proto.debug.file.as_bytes().to_vec();
+                return Err(self.fatal_compile_error_at(msg.as_bytes(), file, line));
+            }
             self.functions.push(UnitFn {
                 proto: proto.clone(),
                 unit: 0,
             });
-            self.add_fn_name(proto.name.as_bytes().to_ascii_lowercase(), idx);
+            self.add_fn_name(lc, idx);
         }
         // The main script is unit 0: register its anonymous closure /
         // arrow-function protos (indexed by fnidx).

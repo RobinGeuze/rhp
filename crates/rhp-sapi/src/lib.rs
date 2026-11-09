@@ -1037,22 +1037,55 @@ pub fn run_lint(path: Option<String>, ini: Vec<(String, String)>, ini_files: Ini
             ("Standard input code".to_string(), src)
         }
     };
-    let sapi: Box<dyn Sapi> = Box::new(CliSapi);
+    let ok = lint_source(
+        Box::new(CliSapi),
+        &name,
+        &name,
+        &source,
+        &ini,
+        Some(&ini_files),
+        None,
+    );
+    match ok {
+        Some(true) => 0,
+        Some(false) => 255,
+        None => 1,
+    }
+}
+
+/// php_lint_script for `source` named `name` (compiled as the file
+/// `compiled_as`, the opened path), in a request of its own
+/// under `sapi` (with `info`, the web request php-cgi's -l runs in), then
+/// the verdict. `Some(compiled)`, or `None` when the request did not start.
+pub(crate) fn lint_source(
+    sapi: Box<dyn Sapi>,
+    name: &str,
+    compiled_as: &str,
+    source: &[u8],
+    ini: &[(String, String)],
+    ini_files: Option<&IniFiles>,
+    info: Option<RequestInfo>,
+) -> Option<bool> {
     let entries = sapi.ini_entries();
     let mut vm = Vm::new(sapi);
-    load_ini_files(&mut vm, &ini_files);
+    if let Some(files) = ini_files {
+        load_ini_files(&mut vm, files);
+    }
     for (k, v) in entries {
         vm.set_ini(k.as_bytes(), v.as_bytes());
     }
-    for (k, v) in &ini {
+    for (k, v) in ini {
         vm.set_ini(k.as_bytes(), v.as_bytes());
+    }
+    if let Some(info) = info {
+        vm.set_request(info);
     }
     vm.start_request();
     if vm.startup_failed() {
         vm.finish_request();
-        return 1;
+        return None;
     }
-    let ok = match compile_file(&name, &source, Mode::Include) {
+    let ok = match compile_file(compiled_as, source, Mode::Include) {
         Ok(prog) => {
             vm.emit_compile_diags(&prog);
             true
@@ -1063,8 +1096,8 @@ pub fn run_lint(path: Option<String>, ini: Vec<(String, String)>, ini_files: Ini
             line,
             diags,
         }) => {
-            vm.emit_parse_diags(name.as_bytes(), &diags);
-            vm.report_parse_error(class, &message, &name, line);
+            vm.emit_parse_diags(compiled_as.as_bytes(), &diags);
+            vm.report_parse_error(class, &message, compiled_as, line);
             false
         }
         Err(IncludeError::Compile {
@@ -1072,11 +1105,11 @@ pub fn run_lint(path: Option<String>, ini: Vec<(String, String)>, ini_files: Ini
             line,
             diags,
         }) => {
-            vm.compile_failed(&message, name.as_bytes(), line, &diags, false);
+            vm.compile_failed(&message, compiled_as.as_bytes(), line, &diags, false);
             false
         }
         Err(IncludeError::HardLimit { line }) => {
-            let t = vm.compile_hard_limit(Some((name.as_bytes(), line)));
+            let t = vm.compile_hard_limit(Some((compiled_as.as_bytes(), line)));
             fatal(&mut vm, t);
             false
         }
@@ -1092,11 +1125,7 @@ pub fn run_lint(path: Option<String>, ini: Vec<(String, String)>, ini_files: Ini
     };
     vm.write_output(verdict.as_bytes());
     vm.finish_request();
-    if ok {
-        0
-    } else {
-        255
-    }
+    Some(ok)
 }
 
 /// The CLI front end's run: `rhp [options] script.php args...` semantics.

@@ -1137,6 +1137,9 @@ impl Vm {
                 Instr::ArgSpreadRef { arr, src, sig } => {
                     self.arg_spread_ref(top, &proto, arr, src, sig)?
                 }
+                Instr::ArgSpreadRefDyn { arr, src, callee } => {
+                    self.arg_spread_ref_dyn(top, arr, src, callee)?
+                }
                 Instr::ArgSpread { arr, src } => {
                     let entries = self.unpack_entries(top, src, true)?;
                     let Value::Array(mut a) =
@@ -2999,18 +3002,56 @@ impl Vm {
             Value::Array(a) => a.values().cloned().collect(),
             _ => Vec::new(),
         };
-        let flags: Vec<Value> = list(&sig[2]);
-        let names: Vec<Value> = list(&sig[3]);
+        let flags: Vec<bool> = list(&sig[2])
+            .iter()
+            .map(|b| matches!(b, Value::Bool(true)))
+            .collect();
+        let names: Vec<Vec<u8>> = list(&sig[3]).iter().map(conv::to_string_bytes).collect();
+        self.spread_by_ref(top, arr, src, &fname, variadic, &flags, &names)
+    }
+
+    /// [`Instr::ArgSpreadRefDyn`]: the callee's parameters, asked now.
+    #[cold]
+    fn arg_spread_ref_dyn(
+        &mut self,
+        top: usize,
+        arr: Reg,
+        src: Reg,
+        callee: Reg,
+    ) -> Result<(), Thrown> {
+        let c = self.reg_get(top, callee);
+        let (fname, variadic, flags, names) = match self.callable_proto(&c) {
+            Some((p, scope)) if p.params.iter().any(|q| q.by_ref) => (
+                self.func_c_name(&p, scope).into_bytes(),
+                p.params.last().is_some_and(|q| q.variadic),
+                p.params.iter().map(|q| q.by_ref).collect::<Vec<_>>(),
+                p.params
+                    .iter()
+                    .map(|q| p.names[q.name as usize].as_bytes().to_vec())
+                    .collect::<Vec<_>>(),
+            ),
+            _ => (Vec::new(), false, Vec::new(), Vec::new()),
+        };
+        self.spread_by_ref(top, arr, src, &fname, variadic, &flags, &names)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spread_by_ref(
+        &mut self,
+        top: usize,
+        arr: Reg,
+        src: Reg,
+        fname: &[u8],
+        variadic: bool,
+        flags: &[bool],
+        names: &[Vec<u8>],
+    ) -> Result<(), Thrown> {
         let by_ref = |p: usize| match flags.get(p) {
-            Some(b) => matches!(b, Value::Bool(true)),
-            None => variadic && matches!(flags.last(), Some(Value::Bool(true))),
+            Some(b) => *b,
+            None => variadic && flags.last() == Some(&true),
         };
         // a named element's position
-        let named_pos = |s: &[u8]| {
-            names
-                .iter()
-                .position(|n| matches!(n, Value::Str(n) if n.as_bytes() == s))
-        };
+        let named_pos = |s: &[u8]| names.iter().position(|n| n.as_slice() == s);
         let source = match &self.stack[top].regs[src as usize] {
             Value::Ref(rc) if matches!(*rc.borrow(), Value::Array(_)) => Some(rc.clone()),
             _ => None,
@@ -3068,7 +3109,7 @@ impl Vm {
                     let msg = format!(
                         "Cannot pass by-reference argument {} of {}() by unpacking a Traversable, passing by-value instead",
                         at + 1,
-                        String::from_utf8_lossy(&fname)
+                        String::from_utf8_lossy(fname)
                     );
                     self.diag(builtins::E_WARNING, &msg)?;
                 }

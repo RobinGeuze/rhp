@@ -340,6 +340,14 @@ pub enum Instr {
         src: Reg,
         sig: CIdx,
     },
+    /// [`Instr::ArgSpreadRef`] for a callee known only at run time: the
+    /// callable in `callee` is asked for its by-reference parameters
+    /// (ZEND_SEND_UNPACK's ARG_SHOULD_BE_SENT_BY_REF).
+    ArgSpreadRefDyn {
+        arr: Reg,
+        src: Reg,
+        callee: Reg,
+    },
     /// `[&$x]` / `[k => &$x]`: push/insert the raw `Value::Ref` in `val` so the
     /// element aliases the source variable (no deref).
     ArrPushRef {

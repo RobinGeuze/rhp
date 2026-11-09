@@ -280,12 +280,13 @@ impl ProtoBuilder<'_> {
                         _ => None,
                     })
                     .collect();
+                // The object exists: its constructor is asked.
                 let ctor = self.intern_name(b"__construct");
                 let args = self.build_args_array_of(
                     list.left_parenthesis.start.offset,
                     &v,
                     None,
-                    Some(ArgRefTarget::Static(class, ctor)),
+                    Some(ArgRefTarget::Method(dst, ctor)),
                 )?;
                 self.new_ranges
                     .push((start, self.code.len() as rhp_bytecode::Pc, dst));
@@ -365,9 +366,9 @@ impl ProtoBuilder<'_> {
         let start = self.code.len() as rhp_bytecode::Pc;
         self.emit(Instr::NewObj { dst, class });
         if has_spread(list) || has_named(list) {
+            // The object exists: its constructor is asked.
             let ctor = self.intern_name(b"__construct");
-            let args =
-                self.build_args_array(Some(list), Some(ArgRefTarget::Static(class, ctor)))?;
+            let args = self.build_args_array(Some(list), Some(ArgRefTarget::Method(dst, ctor)))?;
             self.new_ranges
                 .push((start, self.code.len() as rhp_bytecode::Pc, dst));
             self.emit(Instr::NewCallV { dst, args });

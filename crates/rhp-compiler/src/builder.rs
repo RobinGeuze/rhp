@@ -388,7 +388,8 @@ impl<'c> ProtoBuilder<'c> {
             | Instr::CallStatic { base, .. }
             | Instr::CallStaticDyn { base, .. }
             | Instr::CallParentHook { base, .. }
-            | Instr::New { base, .. } => base,
+            | Instr::New { base, .. }
+            | Instr::NewCall { base, .. } => base,
             _ => return,
         };
         if self.pending_sends.as_ref().is_some_and(|(b, _)| *b == base) {

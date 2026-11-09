@@ -996,6 +996,24 @@ impl ProtoBuilder<'_> {
                         let sig = self.intern_const(Value::Array(sig));
                         self.emit(Instr::ArgSpreadRef { arr: dst, src, sig });
                     }
+                    // `...$arr` for a callee known only at run time: it is
+                    // asked for its by-reference parameters then.
+                    Argument::Positional(p)
+                        if p.ellipsis.is_some()
+                            && known.is_none()
+                            && matches!(unparen(p.value), Expression::Variable(Variable::Direct(d))
+                                if !matches!(strip_dollar(d.name), b"GLOBALS" | b"this"))
+                            && target.is_some_and(|t| !matches!(t, ArgRefTarget::Func(_))) =>
+                    {
+                        unpacked = true;
+                        let callee = self.emit_callee_value(target.expect("checked"));
+                        let src = self.compile_ref_source(unparen(p.value))?;
+                        self.emit(Instr::ArgSpreadRefDyn {
+                            arr: dst,
+                            src,
+                            callee,
+                        });
+                    }
                     Argument::Positional(p) => {
                         unpacked |= p.ellipsis.is_some();
                         let r = self.compile_expr(p.value)?;
@@ -1536,6 +1554,66 @@ impl ProtoBuilder<'_> {
             }
         }
         flag
+    }
+
+    /// The callee of an [`ArgRefTarget`] as a callable value (`[$o, 'm']`,
+    /// `['C', 'm']`, the callable itself). Not for `Func`.
+    fn emit_callee_value(&mut self, target: ArgRefTarget) -> Reg {
+        let pair = |b: &mut Self, first: Reg, name: Reg| {
+            let callee = b.alloc_temp();
+            b.emit(Instr::NewArray {
+                dst: callee,
+                cap: 2,
+            });
+            b.emit(Instr::ArrPush {
+                arr: callee,
+                val: first,
+            });
+            b.emit(Instr::ArrPush {
+                arr: callee,
+                val: name,
+            });
+            callee
+        };
+        let name_reg = |b: &mut Self, name: NIdx| {
+            let k = b.intern_const(Value::Str(b.names[name as usize].clone()));
+            let r = b.alloc_temp();
+            b.emit(Instr::LoadConst { dst: r, k });
+            r
+        };
+        match target {
+            ArgRefTarget::Value(c) => c,
+            // The receiver is copied: a push moves an object out of a
+            // temporary, and the call still needs it.
+            ArgRefTarget::Method(obj, name) => {
+                let recv = self.alloc_temp();
+                self.emit(Instr::Mov {
+                    dst: recv,
+                    src: obj,
+                });
+                let n = name_reg(self, name);
+                pair(self, recv, n)
+            }
+            ArgRefTarget::MethodDyn(obj, n) => {
+                let recv = self.alloc_temp();
+                self.emit(Instr::Mov {
+                    dst: recv,
+                    src: obj,
+                });
+                pair(self, recv, n)
+            }
+            ArgRefTarget::Static(class, name) => {
+                let cls = self.alloc_temp();
+                self.emit(Instr::FetchClassName {
+                    dst: cls,
+                    class,
+                    const_expr: false,
+                });
+                let n = name_reg(self, name);
+                pair(self, cls, n)
+            }
+            ArgRefTarget::Func(f) => f,
+        }
     }
 
     /// A by-value argument that is a plain variable compiles to the variable's

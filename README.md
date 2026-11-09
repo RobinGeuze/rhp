@@ -47,8 +47,8 @@ passing, so the percentages are of all php-src tests.
 |---|---:|---:|---:|---|
 | Zend/tests | 5,273 | 5,396 | 97.7% | no Fiber (0/113); lazy objects 215/229 (no typed reference sources); the pipe operator `\|>` is refused |
 | tests | 854 | 895 | 95.4% | php-src's tests of the language, functions, classes and output |
-| sapi/cli | 88 | 117 | 75.2% | tests that spawn the php binary run rhp, the `-S` server tests included |
-| sapi/cgi | 16 | 24 | 66.7% | `rhp --cgi` against php-cgi |
+| sapi/cli | 98 | 117 | 83.8% | tests that spawn the php binary run rhp, the `-S` server tests included |
+| sapi/cgi | 23 | 24 | 95.8% | `rhp --cgi` against php-cgi |
 | ext/standard | 3,416 | 3,880 | 88.0% | user stream wrappers carry no filters |
 | ext/bcmath | 64 | 170 | 37.6% | the `bc*` functions; no `BcMath\Number` |
 | ext/bz2 | 16 | 27 | 59.3% | libbz2 1.0.8, linked statically |
@@ -79,7 +79,7 @@ passing, so the percentages are of all php-src tests.
 | ext/posix | 32 | 61 | 52.5% | |
 | ext/random | 68 | 69 | 98.6% | the functions, `Random\Randomizer` and the engines |
 | ext/readline | 16 | 28 | 57.1% | on libedit: the functions, history, the callback interface and the interactive shell (`php -a`) |
-| ext/reflection | 480 | 540 | 88.9% | |
+| ext/reflection | 483 | 540 | 89.4% | |
 | ext/session | 250 | 269 | 92.9% | |
 | ext/simplexml | 158 | 165 | 95.8% | on libxml2 |
 | ext/sockets | 58 | 119 | 48.7% | the socket calls, `AddressInfo` and the constants; no `socket_sendmsg`/`socket_recvmsg`, no multicast options |
@@ -94,7 +94,7 @@ passing, so the percentages are of all php-src tests.
 | ext/zlib | 133 | 161 | 82.6% | system zlib; no incremental deflate/inflate contexts |
 | other ext/ | 1 | 2,752 | 0.0% | the 1 passing is an ext/uri test that needs none of its code |
 | other sapi/ | 0 | 217 | 0.0% | |
-| **total** | **17,014** | **22,219** | **76.6%** | |
+| **total** | **17,034** | **22,219** | **76.7%** | |
 
 Not implemented, so counted under other ext/: com_dotnet, dba, dl_test, enchant, ffi, ftp, imap, ldap, mysqli, odbc, pdo_dblib, pdo_firebird, pdo_mysql, pdo_odbc, pdo_pgsql, pgsql, shmop, skeleton, snmp, soap, sysvmsg, sysvsem, sysvshm, tidy, uri, xsl, zend_test; other sapi/: fpm, phpdbg.
 <!-- phpt-table end -->

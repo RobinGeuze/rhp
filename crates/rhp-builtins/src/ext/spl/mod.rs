@@ -16,8 +16,40 @@ use crate::{Host, Thrown};
 /// debug info.
 static SPL_ARRAY_HANDLERS: ObjectHandlers = ObjectHandlers {
     get_properties_for: Some(spl_array_get_properties_for),
+    clone_obj: crate::zend::object_handlers::CloneObj::Custom(spl_array_clone),
     ..ObjectHandlers::STD
 };
+
+/// spl_array_object_new_ex's clone: an ArrayObject gets its own copy of the
+/// storage (zend_array_dup), even when it shared another one's
+/// (`__spl_array_bind`); an ArrayIterator over another one keeps using it.
+fn spl_array_clone(
+    _: &mut dyn Host,
+    _src: &ObjectHandle,
+    dst: &ObjectHandle,
+) -> Result<(), Thrown> {
+    let mut b = dst.borrow_mut();
+    for c in ["ArrayObject", "ArrayIterator"] {
+        let s = PhpStr::from(format!("\0{c}\0__s").as_str());
+        let w = PhpStr::from(format!("\0{c}\0__w").as_str());
+        if !b.props().contains_key(&s) {
+            continue;
+        }
+        let wraps = matches!(b.props().get(&w).map(deref), Some(Value::Object(_)));
+        if c == "ArrayIterator" && wraps {
+            break;
+        }
+        if matches!(b.props().get(&s), Some(Value::Ref(_))) {
+            let v = deref(b.props().get(&s).expect("checked"));
+            b.props_mut().insert(s, v);
+        }
+        if wraps {
+            b.props_mut().insert(w, Value::Null);
+        }
+        break;
+    }
+    Ok(())
+}
 
 /// `SplFixedArray`'s spl_fixedarray_object_get_properties_for.
 static SPL_FIXEDARRAY_HANDLERS: ObjectHandlers = ObjectHandlers {

@@ -15,6 +15,10 @@ use rhp_sapi::{CaptureSapi, Outcome, Request, RequestInfo, Script};
 static ALLOC: rhp_sapi::CountingAlloc = rhp_sapi::CountingAlloc;
 
 fn run(script: &Path) -> String {
+    run_query(script, "")
+}
+
+fn run_query(script: &Path, query: &str) -> String {
     let req = Request {
         ini: vec![
             ("opcache.enable".to_string(), "1".to_string()),
@@ -28,6 +32,7 @@ fn run(script: &Path) -> String {
         ],
         info: Some(RequestInfo {
             method: Some(b"GET".to_vec()),
+            query_string: Some(query.as_bytes().to_vec()),
             response_code: 200,
             ..Default::default()
         }),
@@ -287,6 +292,36 @@ fn a_class_a_variance_check_looked_up_is_an_input() {
             out.contains("Fatal error: Declaration of Ret::make(): Foo must be compatible"),
             "{out}"
         );
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn a_parent_value_evaluated_this_request_is_an_input() {
+    // P's constant and default take this request's FOO before K links and
+    // copies them: the same number of changes, but other values.
+    let d = Dir::new("values");
+    d.file(
+        "lib/P.php",
+        "<?php class P { public $p = FOO; const X = FOO; }\n",
+    );
+    d.file("lib/K.php", "<?php class K extends P {}\n");
+    let main = d.file(
+        "main.php",
+        "<?php define('FOO', $_GET['v']); require __DIR__ . '/lib/P.php'; new P; echo P::X, \"\\n\"; \
+         require __DIR__ . '/lib/K.php'; echo (new K)->p, ' ', K::X, \"\\n\";\n",
+    );
+    std::thread::spawn(move || {
+        for v in ["a", "b", "c", "d", "e", "e", "e"] {
+            assert_eq!(
+                run_query(&main, &format!("v={v}")),
+                format!("{v}\n{v} {v}\n")
+            );
+        }
+        // The same values again: K comes from the cache.
+        let (hits, _) = rhp_vm::link_cache_stats();
+        assert!(hits >= 6, "{hits}");
     })
     .join()
     .unwrap();

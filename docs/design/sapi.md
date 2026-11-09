@@ -228,8 +228,8 @@ other stream wrappers are compiled on every include.
   raised nothing, autoloaded nothing and left no variance obligations.
   A later request that links the same declaration, as the same class id
   and unit, against the same parent, interfaces and traits (each named
-  by a stamp, with a count of the changes the request made to the
-  constants and defaults linking copies) and whose inheritance checks
+  by a stamp, with a digest of the changes, values included, the
+  request made to the constants and defaults linking copies) and whose inheritance checks
   would look up the same classes, installs a copy instead: shared
   method table, fresh static cells (inherited ones alias the parent's
   as linking does), its own enum case objects. Any other input links

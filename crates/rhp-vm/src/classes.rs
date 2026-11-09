@@ -101,9 +101,10 @@ pub struct ClassEntry {
     /// Names this linked entry for the linked-class cache (`link_cache`):
     /// a copy from the cache keeps the cached entry's stamp.
     pub(crate) stamp: u64,
-    /// Changes this request made to what linking copies from the class
-    /// (evaluated constants, property defaults, static initializers).
-    pub(crate) state: u32,
+    /// A digest of the changes this request made to what linking copies
+    /// from the class (evaluated constants with their values, property
+    /// defaults, static initializers); 0 while there were none.
+    pub(crate) state: u64,
 }
 
 #[derive(Clone)]
@@ -2824,7 +2825,7 @@ impl Vm {
         };
         if owner != cls && self.classes[owner as usize].constants[name].init.is_none() {
             let v = self.classes[owner as usize].constants[name].value.clone();
-            self.classes[cls as usize].state += 1;
+            self.note_class_change(cls, name, Some(&v));
             let e = Rc::make_mut(&mut self.classes[cls as usize].constants)
                 .get_mut(name)
                 .unwrap();
@@ -2862,8 +2863,6 @@ impl Vm {
             v = self.verify_class_const_type(v, ty, decl, name)?;
         }
         // Evaluation may have completed it re-entrantly; finish it only once.
-        self.classes[owner as usize].state += 1;
-        self.classes[cls as usize].state += 1;
         let e = Rc::make_mut(&mut self.classes[owner as usize].constants)
             .get_mut(name)
             .unwrap();
@@ -2879,7 +2878,9 @@ impl Vm {
             }
         }
         let value = e.value.clone();
+        self.note_class_change(owner, name, Some(&value));
         if owner != cls {
+            self.note_class_change(cls, name, Some(&value));
             let e = Rc::make_mut(&mut self.classes[cls as usize].constants)
                 .get_mut(name)
                 .unwrap();
@@ -2897,7 +2898,7 @@ impl Vm {
         if self.classes[cls as usize].updated {
             return Ok(());
         }
-        self.classes[cls as usize].state += 1;
+        self.note_class_change(cls, b"\0update", None);
         self.touch_enum_cases(cls);
         if let Some(p) = self.classes[cls as usize].parent {
             self.update_class_constants(p)?;
@@ -2945,6 +2946,7 @@ impl Vm {
                 }
                 (None, None) => continue,
             };
+            self.note_class_change(cls, name.as_bytes(), Some(&v));
             if let Some(pe) = Rc::make_mut(&mut self.classes[cls as usize].props).get_mut(&name) {
                 pe.default = v;
                 pe.init = None;
@@ -2968,6 +2970,7 @@ impl Vm {
                     if let Some(ty) = ty {
                         v = self.verify_prop_init_type(v, &ty, cls, &name)?;
                     }
+                    self.note_class_change(cls, &name, Some(&v));
                     *default.borrow_mut() = v.clone();
                     *cell.borrow_mut() = v;
                 }
@@ -2980,7 +2983,7 @@ impl Vm {
             self.build_backed_enum_table(cls, backing)?;
         }
         self.classes[cls as usize].updated = true;
-        self.classes[cls as usize].state += 1;
+        self.note_class_change(cls, b"\0updated", None);
         Ok(())
     }
 

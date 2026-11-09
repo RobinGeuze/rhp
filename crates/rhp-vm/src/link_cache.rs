@@ -16,8 +16,9 @@
 //! - the stamp and state of its parent, interfaces and traits. A stamp
 //!   names one linked entry: a fresh link gets a new one, a copy from this
 //!   cache (or of the linked prelude) keeps the cached one. The state
-//!   counts the changes a request made to a class's constants, property
-//!   defaults and static initializers, which linking copies from;
+//!   is a digest of the changes a request made to a class's constants,
+//!   property defaults and static initializers, values included, which
+//!   linking copies from;
 //! - every other class the inheritance checks looked up by name (php's
 //!   `dependencies`), which must resolve to the same entry, or still to
 //!   none.
@@ -33,6 +34,7 @@
 //! each request (opcache off, eval) costs no snapshots.
 
 use std::cell::RefCell;
+use std::hash::{BuildHasher, Hasher};
 use std::rc::Rc;
 
 use indexmap::IndexMap;
@@ -118,7 +120,7 @@ struct Linked {
     prelude: u64,
     /// (stamp, state) of the parent, then the interfaces and the traits in
     /// declaration order.
-    deps: Vec<(u64, u32)>,
+    deps: Vec<(u64, u64)>,
     /// Other classes looked up by lowercase name, with the stamp each
     /// resolved to (0: none, [`SELF_STAMP`]: the class itself).
     lookups: Vec<(Vec<u8>, u64)>,
@@ -213,7 +215,7 @@ impl Vm {
 
     /// (stamp, state) of the classes `proto` names as parent, interfaces
     /// and traits, all linked.
-    fn link_deps(&self, proto: &ClassProto) -> Vec<(u64, u32)> {
+    fn link_deps(&self, proto: &ClassProto) -> Vec<(u64, u64)> {
         let names = proto
             .parent
             .iter()
@@ -461,5 +463,81 @@ impl Vm {
                 }
             })
         });
+    }
+}
+
+thread_local! {
+    /// Keys the state digests: random, so no request can make two
+    /// different change histories collide on purpose.
+    static STATE_KEYS: std::hash::RandomState = std::hash::RandomState::new();
+}
+
+fn hash_value(v: &Value, h: &mut impl Hasher) {
+    match v {
+        Value::Undef | Value::Null => h.write_u8(0),
+        Value::Bool(b) => {
+            h.write_u8(1);
+            h.write_u8(*b as u8);
+        }
+        Value::Int(n) => {
+            h.write_u8(2);
+            h.write_i64(*n);
+        }
+        Value::Float(f) => {
+            h.write_u8(3);
+            h.write_u64(f.to_bits());
+        }
+        Value::Str(s) => {
+            h.write_u8(4);
+            h.write_usize(s.as_bytes().len());
+            h.write(s.as_bytes());
+        }
+        Value::Array(a) => {
+            h.write_u8(5);
+            h.write_usize(a.len());
+            for (k, v) in a.iter() {
+                match &k {
+                    rhp_values::ArrayKey::Int(n) => {
+                        h.write_u8(0);
+                        h.write_i64(*n);
+                    }
+                    rhp_values::ArrayKey::Str(s) => {
+                        h.write_u8(1);
+                        h.write_usize(s.as_bytes().len());
+                        h.write(s.as_bytes());
+                    }
+                }
+                hash_value(v, h);
+            }
+        }
+        Value::Object(o) => {
+            h.write_u8(6);
+            h.write_usize(Rc::as_ptr(o) as *const u8 as usize);
+        }
+        Value::Ref(r) => {
+            h.write_u8(7);
+            hash_value(&r.borrow(), h);
+        }
+        // A snapshot never holds these, and a class whose tables hold
+        // them is not cached; a distinct digest is enough.
+        Value::Closure(_) | Value::Resource(_) => h.write_u8(8),
+    }
+}
+
+impl Vm {
+    /// Record a change to what linking copies from class `cls`: `name`
+    /// set to `v` (or a step without a value). Links against the class
+    /// are reused only after the same changes (`Linked::deps`).
+    pub(crate) fn note_class_change(&mut self, cls: ClassId, name: &[u8], v: Option<&Value>) {
+        let e = &mut self.classes[cls as usize];
+        let mut h = STATE_KEYS.with(|k| k.build_hasher());
+        h.write_u64(e.state);
+        h.write_usize(name.len());
+        h.write(name);
+        if let Some(v) = v {
+            hash_value(v, &mut h);
+        }
+        // 0 is the state of an unchanged class.
+        e.state = h.finish().max(1);
     }
 }

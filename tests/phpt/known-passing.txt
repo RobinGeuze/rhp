@@ -14,6 +14,7 @@ Zend/tests/ArrayAccess/bug71731.phpt
 Zend/tests/ArrayAccess/bug78356.phpt
 Zend/tests/ErrorException_construct.phpt
 Zend/tests/ErrorException_getSeverity.phpt
+Zend/tests/GHSA-wm6j-2649-pv75.phpt
 Zend/tests/__debugInfo_reference.phpt
 Zend/tests/abstract-static.phpt
 Zend/tests/abstract_implicit.phpt
@@ -14027,6 +14028,7 @@ ext/standard/tests/general_functions/php_uname_error.phpt
 ext/standard/tests/general_functions/phpcredits.phpt
 ext/standard/tests/general_functions/phpcredits2.phpt
 ext/standard/tests/general_functions/phpinfo-header-anchors.phpt
+ext/standard/tests/general_functions/phpinfo.phpt
 ext/standard/tests/general_functions/phpinfo2.phpt
 ext/standard/tests/general_functions/print_r_array_circular.phpt
 ext/standard/tests/general_functions/print_r_arrays.phpt

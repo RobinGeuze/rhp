@@ -148,7 +148,7 @@ struct Buf {
 }
 
 /// Per-thread collector state outside the buffer (cheap to read in hooks).
-struct State {
+pub struct State {
     enabled: Cell<bool>,
     active: Cell<bool>,
     protected: Cell<bool>,
@@ -394,7 +394,34 @@ fn key_of(node: &Node) -> Option<Key> {
 /// possible root. A reference adds the value it holds.
 #[inline]
 pub fn possible_root(v: &Value) {
-    let shared = match v {
+    if shared(v) {
+        let _ = STATE.try_with(|st| possible_root_slow(st, v));
+    }
+}
+
+/// [`possible_root`] with this thread's state at hand ([`state`]).
+#[inline]
+pub fn possible_root_in(st: &State, v: &Value) {
+    if shared(v) {
+        possible_root_slow(st, v);
+    }
+}
+
+/// This thread's collector state, for a caller that releases values often
+/// (the VM keeps the reference instead of looking up the thread-local).
+pub fn state() -> &'static State {
+    STATE.with(|s| {
+        // SAFETY: a `const`-initialised thread-local without a destructor
+        // (its non-`Cell` fields are `ManuallyDrop`) stays valid, at a
+        // fixed address, until the thread exits; the engine using it is
+        // tied to this thread.
+        unsafe { &*(s as *const State) }
+    })
+}
+
+#[inline(always)]
+fn shared(v: &Value) -> bool {
+    match v {
         Value::Object(h) => Rc::strong_count(h) > 1,
         // An empty array cannot be in a cycle (php's `[]` is the immutable
         // zend_empty_array).
@@ -402,43 +429,40 @@ pub fn possible_root(v: &Value) {
         Value::Ref(r) => Rc::strong_count(r) > 1,
         Value::Closure(c) => Rc::strong_count(c) > 1 && !c.gc_buffered.get(),
         _ => false,
-    };
-    if shared {
-        possible_root_slow(v);
     }
 }
 
 #[cold]
 #[inline(never)]
-fn possible_root_slow(v: &Value) {
+fn possible_root_slow(st: &State, v: &Value) {
     match v {
         Value::Object(h) => {
             let addr = Rc::as_ptr(h) as usize;
-            let _ = STATE.try_with(|st| {
-                if st.last.get() == addr {
-                    return;
-                }
-                let Ok(o) = h.try_borrow() else { return };
-                let id = o.id;
-                drop(o);
-                // The destructor list's reference is not php's.
-                let extra = st.flagged.get()
-                    && st.flags.try_borrow().is_ok_and(|f| {
-                        f.get(id as usize)
-                            .is_some_and(|x| x & (TRACKED | HELD) != 0)
-                    });
-                if Rc::strong_count(h) - usize::from(extra) > 1
-                    && add_root_in(st, || Node::Obj(Rc::downgrade(h)), Key::Handle(id))
-                {
-                    st.last.set(addr);
-                }
-            });
+            if st.last.get() == addr {
+                return;
+            }
+            let Ok(o) = h.try_borrow() else { return };
+            let id = o.id;
+            drop(o);
+            // The destructor list's reference is not php's.
+            let extra = st.flagged.get()
+                && st.flags.try_borrow().is_ok_and(|f| {
+                    f.get(id as usize)
+                        .is_some_and(|x| x & (TRACKED | HELD) != 0)
+                });
+            if Rc::strong_count(h) - usize::from(extra) > 1
+                && add_root_in(st, || Node::Obj(Rc::downgrade(h)), Key::Handle(id))
+            {
+                st.last.set(addr);
+            }
         }
-        Value::Closure(c) => add_root(|| Node::Closure(Rc::downgrade(c)), Key::Handle(c.id)),
-        Value::Array(a) => add_array_root(a),
+        Value::Closure(c) => {
+            add_root_in(st, || Node::Closure(Rc::downgrade(c)), Key::Handle(c.id));
+        }
+        Value::Array(a) => add_array_root_in(st, a),
         Value::Ref(r) => {
             if let Ok(inner) = r.try_borrow() {
-                check_possible_root(&inner);
+                check_possible_root_in(st, &inner);
             }
         }
         _ => {}
@@ -448,31 +472,32 @@ fn possible_root_slow(v: &Value) {
 /// php's `gc_check_possible_root` on a value whose count was just
 /// decremented elsewhere: buffer it when it is not yet.
 pub fn check_possible_root(v: &Value) {
+    let _ = STATE.try_with(|st| check_possible_root_in(st, v));
+}
+
+fn check_possible_root_in(st: &State, v: &Value) {
     match v {
         Value::Object(h) => {
             if let Ok(o) = h.try_borrow() {
                 let id = o.id;
                 drop(o);
-                add_root(|| Node::Obj(Rc::downgrade(h)), Key::Handle(id));
+                add_root_in(st, || Node::Obj(Rc::downgrade(h)), Key::Handle(id));
             }
         }
-        Value::Closure(c) => add_root(|| Node::Closure(Rc::downgrade(c)), Key::Handle(c.id)),
-        Value::Array(a) => add_array_root(a),
+        Value::Closure(c) => {
+            add_root_in(st, || Node::Closure(Rc::downgrade(c)), Key::Handle(c.id));
+        }
+        Value::Array(a) => add_array_root_in(st, a),
         _ => {}
     }
 }
 
-fn add_array_root(a: &crate::PhpArray) {
+fn add_array_root_in(st: &State, a: &crate::PhpArray) {
     if a.0.is_empty() {
         return;
     }
     let addr = Rc::as_ptr(&a.0) as usize;
-    add_root(|| Node::Arr(Rc::downgrade(&a.0)), Key::Addr(addr));
-}
-
-/// gc_possible_root: buffer `node` unless it is already.
-fn add_root(node: impl FnOnce() -> Node, key: Key) {
-    let _ = STATE.try_with(|st| add_root_in(st, node, key));
+    add_root_in(st, || Node::Arr(Rc::downgrade(&a.0)), Key::Addr(addr));
 }
 
 /// [`add_root`] on this thread's state: whether the value is in the

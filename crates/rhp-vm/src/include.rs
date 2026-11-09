@@ -753,7 +753,7 @@ impl Vm {
         caller_top: usize,
         kind: &'static str,
     ) -> Result<Value, Thrown> {
-        let mut frame = Frame::new(main.clone(), unit, 0);
+        let mut frame = self.new_frame(main.clone(), unit, 0);
         frame.capture = true;
         frame.include = Some((kind, caller_top));
         frame.defining_class = self.stack[caller_top].defining_class;
@@ -867,7 +867,7 @@ impl Vm {
     /// replaces the finished one at the bottom of the stack, in the global
     /// scope.
     fn run_as_primary(&mut self, main: Rc<FunctionProto>, unit: UnitId) -> Result<Value, Thrown> {
-        let mut frame = Frame::new(main, unit, 0);
+        let mut frame = self.new_frame(main, unit, 0);
         self.bind_superglobals(&mut frame);
         self.bind_global_scope(&mut frame);
         self.stack.clear();
@@ -879,10 +879,15 @@ impl Vm {
     /// through the cells bound at entry; a variable it re-bound (`$a = &$b`,
     /// `global $a`, `static $a`) or unset carries that over to the including
     /// scope, as php's shared symbol table does.
+    #[inline]
     pub(crate) fn include_writeback(&mut self, frame: &Frame) {
-        let Some(caller) = frame.include_caller() else {
-            return;
-        };
+        if let Some(caller) = frame.include_caller() {
+            self.include_writeback_slow(frame, caller);
+        }
+    }
+
+    #[inline(never)]
+    fn include_writeback_slow(&mut self, frame: &Frame, caller: usize) {
         // In the global scope every variable already is a global symbol-table
         // cell, kept in step as it is re-bound or unset.
         if caller >= self.stack.len() || frame.global_scope {

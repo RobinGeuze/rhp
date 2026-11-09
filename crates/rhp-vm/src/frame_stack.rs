@@ -97,6 +97,10 @@ impl FrameStack {
         } else {
             (size + HEADER + self.page_size - 1) & !(self.page_size - 1)
         };
+        if self.pages.len() == self.pages.capacity() {
+            let n = self.pages.capacity().max(8);
+            self.mem.uncounted(|| self.pages.reserve(n));
+        }
         self.pages.push((page, self.room));
         self.room = page - HEADER - size;
         self.mem.charge(page);
@@ -119,30 +123,36 @@ impl FrameStack {
 
     #[inline]
     fn release(&mut self, f: &Frame) {
-        if f.vm_page {
+        self.release_raw(f.vm_size, f.vm_page);
+    }
+
+    #[inline]
+    fn release_raw(&mut self, size: u32, page: bool) {
+        if page {
             if let Some((page, room)) = self.pages.pop() {
                 self.room = room;
                 self.mem.discharge(page);
             }
         } else {
-            self.room += f.vm_size as usize;
+            self.room += size as usize;
         }
     }
 
     /// Drop every frame, bottom first (a Vec's order).
     pub(crate) fn clear(&mut self) {
-        self.frames.clear();
-        for (page, _) in self.pages.drain(..) {
-            self.mem.discharge(page);
-        }
-        self.room = self.page_size - HEADER;
+        self.truncate(0);
     }
 
-    /// Pop frames down to `len` (each dropped as it goes, top first).
+    /// Drop the frames above `len`, bottom first (a Vec's order).
     pub(crate) fn truncate(&mut self, len: usize) {
-        while self.frames.len() > len {
-            drop(self.pop());
+        if len >= self.frames.len() {
+            return;
         }
+        for i in (len..self.frames.len()).rev() {
+            let (size, page) = (self.frames[i].vm_size, self.frames[i].vm_page);
+            self.release_raw(size, page);
+        }
+        self.frames.truncate(len);
     }
 }
 
@@ -167,7 +177,8 @@ impl Drop for FrameStack {
         // buffer and the pages.
         self.clear();
         let v = std::mem::take(&mut self.frames);
-        self.mem.uncounted(|| drop(v));
+        let p = std::mem::take(&mut self.pages);
+        self.mem.uncounted(|| drop((v, p)));
         self.mem.discharge(self.first_page);
     }
 }

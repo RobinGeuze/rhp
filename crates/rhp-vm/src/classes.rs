@@ -2375,14 +2375,10 @@ impl Vm {
                 return Ok(id);
             }
         }
+        // Cached whatever the class is named (an alias, a leading `\\`):
+        // a hit by another string with the same hash is checked above.
         let id = self.resolve_class_by_name(name.as_bytes())?;
-        if self.classes[id as usize]
-            .name
-            .as_bytes()
-            .eq_ignore_ascii_case(name.as_bytes())
-        {
-            self.class_names.put(name, id);
-        }
+        self.class_names.put(name, id);
         Ok(id)
     }
 

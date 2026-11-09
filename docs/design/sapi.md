@@ -430,6 +430,11 @@ size first refuse it before allocating, as php's fallible allocations do:
 `range`, `fread`, `stream_get_line`, `file_get_contents` (plain files),
 `ftruncate` on `php://memory`/`php://temp` and `unserialize`.
 
+Call frames are counted as php's VM stack pages, not as rhp's own frame
+allocations (docs/design/bytecode.md §3.3): recursion moves
+`memory_get_usage()` in php's 256 KiB steps, and runaway recursion ends in
+the same out-of-memory error.
+
 Building the request's superglobals is counted too. When parsing the
 body crosses the limit, the parsers stop where php 8.5's do (the
 multipart parser checks after each step, `explode` after each piece:

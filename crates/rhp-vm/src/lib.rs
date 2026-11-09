@@ -87,6 +87,9 @@ pub struct Vm {
     /// write passes through on its way to [`Vm::emit_stdout`].
     output: output::Output,
     stack: frame_stack::FrameStack,
+    /// Internal functions' signature argument counts, by defining class
+    /// and name (see `Vm::internal_arg_count_error`).
+    arg_counts: rustc_hash::FxHashMap<(ClassId, PhpStr), Option<calls::ArgRange>>,
     /// Register files of returned frames, for the next calls.
     reg_pool: frame_stack::RegPool,
     /// The programs installed so far: the main script is unit 0, then each
@@ -412,6 +415,8 @@ pub struct Vm {
     preload_rec: Option<Vec<opcache::PreloadRec>>,
     /// What preloading declared, once installed in this request.
     preloaded: Option<Rc<opcache::Preload>>,
+    /// This thread's cycle-collector state (frames release into it).
+    gc: &'static rhp_values::gc::State,
     /// This thread's memory accounting (checked between instructions).
     mem: &'static rhp_values::mem::MemState,
     /// A memory_limit crossing waiting for an interrupt point.
@@ -553,7 +558,9 @@ type FeLive = (Reg, Reg, bool, u32);
 
 impl Drop for Frame {
     fn drop(&mut self) {
-        self.release();
+        if self.regs.capacity() > 0 || self.closure.is_some() || self.fe_live.is_some() {
+            self.release(rhp_values::gc::state());
+        }
         if self.regs.capacity() > 0 {
             // Temporaries go with the register file; its buffer was not
             // counted (`frame_stack`).
@@ -568,7 +575,7 @@ impl Frame {
     /// Free the frame's variables, `$this` and Closure as php's
     /// leave helper does (what dropping it starts with; done again, it
     /// does nothing).
-    fn release(&mut self) {
+    fn release(&mut self, gc: &rhp_values::gc::State) {
         if let Some(live) = self.fe_live.take() {
             for (pos, arr, by_ref, id) in *live {
                 dispatch::release_fe_iter(&mut self.regs, pos, arr, by_ref, id);
@@ -592,7 +599,7 @@ impl Frame {
                 if let Value::Object(_) | Value::Array(_) | Value::Ref(_) | Value::Closure(_) = slot
                 {
                     let v = std::mem::replace(slot, Value::Undef);
-                    rhp_values::gc::possible_root(&v);
+                    rhp_values::gc::possible_root_in(gc, &v);
                     drop(v);
                 }
             }
@@ -601,14 +608,14 @@ impl Frame {
             // A prelude method's variables go before its `$this` too.
             self.regs.clear();
             if self.closure.is_none() && !self.internal_caller {
-                rhp_values::gc::possible_root(&this);
+                rhp_values::gc::possible_root_in(gc, &this);
             }
             drop(this);
         }
         // A closure call releases the Closure (not its bound `$this`).
         if let Some(c) = self.closure.take() {
             let c = Value::Closure(c);
-            rhp_values::gc::possible_root(&c);
+            rhp_values::gc::possible_root_in(gc, &c);
             drop(c);
         }
     }

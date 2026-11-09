@@ -76,6 +76,7 @@ impl Vm {
             output: output::Output::default(),
             stack: crate::frame_stack::FrameStack::new(rhp_values::mem::state()),
             reg_pool: Default::default(),
+            arg_counts: Default::default(),
             units: Vec::new(),
             functions: Vec::new(),
             fn_names: Default::default(),
@@ -197,6 +198,7 @@ impl Vm {
             preload_rec: None,
             preloaded: None,
             mem: rhp_values::mem::state(),
+            gc: rhp_values::gc::state(),
             delayed_oom: None,
             _request_state: RequestStateReset,
         }
@@ -464,10 +466,15 @@ impl Vm {
     }
 
     /// Bind a frame's superglobal CVs to their shared global cells.
+    #[inline]
     pub(crate) fn bind_superglobals(&mut self, frame: &mut Frame) {
-        if frame.proto.superglobals.is_empty() {
-            return;
+        if !frame.proto.superglobals.is_empty() {
+            self.bind_superglobals_slow(frame);
         }
+    }
+
+    #[inline(never)]
+    fn bind_superglobals_slow(&mut self, frame: &mut Frame) {
         for (cv, name) in frame.proto.superglobals.clone() {
             if name.as_bytes() == b"GLOBALS" {
                 continue; // `$GLOBALS` compiles to its own opcodes

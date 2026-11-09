@@ -178,8 +178,13 @@ impl ClassCache {
 
     /// Cache `name` at index `at` of a table of `n` methods.
     pub(crate) fn put_method(&self, name: &PhpStr, at: usize, n: usize) {
-        self.methods
-            .put(name.hash_value(), 0, at as u32, name.addr(), method_slots(n));
+        self.methods.put(
+            name.hash_value(),
+            0,
+            at as u32,
+            name.addr(),
+            method_slots(n),
+        );
     }
 
     /// `name` matched the method entry it hit.

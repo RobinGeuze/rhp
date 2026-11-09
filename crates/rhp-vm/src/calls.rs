@@ -13,6 +13,9 @@ use crate::callables::{trampoline_name, Found};
 use crate::errors::UnwindResult;
 use crate::{classes, deref, Frame, UnitFn, UnitId, Vm};
 
+/// An internal function's minimum and maximum argument counts.
+pub(crate) type ArgRange = (usize, Option<usize>);
+
 /// Named call arguments, in call order.
 type NamedArgs = Vec<(PhpStr, Value)>;
 
@@ -888,13 +891,13 @@ impl Vm {
     /// zpp's ArgumentCountError for a prelude function or a built-in class's
     /// prelude method called with an argument count its stub signature
     /// rejects (prelude code calling it is not checked).
+    #[inline]
     fn internal_arg_count_error(
-        &self,
+        &mut self,
         proto: &FunctionProto,
         frame: &Frame,
         passed: usize,
     ) -> Option<Thrown> {
-        use rhp_bytecode::signatures::Signature;
         if !proto.is_internal() {
             return None;
         }
@@ -902,7 +905,39 @@ impl Vm {
         if self.is_internal_frame(caller) {
             return None;
         }
-        let (cname, fname, min, max) = match frame.defining_class {
+        // The signature's counts, looked up once per method or function
+        // (a binary search of the signature table by name otherwise).
+        let key = (
+            frame.defining_class.unwrap_or(ClassId::MAX),
+            proto.name.clone(),
+        );
+        let range = match self.arg_counts.get(&key) {
+            Some(r) => *r,
+            None => {
+                let r = self
+                    .internal_arg_counts(proto, frame)
+                    .map(|(_, _, range)| range);
+                // Engine data (php reads the counts off the function).
+                self.mem.uncounted(|| self.arg_counts.insert(key, r));
+                r
+            }
+        };
+        let (min, max) = range?;
+        if passed >= min && max.is_none_or(|m| passed <= m) && passed <= proto.params.len() {
+            return None;
+        }
+        self.internal_arg_count_slow(proto, frame, passed)
+    }
+
+    /// The signature an internal call is counted against: class and
+    /// function name, minimum and maximum arguments; `None`: not counted.
+    fn internal_arg_counts(
+        &self,
+        proto: &FunctionProto,
+        frame: &Frame,
+    ) -> Option<(Option<&[u8]>, &'static str, ArgRange)> {
+        use rhp_bytecode::signatures::Signature;
+        Some(match frame.defining_class {
             Some(cls) if self.is_internal_class(cls) => {
                 let cname = self.class(cls).name.as_bytes();
                 // Their php bodies throw without parsing any argument, or
@@ -925,7 +960,7 @@ impl Vm {
                 } else {
                     st.max_args()
                 };
-                (Some(cname), st.name, st.min_args(), max)
+                (Some(cname), st.name, (st.min_args(), max))
             }
             Some(_) => return None,
             None => {
@@ -933,9 +968,20 @@ impl Vm {
                     return None;
                 }
                 let f = rhp_bytecode::signatures::function(proto.name.as_bytes())?;
-                (None, f.name, f.min_args(), f.max_args())
+                (None, f.name, (f.min_args(), f.max_args()))
             }
-        };
+        })
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn internal_arg_count_slow(
+        &self,
+        proto: &FunctionProto,
+        frame: &Frame,
+        passed: usize,
+    ) -> Option<Thrown> {
+        let (cname, fname, (min, max)) = self.internal_arg_counts(proto, frame)?;
         let fits = passed >= min && max.is_none_or(|m| passed <= m);
         if fits && passed <= proto.params.len() {
             return None;
@@ -1938,7 +1984,12 @@ impl Vm {
     /// outermost frame returns (program done), else delivers to the caller.
     /// A frame for a call to `proto`, its registers from the pool.
     #[inline]
-    pub(crate) fn new_frame(&mut self, proto: Rc<FunctionProto>, unit: UnitId, ret_dst: Reg) -> Frame {
+    pub(crate) fn new_frame(
+        &mut self,
+        proto: Rc<FunctionProto>,
+        unit: UnitId,
+        ret_dst: Reg,
+    ) -> Frame {
         let regs = self.reg_pool.take(proto.num_registers as usize, self.mem);
         Frame::with_regs(proto, unit, ret_dst, regs)
     }
@@ -1947,7 +1998,7 @@ impl Vm {
     /// register file for the next call.
     #[inline]
     pub(crate) fn recycle_frame(&mut self, mut frame: Frame) {
-        frame.release();
+        frame.release(self.gc);
         let mut regs = std::mem::take(&mut frame.regs);
         // The temporaries go before the rest of the frame (field order).
         regs.clear();

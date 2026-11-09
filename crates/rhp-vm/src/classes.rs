@@ -86,6 +86,11 @@ pub struct ClassEntry {
     /// Some property has hooks (php's `ce->num_hooked_props`): property
     /// access takes the hook-aware path only for such classes.
     pub hooked: bool,
+    /// php's `ce->get_iterator == zend_hooked_object_get_iterator`: the
+    /// class's own body (not a trait) declares a hooked property, or the
+    /// parent's iterates so. foreach then walks the properties through
+    /// their hooks.
+    pub hooked_iter: bool,
     /// Some static property has a type or a set visibility: static
     /// property writes take the checked path only for such classes.
     pub checked_statics: bool,
@@ -1030,6 +1035,7 @@ fn copy_classes(classes: &[ClassEntry], capacity: usize) -> Vec<ClassEntry> {
             handlers: e.handlers,
             create_object: e.create_object,
             hooked: e.hooked,
+            hooked_iter: e.hooked_iter,
             checked_statics: e.checked_statics,
             cache: Default::default(),
         });
@@ -1736,6 +1742,11 @@ impl Vm {
             return Err(self.link_fatal(proto, 64, &msg));
         }
         let hooked = props.values().any(|pe| pe.hooks.is_some());
+        // zend_compile_prop_decl sets get_iterator for the class compiling
+        // the hook; zend_do_inheritance copies the parent's. A trait's
+        // properties are bound without it (except on Windows).
+        let hooked_iter = proto.props.iter().any(|p| p.has_hooks())
+            || parent.is_some_and(|p| self.classes[p as usize].hooked_iter);
 
         // Static properties (inherited slots alias; redeclared get a fresh cell).
         let mut static_props: IndexMap<Vec<u8>, StaticProp, FxBuildHasher> = parent
@@ -2025,6 +2036,7 @@ impl Vm {
             handlers,
             create_object,
             hooked,
+            hooked_iter,
             checked_statics,
             cache: Default::default(),
         });

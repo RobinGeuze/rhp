@@ -31,9 +31,6 @@ pub(crate) struct FileCtx<'s> {
     /// The variables the file may alias, scanned on first use
     /// ([`FileCtx::may_alias`]).
     alias_marks: OnceCell<AliasMarks>,
-    /// Each anonymous class's CG(rtd_key_counter) value, by its offset
-    /// ([`crate::decl::assign_rtd_keys`]).
-    pub(crate) anon_keys: RefCell<HashMap<u32, u32>>,
     /// Each anonymous class's CG(rtd_key_counter) value, by its start
     /// offset ([`crate::decl::assign_rtd_keys`]).
     pub(crate) anon_keys: RefCell<HashMap<u32, u32>>,
@@ -145,7 +142,6 @@ impl<'s> FileCtx<'s> {
             src,
             tokens: OnceCell::new(),
             alias_marks: OnceCell::new(),
-            anon_keys: RefCell::new(HashMap::new()),
             anon_keys: RefCell::new(HashMap::new()),
             line_starts: Vec::new(),
             is_prelude: false,

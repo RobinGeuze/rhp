@@ -753,6 +753,7 @@ impl Vm {
         put(&mut a, "abstract", Value::Bool(explicit || has_abstract));
         put(&mut a, "final", Value::Bool(is_final));
         put(&mut a, "readonly", Value::Bool(e.flags.is_readonly));
+        put(&mut a, "hooked_iter", Value::Bool(e.hooked_iter));
         let instantiable = e.kind == ClassKind::Class
             && !explicit
             && !has_abstract

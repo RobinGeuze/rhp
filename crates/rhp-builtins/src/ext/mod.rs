@@ -76,6 +76,12 @@ pub(crate) fn class_handlers() -> Vec<&'static crate::zend::object_handlers::Cla
     .collect()
 }
 
+/// The internal class aliases the extensions register
+/// (zend_register_class_alias): (alias, class).
+pub(crate) fn class_aliases() -> &'static [(&'static str, &'static str)] {
+    dom::CLASS_ALIASES
+}
+
 /// The standard module, then every extension, in startup order: their
 /// prelude classes compile in this order.
 pub(crate) fn modules() -> Vec<ModuleDef> {

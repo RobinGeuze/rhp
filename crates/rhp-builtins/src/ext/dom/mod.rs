@@ -1142,6 +1142,9 @@ static TOKEN_LIST_HANDLERS: ObjectHandlers = ObjectHandlers {
     ..ObjectHandlers::STD
 };
 
+/// zend_register_class_alias of php_dom_arginfo.h: (alias, class).
+pub(crate) const CLASS_ALIASES: &[(&str, &str)] = &[("Dom\\DOMException", "DOMException")];
+
 pub(crate) static CLASSES: &[ClassHandlers] = &[
     ClassHandlers {
         class: "Dom\\Node",

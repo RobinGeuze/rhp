@@ -1067,6 +1067,7 @@ impl Vm {
             return Ok(());
         }
         self.install_classes(protos, 0)?;
+        self.install_internal_aliases();
         self.incomplete_class = self.class_ids.get(&b"__php_incomplete_class"[..]).copied();
         self.throwable_class = self.class_ids.get(&b"throwable"[..]).copied();
         if PRELUDE_LINKED_ONCE.with(|l| l.replace(true)) {
@@ -1080,6 +1081,17 @@ impl Vm {
             LINKED_PRELUDE.with(|c| *c.borrow_mut() = Some(Rc::new(p)));
         }
         Ok(())
+    }
+
+    /// The extensions' internal class aliases (zend_register_class_alias):
+    /// class-table keys for an internal class under another name.
+    fn install_internal_aliases(&mut self) {
+        for (alias, class) in rhp_builtins::zend::object_handlers::class_aliases() {
+            if let Some(&id) = self.class_ids.get(&class.to_ascii_lowercase().into_bytes()) {
+                self.class_ids
+                    .insert(alias.to_ascii_lowercase().into_bytes(), id);
+            }
+        }
     }
 
     /// Link every `ClassProto` of `unit` into the class table, in dependency

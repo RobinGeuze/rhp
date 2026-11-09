@@ -430,6 +430,12 @@ pub fn registered(name: &[u8]) -> Option<&'static ClassHandlers> {
         .map(|i| t[i])
 }
 
+/// The internal class aliases (zend_register_class_alias): (alias, class).
+/// The engine adds them to the class table after linking the prelude.
+pub fn class_aliases() -> &'static [(&'static str, &'static str)] {
+    crate::ext::class_aliases()
+}
+
 /// The object behind `v` (through a reference).
 pub fn object_of(v: &Value) -> Option<ObjectHandle> {
     match v {

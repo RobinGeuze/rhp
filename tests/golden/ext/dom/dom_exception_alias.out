@@ -1,0 +1,20 @@
+bool(true)
+bool(true)
+string(12) "DOMException"
+int(3)
+string(12) "DOMException"
+string(12) "DOMException"
+bool(true)
+bool(true)
+bool(true)
+array(3) {
+  [0]=>
+  string(15) "DomainException"
+  [1]=>
+  string(12) "DOMException"
+  [2]=>
+  string(16) "dom\domexception"
+}
+bool(false)
+Cannot redeclare class Dom\DOMException
+Canonicalization can only happen on nodes attached to a document.

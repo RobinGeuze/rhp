@@ -459,6 +459,9 @@ fn fn_array_intersect(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thro
 /// `__isset` admits (its "isset" mode), read through `__get`.
 fn column_prop(host: &mut dyn Host, row: &Value, key: &Value) -> Result<Option<Value>, Thrown> {
     let name = conv::to_string_bytes(key);
+    if let Some(v) = host.object_prop_hooked(row, &name) {
+        return Ok(Some(deref(&v?)));
+    }
     if host.object_prop_exists(row, &name) {
         return Ok(host.object_prop(row, &name).map(|v| deref(&v)));
     }

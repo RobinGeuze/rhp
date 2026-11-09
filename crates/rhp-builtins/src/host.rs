@@ -1092,6 +1092,13 @@ pub trait Host {
     fn object_prop_exists_as(&self, obj: &Value, name: &[u8]) -> bool {
         self.object_prop_exists(obj, name)
     }
+    /// A hooked property `$obj->name` as seen from the calling scope, read
+    /// through its get hook (zend_std_has_property's "exists" answer for a
+    /// hooked property, then read_property). `None`: not a hooked property
+    /// there, or one read from its backing slot.
+    fn object_prop_hooked(&mut self, _obj: &Value, _name: &[u8]) -> Option<Result<Value, Thrown>> {
+        None
+    }
 
     // --- classes and reflection ---------------------------------------------
 

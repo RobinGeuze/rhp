@@ -1,0 +1,14 @@
+array(2) {
+  [0]=>
+  string(3) "baz"
+  [1]=>
+  string(3) "qux"
+}
+array(2) {
+  [0]=>
+  string(1) "e"
+  [1]=>
+  string(1) "e"
+}
+bool(true)
+bool(true)

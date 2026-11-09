@@ -2259,6 +2259,21 @@ impl Host for Vm {
         }
     }
 
+    fn object_prop_hooked(&mut self, obj: &Value, name: &[u8]) -> Option<Result<Value, Thrown>> {
+        let Value::Object(h) = deref(obj) else {
+            return None;
+        };
+        let cls = h.borrow().class;
+        if !self.classes[cls as usize].hooked {
+            return None;
+        }
+        let scope = self.stack.last().and_then(|f| f.defining_class);
+        match classes::resolve_prop(&self.classes, cls, scope, &PhpStr::from_bytes(name)) {
+            PropRes::Slot(k) => self.hooked_read(&h, cls, &k),
+            _ => None,
+        }
+    }
+
     fn object_vars(&self, obj: &Value) -> Option<Value> {
         let Value::Object(h) = deref(obj) else {
             return None;

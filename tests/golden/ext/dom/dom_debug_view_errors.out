@@ -1,0 +1,21 @@
+DOMElement Object
+(
+    [schemaTypeInfo] => 
+)
+
+DOMException Invalid State Error 11 26
+28
+object(Demo)#28 (1) {
+  ["registerNodeNamespaces"]=>
+  bool(true)
+}
+Invalid State Error
+Invalid State Error
+Dom\XMLDocument::xinclude(): Argument #1 ($options) is too large
+int(0)
+bool(false)
+bool(true)
+bool(true)
+string(121) "<?xml version="1.0" encoding="UTF-8"?>
+<root xmlns="urn:test" xmlns:ref="urn:other"><item target="ref:something"/></root>"
+int(0)

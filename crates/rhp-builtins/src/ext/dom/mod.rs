@@ -848,7 +848,7 @@ fn modern_method(name: &[u8]) -> Option<Method> {
         b"XMLDocument::createFromFile" => m::xml_create_from_file,
         b"XMLDocument::createFromString" => m::xml_create_from_string,
         b"XMLDocument::validate" => document::validate,
-        b"XMLDocument::xinclude" => document::xinclude,
+        b"XMLDocument::xinclude" => document::xinclude_modern,
         b"XPath::__construct" => x::construct,
         b"XPath::evaluate" => x::evaluate,
         b"XPath::query" => x::query,

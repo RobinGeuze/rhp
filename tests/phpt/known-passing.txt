@@ -6584,6 +6584,7 @@ ext/dom/tests/bug79701/set_attribute_xml.phpt
 ext/dom/tests/bug79701/swap.phpt
 ext/dom/tests/bug79701/toggle.phpt
 ext/dom/tests/bug79701/unconnected.phpt
+ext/dom/tests/bug79852.phpt
 ext/dom/tests/bug79968.phpt
 ext/dom/tests/bug79971_2.phpt
 ext/dom/tests/bug80268_2.phpt
@@ -6643,6 +6644,7 @@ ext/dom/tests/delayed_freeing/namespace_xmlns_declaration_attribute_variation.ph
 ext/dom/tests/delayed_freeing/notation_declaration.phpt
 ext/dom/tests/delayed_freeing/processing_instruction.phpt
 ext/dom/tests/delayed_freeing/text_node.phpt
+ext/dom/tests/delayed_freeing/without_contructor.phpt
 ext/dom/tests/dom001.phpt
 ext/dom/tests/dom002.phpt
 ext/dom/tests/dom003.phpt
@@ -6657,6 +6659,7 @@ ext/dom/tests/dom_import_simplexml.phpt
 ext/dom/tests/dom_namespacenode_clone_xinclude.phpt
 ext/dom/tests/dom_set_attr_node.phpt
 ext/dom/tests/dom_xinclude.phpt
+ext/dom/tests/dom_xinclude_errors.phpt
 ext/dom/tests/domattributes.phpt
 ext/dom/tests/domchardata.phpt
 ext/dom/tests/domdocument_createentityreference_001.phpt
@@ -6687,6 +6690,7 @@ ext/dom/tests/gh12002.phpt
 ext/dom/tests/gh12455.phpt
 ext/dom/tests/gh12616_1.phpt
 ext/dom/tests/gh12616_2.phpt
+ext/dom/tests/gh12616_3.phpt
 ext/dom/tests/gh12870_a.phpt
 ext/dom/tests/gh12870_b.phpt
 ext/dom/tests/gh13012.phpt
@@ -6710,6 +6714,7 @@ ext/dom/tests/gh16150.phpt
 ext/dom/tests/gh16151.phpt
 ext/dom/tests/gh16152.phpt
 ext/dom/tests/gh16190.phpt
+ext/dom/tests/gh16316.phpt
 ext/dom/tests/gh16317.phpt
 ext/dom/tests/gh16336_1.phpt
 ext/dom/tests/gh16336_2.phpt
@@ -6736,6 +6741,7 @@ ext/dom/tests/gh18304.phpt
 ext/dom/tests/gh19612.phpt
 ext/dom/tests/gh20722.phpt
 ext/dom/tests/gh22077.phpt
+ext/dom/tests/gh22219.phpt
 ext/dom/tests/gh22447.phpt
 ext/dom/tests/gh22825.phpt
 ext/dom/tests/gh23331.phpt
@@ -6875,6 +6881,7 @@ ext/dom/tests/modern/html/parser/Element_outerHTML.phpt
 ext/dom/tests/modern/html/parser/HTMLDocument_createFromFile_createFromString_BOM_buffer_edge.phpt
 ext/dom/tests/modern/html/parser/HTMLDocument_createFromString_namespaced_attributes.phpt
 ext/dom/tests/modern/html/parser/HTMLDocument_fromFile_DOM_HTML_NO_DEFAULT_NS.phpt
+ext/dom/tests/modern/html/parser/HTMLDocument_fromFile_empty_path.phpt
 ext/dom/tests/modern/html/parser/HTMLDocument_fromFile_local_existing_file.phpt
 ext/dom/tests/modern/html/parser/HTMLDocument_fromFile_local_file_does_not_exist.phpt
 ext/dom/tests/modern/html/parser/HTMLDocument_fromFile_nul_terminator_cases_path.phpt
@@ -6918,6 +6925,7 @@ ext/dom/tests/modern/html/serializer/HTMLDocument_serialize_cdata.phpt
 ext/dom/tests/modern/html/serializer/HTMLDocument_serialize_comment.phpt
 ext/dom/tests/modern/html/serializer/HTMLDocument_serialize_doctype.phpt
 ext/dom/tests/modern/html/serializer/HTMLDocument_serialize_element_ns.phpt
+ext/dom/tests/modern/html/serializer/HTMLDocument_serialize_failing_stream.phpt
 ext/dom/tests/modern/html/serializer/HTMLDocument_serialize_fragment.phpt
 ext/dom/tests/modern/html/serializer/HTMLDocument_serialize_full_document.phpt
 ext/dom/tests/modern/html/serializer/HTMLDocument_serialize_ns_imported_01.phpt
@@ -7114,6 +7122,7 @@ ext/dom/tests/modern/xml/XMLDocument_xpath.phpt
 ext/dom/tests/modern/xml/XMLDocument_xpath_errors.phpt
 ext/dom/tests/modern/xml/attribute_getNamedItemNS_incorrect_ns_check.phpt
 ext/dom/tests/modern/xml/bug48339.phpt
+ext/dom/tests/modern/xml/canonicalize_unattached.phpt
 ext/dom/tests/modern/xml/gh17572.phpt
 ext/dom/tests/modern/xml/gh18979.phpt
 ext/dom/tests/modern/xml/gh20444.phpt
@@ -13838,6 +13847,7 @@ ext/standard/tests/general_functions/php_uname_error.phpt
 ext/standard/tests/general_functions/phpcredits.phpt
 ext/standard/tests/general_functions/phpcredits2.phpt
 ext/standard/tests/general_functions/phpinfo-header-anchors.phpt
+ext/standard/tests/general_functions/phpinfo.phpt
 ext/standard/tests/general_functions/phpinfo2.phpt
 ext/standard/tests/general_functions/print_r_array_circular.phpt
 ext/standard/tests/general_functions/print_r_arrays.phpt

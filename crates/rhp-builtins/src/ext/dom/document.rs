@@ -915,12 +915,41 @@ fn xinclude_strip_fallback_references(basep: *const XmlNode) {
     }
 }
 
+/// DOMDocument::xinclude
 pub fn xinclude(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
-    let mut flags = int(args, 0);
+    let flags = int(args, 0);
     if !(i32::MIN as i64..=INT_MAX).contains(&flags) {
         cx.warn("Invalid flags")?;
         return Ok(Value::Bool(false));
     }
+    let err = perform_xinclude(cx, this, flags)?;
+    Ok(if err != 0 {
+        Value::Int(err as i64)
+    } else {
+        Value::Bool(false)
+    })
+}
+
+/// Dom\XMLDocument::xinclude
+pub fn xinclude_modern(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thrown> {
+    let flags = int(args, 0);
+    if !(i32::MIN as i64..=INT_MAX).contains(&flags) {
+        return Err(crate::zend::zpp::value_error(
+            &cx.fname,
+            1,
+            "options",
+            "is too large",
+        ));
+    }
+    let err = perform_xinclude(cx, this, flags)?;
+    if err < 0 {
+        super::throw(cx, super::INVALID_MODIFICATION_ERR, true)?;
+    }
+    Ok(Value::Int(err as i64))
+}
+
+/// dom_perform_xinclude
+fn perform_xinclude(cx: &mut Cx, this: &Value, mut flags: i64) -> Result<c_int, Thrown> {
     let (intern, docp) = this_doc(cx, this)?;
     xinclude_strip_fallback_references(docp.cast());
     flags |= XML_PARSE_NOXINCNODE;
@@ -932,11 +961,26 @@ pub fn xinclude(cx: &mut Cx, this: &Value, args: &[Value]) -> Result<Value, Thro
         e
     })?;
     lxn::invalidate_node_list_cache(intern.document());
-    Ok(if err != 0 {
-        Value::Int(err as i64)
-    } else {
-        Value::Bool(false)
-    })
+    Ok(err)
+}
+
+/// dom_validate_ns_guard: a modern document keeps its namespace
+/// declarations as attributes (no nsDef), so libxml2's validators could
+/// not resolve prefixed QNames in content; link them while `f` runs, as
+/// C14N does.
+fn with_ns_guard<R>(docp: *mut XmlDoc, f: impl FnOnce() -> R) -> R {
+    let node = docp.cast::<XmlNode>();
+    if !super::nscompat::follow_spec_node(node) {
+        return f();
+    }
+    let mut links = super::nscompat::Links::default();
+    let root = unsafe { sys::xmlDocGetRootElement(docp) };
+    if !root.is_null() {
+        super::nscompat::relink_ns_decls(&mut links, root);
+    }
+    let r = f();
+    super::nscompat::unlink_ns_decls(links);
+    r
 }
 
 pub fn validate(cx: &mut Cx, this: &Value, _: &[Value]) -> Result<Value, Thrown> {
@@ -946,7 +990,7 @@ pub fn validate(cx: &mut Cx, this: &Value, _: &[Value]) -> Result<Value, Thrown>
         sys::rhp_xml_sanitize_globals(saved.as_mut_ptr());
         let cvp = sys::xmlNewValidCtxt();
         sys::rhp_xml_valid_ctxt_use_php_errors(cvp);
-        let v = sys::xmlValidateDocument(cvp, docp);
+        let v = with_ns_guard(docp, || sys::xmlValidateDocument(cvp, docp));
         sys::rhp_xml_restore_globals(saved.as_ptr());
         sys::xmlFreeValidCtxt(cvp);
         v
@@ -1022,7 +1066,7 @@ fn schema_validate_common(
         sys::rhp_xml_sanitize_globals(saved.as_mut_ptr());
         sys::xmlSchemaSetValidOptions(vptr, valid_opts);
         sys::rhp_xml_schema_valid_use_php_errors(vptr);
-        let v = sys::xmlSchemaValidateDoc(vptr, docp);
+        let v = with_ns_guard(docp, || sys::xmlSchemaValidateDoc(vptr, docp));
         sys::xmlSchemaFree(sptr);
         sys::xmlSchemaFreeValidCtxt(vptr);
         sys::rhp_xml_restore_globals(saved.as_ptr());
@@ -1099,7 +1143,7 @@ fn relaxng_validate_common(
     }
     let is_valid = cx.with_libxml(|| unsafe {
         sys::rhp_xml_relaxng_valid_use_php_errors(vptr);
-        let v = sys::xmlRelaxNGValidateDoc(vptr, docp);
+        let v = with_ns_guard(docp, || sys::xmlRelaxNGValidateDoc(vptr, docp));
         sys::xmlRelaxNGFree(sptr);
         sys::xmlRelaxNGFreeValidCtxt(vptr);
         v

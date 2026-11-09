@@ -366,6 +366,7 @@ impl Vm {
                 }
                 if let Some(l) = o.lazy() {
                     out.push(l.initializer.clone());
+                    out.extend(l.call.clone());
                     if let Some(i) = &l.instance {
                         out.push(Value::Object(i.clone()));
                     }

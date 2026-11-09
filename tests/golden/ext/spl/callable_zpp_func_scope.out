@@ -1,0 +1,18 @@
+
+Deprecated: Use of "self" in callables is deprecated in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/spl/callable_zpp_func_scope.php on line 8
+int(1)
+int(2)
+int(2)
+int(3)
+
+Deprecated: Use of "self" in callables is deprecated in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/spl/callable_zpp_func_scope.php on line 10
+int(1)
+int(2)
+
+Deprecated: Use of "self" in callables is deprecated in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/spl/callable_zpp_func_scope.php on line 11
+int(2)
+TypeError: CallbackFilterIterator::__construct(): Argument #2 ($callback) must be a valid callback, function "nope" not found or invalid function name
+TypeError: RecursiveCallbackFilterIterator::__construct(): Argument #2 ($callback) must be a valid callback, no array or string given
+TypeError: iterator_apply(): Argument #2 ($callback) must be a valid callback, class K does not have a method "nope"
+TypeError: uasort(): Argument #2 ($callback) must be a valid callback, function "nope" not found or invalid function name
+TypeError: uksort(): Argument #2 ($callback) must be a valid callback, no array or string given

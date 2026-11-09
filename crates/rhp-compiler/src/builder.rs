@@ -536,6 +536,11 @@ impl<'c> ProtoBuilder<'c> {
         for &(index, cv, expr, check_line) in defs {
             let jpos = self.code.len();
             self.emit(Instr::Nop); // JmpIfArg index -> after (patched)
+            let cache = crate::constexpr::recv_init_cacheable(expr);
+            let cpos = self.code.len();
+            if cache.is_some() {
+                self.emit(Instr::Nop); // RecvInitCached index -> check (patched)
+            }
             let saved_line = self.cur_line;
             {
                 // RECV_INIT runs on the parameter's line
@@ -548,6 +553,13 @@ impl<'c> ProtoBuilder<'c> {
             self.cur_line = saved_line;
             let t = t?;
             self.emit(Instr::Mov { dst: cv, src: t });
+            if let Some(strings) = cache {
+                self.emit(Instr::RecvInitStore { index, strings });
+                self.code[cpos] = Instr::RecvInitCached {
+                    index,
+                    target: self.here(),
+                };
+            }
             if let Some(line) = check_line {
                 let saved = std::mem::replace(&mut self.cur_line, line);
                 self.emit(Instr::RecvInitCheck { index });

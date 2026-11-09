@@ -2668,7 +2668,9 @@ impl Vm {
         let (zpp_error, shown_str) = match builtin_arg_count_error(builtin, args.len()) {
             Some(e) => (Some(e), 0),
             None => {
-                match self.coerce_builtin_args(builtin.name, sig, &mut args, user, strict, icall) {
+                match self.coerce_builtin_args_framed(
+                    builtin, sig, &mut args, user, strict, frameless, icall,
+                ) {
                     // ZPP_ERROR_UNEXPECTED_EXTRA_NAMED, at the variadic.
                     Ok(shown) if !extra.is_empty() => (
                         Some(Thrown::error(
@@ -2778,6 +2780,78 @@ impl Vm {
         self.native_calls.pop();
         // `args` outlives the entry just popped (see `NativeCall::args`).
         drop(args);
+        r
+    }
+
+    /// [`Vm::coerce_builtin_args`] for a call from user code. zpp runs in
+    /// the builtin's frame: a `__toString()` it calls shows the builtin
+    /// (with the arguments as passed) on its trace. sodium then strips the
+    /// argument values off what that threw
+    /// (sodium_remove_param_values_from_backtrace).
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    fn coerce_builtin_args_framed(
+        &mut self,
+        builtin: &'static builtins::Builtin,
+        sig: Option<&'static rhp_bytecode::signatures::Func>,
+        args: &mut [Value],
+        user: bool,
+        strict: bool,
+        frameless: bool,
+        icall: bool,
+    ) -> Result<u64, (Thrown, u64)> {
+        let framed = user
+            && !frameless
+            && args.iter().any(|a| match a {
+                Value::Object(h) => self.may_call_to_string(h),
+                Value::Ref(r) => {
+                    matches!(&*r.borrow(), Value::Object(h) if self.may_call_to_string(h))
+                }
+                _ => false,
+            });
+        if !framed {
+            return self.coerce_builtin_args(builtin.name, sig, args, user, strict, icall);
+        }
+        self.coerce_framed_cold(builtin, sig, args, strict, icall)
+    }
+
+    /// Whether zpp may run user code to stringify `h`
+    /// ([`crate::classes::ClassEntry::stringable`]).
+    #[inline]
+    fn may_call_to_string(&self, h: &ObjectHandle) -> bool {
+        self.classes[h.borrow().class as usize].stringable
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn coerce_framed_cold(
+        &mut self,
+        builtin: &'static builtins::Builtin,
+        sig: Option<&'static rhp_bytecode::signatures::Func>,
+        args: &mut [Value],
+        strict: bool,
+        icall: bool,
+    ) -> Result<u64, (Thrown, u64)> {
+        let snapshot = args.to_vec();
+        let depth = self.native_calls.len();
+        self.native_calls.push(NativeCall {
+            name: builtin.name,
+            args: snapshot.as_slice() as *const [Value],
+            shown_str: 0,
+            caller: self.stack.len().saturating_sub(1),
+            frameless_icall: icall,
+            named: &[] as *const [(PhpStr, Value)],
+            method_of: None,
+        });
+        let r = self.coerce_builtin_args(builtin.name, sig, args, true, strict, icall);
+        self.native_calls.truncate(depth);
+        // `snapshot` outlives the entry just removed.
+        drop(snapshot);
+        if let Err((Thrown::Object(h), _)) = &r {
+            if builtin.name.starts_with("sodium_") {
+                self.hide_thrown_trace_args(h);
+            }
+        }
         r
     }
 

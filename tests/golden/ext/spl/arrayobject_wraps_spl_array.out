@@ -1,0 +1,45 @@
+int(3)
+int(2)
+0=1 1=2 2=3 
+int(4)
+string(1) "y"
+array(2) {
+  ["a"]=>
+  int(1)
+  ["b"]=>
+  int(2)
+}
+array(2) {
+  ["a"]=>
+  int(1)
+  ["b"]=>
+  int(2)
+}
+int(5)
+int(1)
+int(5)
+int(5)
+array(1) {
+  [0]=>
+  int(9)
+}
+object(ArrayObject)#3 (1) {
+  ["storage":"ArrayObject":private]=>
+  object(ArrayIterator)#4 (1) {
+    ["storage":"ArrayIterator":private]=>
+    array(2) {
+      ["a"]=>
+      int(1)
+      ["b"]=>
+      int(2)
+    }
+  }
+}
+
+Deprecated: ArrayObject::__unserialize(): Using an object as a backing array for ArrayObject is deprecated, as it allows violating class constraints and invariants in /Users/robing/gits/rhp/.claude/worktrees/rest/w5-engine-tail/tests/golden/ext/spl/arrayobject_wraps_spl_array.php on line 15
+array(2) {
+  ["a"]=>
+  int(1)
+  ["b"]=>
+  int(2)
+}

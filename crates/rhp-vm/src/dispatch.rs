@@ -1032,6 +1032,12 @@ impl Vm {
                     }
                 }
                 Instr::RecvInitCheck { index } => self.recv_init_check(top, index)?,
+                Instr::RecvInitCached { index, target } => {
+                    self.recv_init_cached(top, index, target)
+                }
+                Instr::RecvInitStore { index, strings } => {
+                    self.recv_init_store(top, index, strings)
+                }
                 Instr::JmpTrue { cond, target } => {
                     let f = &mut self.stack[top];
                     if let Value::Bool(b) = f.regs[cond as usize] {
@@ -3378,16 +3384,29 @@ impl Vm {
 
     /// The class's native `ce->get_iterator`, unless a user class overrode
     /// `getIterator()` (zend_implement_aggregate then switches to
-    /// zend_user_it_get_new_iterator).
+    /// zend_user_it_get_new_iterator), or, for an Iterator, one of its
+    /// methods (zend_implement_iterator: zend_user_it_get_iterator).
     fn native_get_iterator(
         &self,
         h: &ObjectHandle,
     ) -> Option<rhp_builtins::zend::object_handlers::GetIteratorFn> {
         let f = self.handlers_of(h).and_then(|t| t.get_iterator)?;
-        match self.lookup_method(h.borrow().class, b"getiterator") {
-            Some(m) if !self.is_internal_class(m.defining_class) => None,
-            _ => Some(f),
+        let cls = h.borrow().class;
+        let user = |name: &[u8]| {
+            self.lookup_method(cls, name)
+                .is_some_and(|m| !self.is_internal_class(m.defining_class))
+        };
+        if user(b"getiterator") {
+            return None;
         }
+        if self.class_implements(cls, b"Iterator")
+            && [&b"rewind"[..], b"valid", b"key", b"current", b"next"]
+                .into_iter()
+                .any(user)
+        {
+            return None;
+        }
+        Some(f)
     }
 
     /// zend_user_it_get_new_iterator: follow `getIterator()` until an object

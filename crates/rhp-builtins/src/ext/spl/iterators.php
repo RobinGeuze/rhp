@@ -22,11 +22,19 @@ class SplObjectStorage implements Countable, SeekableIterator, Serializable, Arr
         return count($this->__o);
     }
     public function removeAll(SplObjectStorage $storage): int {
-        foreach ($storage->__o as $o) { $h = $this->__hash($o); unset($this->__o[$h], $this->__v[$h]); }
+        // php stays on an element of $storage until its detach fails, so a
+        // removed one is hashed twice.
+        foreach ($storage->__o as $o) {
+            while (array_key_exists($h = $this->__hash($o), $this->__o)) {
+                unset($this->__o[$h], $this->__v[$h]);
+                if ($storage === $this) { break; }
+            }
+        }
         return count($this->__o);
     }
     public function removeAllExcept(SplObjectStorage $storage): int {
-        foreach ($this->__o as $h => $o) { if (!$storage->offsetExists($o)) { unset($this->__o[$h], $this->__v[$h]); } }
+        // spl_object_storage_detach: this storage's own hash.
+        foreach ($this->__o as $o) { if (!array_key_exists($storage->__hash($o), $storage->__o)) { $h = $this->__hash($o); unset($this->__o[$h], $this->__v[$h]); } }
         return count($this->__o);
     }
     // The storage's own position starts at the first element, as php's
@@ -546,7 +554,7 @@ class CallbackFilterIterator extends FilterIterator {
     protected $__cb;
     public function __construct(Iterator $iterator, callable $callback) {
         parent::__construct($iterator);
-        $this->__cb = $callback;
+        $this->__cb = __spl_fcc($callback);
     }
     public function accept(): bool {
         if (!$this->__has) { return false; }
@@ -564,7 +572,8 @@ abstract class RecursiveFilterIterator extends FilterIterator implements Recursi
 
 class RecursiveCallbackFilterIterator extends CallbackFilterIterator implements RecursiveIterator {
     public function __construct(RecursiveIterator $iterator, callable $callback) {
-        parent::__construct($iterator, $callback);
+        // (checked here: the parent gets the resolved callable)
+        parent::__construct($iterator, __spl_fcc($callback));
     }
     public function hasChildren(): bool { return $this->__it->hasChildren(); }
     public function getChildren(): RecursiveCallbackFilterIterator {

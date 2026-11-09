@@ -2,6 +2,8 @@
 //! (`spl_autoload_register` and friends). The callables live on the [`Host`]
 //! (the VM), which invokes them when a class reference fails to resolve.
 
+mod dllist;
+
 use rhp_values::ops::deref;
 use rhp_values::{conv, ArrayKey, ObjectHandle, PhpArray, PhpStr, Value};
 
@@ -30,6 +32,11 @@ static SPL_OBJECT_STORAGE_HANDLERS: ObjectHandlers = ObjectHandlers {
 };
 
 pub(crate) static CLASSES: &[ClassHandlers] = &[
+    ClassHandlers {
+        class: "SplDoublyLinkedList",
+        handlers: &dllist::HANDLERS,
+        create_object: true,
+    },
     ClassHandlers {
         class: "SplObjectStorage",
         handlers: &SPL_OBJECT_STORAGE_HANDLERS,
@@ -210,9 +217,12 @@ fn fn_spl_array_debug_info(host: &mut dyn Host, args: &[Value]) -> Result<Value,
         let Some(st) = b.props().get(&key("__s")) else {
             continue;
         };
-        let st = match b.props().get(&key("__o")).map(deref) {
-            Some(Value::Object(o)) if std::rc::Rc::ptr_eq(&o, &h) => break,
-            Some(o @ Value::Object(_)) => o,
+        let st = match (
+            b.props().get(&key("__o")).map(deref),
+            b.props().get(&key("__w")).map(deref),
+        ) {
+            (Some(Value::Object(o)), _) if std::rc::Rc::ptr_eq(&o, &h) => break,
+            (Some(o @ Value::Object(_)), _) | (_, Some(o @ Value::Object(_))) => o,
             _ => deref(st),
         };
         let cname = host.class_name(b.class).unwrap_or_default();
@@ -359,8 +369,61 @@ pub fn register(m: &mut crate::Registry) {
                 Some(1),
             ),
             ("__spl_realpath", fn_spl_realpath, 1, Some(1)),
+            ("__spl_fcc", fn_spl_fcc, 1, Some(1)),
+            ("__spl_array_bind", fn_spl_array_bind, 2, Some(2)),
         ],
     );
+}
+
+/// `__spl_fcc($callable)`: a callable checked by a `ZPP_CALLABLE` parameter,
+/// kept as php keeps its fcc: a name resolved in the caller's scope (`self`,
+/// a private method) still calls the same function from another scope.
+fn fn_spl_fcc(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let v = args[0].clone();
+    Ok(match v {
+        Value::Str(_) | Value::Array(_) => host.wrap_callable(v),
+        v => v,
+    })
+}
+
+/// The storage slot (`__s`) of an ArrayObject or ArrayIterator.
+fn spl_array_slot(h: &ObjectHandle) -> Option<PhpStr> {
+    let b = h.borrow();
+    ["ArrayObject", "ArrayIterator"]
+        .into_iter()
+        .map(|c| PhpStr::from(format!("\0{c}\0__s").as_str()))
+        .find(|k| b.props().contains_key(k))
+}
+
+/// `__spl_array_bind($this, $inner)`: an ArrayObject / ArrayIterator over
+/// another one uses that one's storage (php's spl_array_get_hash_table
+/// follows the inner object), so `$this`'s storage slot becomes a reference
+/// to `$inner`'s. With `$inner` null, the slot stops being shared.
+fn fn_spl_array_bind(_: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
+    let Value::Object(me) = deref(&args[0]) else {
+        return Ok(Value::Null);
+    };
+    let Some(key) = spl_array_slot(&me) else {
+        return Ok(Value::Null);
+    };
+    let cell = match deref(&args[1]) {
+        Value::Object(inner) => {
+            let Some(ikey) = spl_array_slot(&inner) else {
+                return Ok(Value::Null);
+            };
+            let mut ib = inner.borrow_mut();
+            let slot = ib.props_mut().get_or_insert_null(ikey);
+            if !matches!(slot, Value::Ref(_)) {
+                let v = std::mem::replace(slot, Value::Null);
+                *slot = Value::Ref(std::rc::Rc::new(std::cell::RefCell::new(v)));
+            }
+            slot.clone()
+        }
+        _ => deref(me.borrow().props().get(&key).unwrap_or(&Value::Null)),
+    };
+    let old = me.borrow_mut().props_mut().insert(key, cell);
+    drop(old);
+    Ok(Value::Null)
 }
 
 /// SPL's classes in PHP source:

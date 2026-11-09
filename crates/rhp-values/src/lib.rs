@@ -281,6 +281,9 @@ pub struct LazyInfo {
     pub flags: u8,
     /// The initializer or factory (until a proxy is initialized).
     pub initializer: Value,
+    /// The initializer as php's fcc resolved it, bound to the scope it was
+    /// checked in (a `self::` or private name), when that differs.
+    pub call: Option<Value>,
     /// An initialized proxy's real instance.
     pub instance: Option<ObjectHandle>,
     /// Storage keys of the declared slots still lazy (IS_PROP_LAZY).

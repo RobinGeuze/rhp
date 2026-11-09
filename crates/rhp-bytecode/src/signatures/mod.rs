@@ -326,6 +326,15 @@ pub fn method(class: &[u8], name: &[u8]) -> Option<&'static Method> {
     .map(|i| &t[i])
 }
 
+/// The stub rows of the methods declared on class `class` (by name).
+pub fn class_methods(class: &[u8]) -> &'static [Method] {
+    let class = strip_ns(class);
+    let t = table::METHODS;
+    let lo = t.partition_point(|r| cmp_ci(r.class.as_bytes(), class) == Ordering::Less);
+    let hi = lo + t[lo..].partition_point(|r| cmp_ci(r.class.as_bytes(), class) == Ordering::Equal);
+    &t[lo..hi]
+}
+
 /// A `#[\Deprecated]` function's `since` and `message` (each empty when
 /// the attribute leaves it out).
 pub fn deprecation(f: &Func) -> Option<(&'static str, &'static str)> {

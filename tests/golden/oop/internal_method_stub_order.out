@@ -1,0 +1,7 @@
+LimitIterator: __construct,rewind,valid,next,seek,getPosition,getInnerIterator,key,current
+SplHeap: extract,insert,top,count,isEmpty,rewind,current,key,next,valid,recoverFromCorruption,isCorrupted,__debugInfo,__serialize,__unserialize
+SplObjectStorage: attach,detach,contains,addAll,removeAll,removeAllExcept,getInfo,setInfo,count,rewind,valid,key,current,next,seek,unserialize,serialize,offsetExists,offsetGet,offsetSet,offsetUnset,getHash,__serialize,__unserialize,__debugInfo
+ArrayObject: __construct,offsetExists,offsetGet,offsetSet,offsetUnset,append,getArrayCopy,count,getFlags,setFlags,asort,ksort,uasort,uksort,natsort,natcasesort,unserialize,serialize,__serialize,__unserialize,getIterator,exchangeArray,setIteratorClass,getIteratorClass,__debugInfo
+SplFixedArray: __construct,__wakeup,__serialize,__unserialize,count,toArray,fromArray,getSize,setSize,offsetExists,offsetGet,offsetSet,offsetUnset,getIterator,jsonSerialize
+ReflectionReference: fromArrayElement,getId
+CachingIterator::__construct,CachingIterator::rewind,CachingIterator::valid,CachingIterator::next,CachingIterator::hasNext,CachingIterator::__toString,CachingIterator::getFlags,CachingIterator::setFlags,CachingIterator::offsetGet,CachingIterator::offsetSet,CachingIterator::offsetUnset,CachingIterator::offsetExists,CachingIterator::getCache,CachingIterator::count,IteratorIterator::getInnerIterator,IteratorIterator::key,IteratorIterator::current

@@ -91,6 +91,9 @@ pub struct ClassEntry {
     /// parent's iterates so. foreach then walks the properties through
     /// their hooks.
     pub hooked_iter: bool,
+    /// zpp may run user code to stringify an object of the class: it has
+    /// `__toString()` or a `cast_object` handler.
+    pub stringable: bool,
     /// Some static property has a type or a set visibility: static
     /// property writes take the checked path only for such classes.
     pub checked_statics: bool,
@@ -1036,6 +1039,7 @@ fn copy_classes(classes: &[ClassEntry], capacity: usize) -> Vec<ClassEntry> {
             create_object: e.create_object,
             hooked: e.hooked,
             hooked_iter: e.hooked_iter,
+            stringable: e.stringable,
             checked_statics: e.checked_statics,
             cache: Default::default(),
         });
@@ -1529,8 +1533,24 @@ impl Vm {
                 }
             }
         }
-        let own_methods = proto.methods.iter().map(|m| lc(m.name.as_bytes()));
-        let methods = php_member_order(methods, own_methods.chain(trait_order));
+        let mut own_methods: Vec<Vec<u8>> = proto
+            .methods
+            .iter()
+            .map(|m| lc(m.name.as_bytes()))
+            .collect();
+        // A prelude class lists its methods in its stub's order, as php's
+        // internal classes do.
+        if self.internal_classes == 0 {
+            let rows = rhp_bytecode::signatures::class_methods(proto.name.as_bytes());
+            if !rows.is_empty() {
+                own_methods.sort_by_cached_key(|k| {
+                    rows.iter()
+                        .find(|m| m.name.as_bytes().eq_ignore_ascii_case(k))
+                        .map_or(u16::MAX, |m| m.order)
+                });
+            }
+        }
+        let methods = php_member_order(methods, own_methods.into_iter().chain(trait_order));
 
         // Instance properties, flattened. A redeclared public/protected property
         // keeps its inherited slot (same plain key, same position); a property
@@ -2006,6 +2026,8 @@ impl Vm {
             |r| r.create_object,
         );
         let flags = link_flags(proto, parent_entry.map(|p| p.flags), handlers, internal);
+        let stringable = handlers.is_some_and(|t| t.cast_object.is_some())
+            || methods.contains_key(&b"__tostring"[..]);
 
         self.class_ids.insert(lc(proto.name.as_bytes()), id);
         // Not compiled into a slot (prelude): after everything compiled so far.
@@ -2037,6 +2059,7 @@ impl Vm {
             create_object,
             hooked,
             hooked_iter,
+            stringable,
             checked_statics,
             cache: Default::default(),
         });

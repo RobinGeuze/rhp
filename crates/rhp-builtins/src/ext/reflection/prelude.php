@@ -1037,9 +1037,7 @@ class ReflectionProperty implements Reflector {
         }
         if ($object === null) { throw new TypeError('ReflectionProperty::getValue(): Argument #1 ($object) must be provided for instance properties'); }
         if (!($object instanceof $this->class)) { throw new ReflectionException('Given object is not an instance of the class this property was declared in'); }
-        if ($this->__i['type'] !== null && !isset($this->__i['dynamic']) && !__reflect('is_init', $object, $this->class, $this->name)) {
-            throw new Error('Typed property ' . $this->class . '::$' . $this->name . ' must not be accessed before initialization');
-        }
+        // read_property: an unset() typed slot goes to __get().
         return __reflect_get_prop($object, $this->name, $this->class);
     }
     public function setValue(mixed $objectOrValue, mixed $value = null): void {

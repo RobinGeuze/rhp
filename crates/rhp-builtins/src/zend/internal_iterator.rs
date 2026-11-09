@@ -134,6 +134,16 @@ pub fn step(host: &mut dyn Host, h: &ObjectHandle, s: Step) -> Result<Value, Thr
     }
 }
 
+/// The current element of the InternalIterator `h` (null past the end),
+/// as foreach's FE_FETCH reads it.
+pub fn current(host: &mut dyn Host, h: &ObjectHandle) -> Result<Value, Thrown> {
+    Ok(fetch(h)?
+        .funcs
+        .current(host)?
+        .map(|v| rhp_values::ops::deref(&v))
+        .unwrap_or(Value::Null))
+}
+
 /// `__internal_iterator($this, $method)`: the InternalIterator methods.
 fn fn_internal_iterator(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let Some(h) = args.first().and_then(object_handlers::object_of) else {

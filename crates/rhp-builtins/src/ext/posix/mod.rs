@@ -227,9 +227,21 @@ fn fd_of(host: &mut dyn Host, v: &Value) -> Option<i64> {
     }
 }
 
+/// php_posix_stream_get_fd's refusal of a stream that has no descriptor.
+fn uncastable(host: &mut dyn Host, fname: &str, v: &Value) -> Result<(), Thrown> {
+    if let Some(m) = host.stream_meta(v) {
+        let msg = format!("Could not use stream of type '{}'", m.stream_type);
+        crate::warn(host, fname, &msg)?;
+    }
+    Ok(())
+}
+
 fn fn_isatty(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let v = deref(&args[0]);
     let Some(fd) = fd_of(host, &v) else {
+        if matches!(v, Value::Resource(_)) {
+            uncastable(host, "posix_isatty", &v)?;
+        }
         return Ok(Value::Bool(false));
     };
     if fd < 0 || fd > i32::MAX as i64 {
@@ -248,7 +260,10 @@ fn fn_ttyname(host: &mut dyn Host, args: &[Value]) -> Result<Value, Thrown> {
     let v = deref(&args[0]);
     let fd = match (&v, fd_of(host, &v)) {
         (_, Some(fd)) => fd,
-        (Value::Resource(_), None) => return Ok(Value::Bool(false)),
+        (Value::Resource(_), None) => {
+            uncastable(host, "posix_ttyname", &v)?;
+            return Ok(Value::Bool(false));
+        }
         // php warns, then falls back to zval_get_long().
         (_, None) => conv::to_int(&v),
     };

@@ -81,7 +81,7 @@ bzip2 = { version = "=0.6.1", default-features = false, features = ["bzip2-sys",
 openssl-sys = "0.9.118"
 
 # CSPRNG for random_bytes/random_int/mt_rand.
-getrandom = "0.2"
+getrandom = "0.4"
 
 # dl.rs: reads a shared library's exported symbols to tell a php extension
 # module (one exporting get_module) from other libraries without loading it.
